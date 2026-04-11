@@ -1,0 +1,6 @@
+.pio/
+build/
+*.o
+*.a
+*.elf
+*.bin
