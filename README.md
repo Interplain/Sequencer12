@@ -106,7 +106,7 @@ platformio run -e genericSTM32F405RG --target upload
 - [ ] MCP23017 button input
 - [ ] DAC8564 CV output
 - [ ] FRAM save/load
-- [ ] Encoder navigation
+- [x] Encoder navigation
 
 ## Author
 
