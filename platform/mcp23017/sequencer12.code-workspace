@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"name": "S12_Hardware",
+			"path": "../../../S12_Hardware"
+		}
+	],
+	"settings": {}
+}
