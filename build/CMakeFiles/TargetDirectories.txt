@@ -1,0 +1,3 @@
+/mnt/extraspace2/Dev/sequencer12/build/CMakeFiles/sequencer12.dir
+/mnt/extraspace2/Dev/sequencer12/build/CMakeFiles/edit_cache.dir
+/mnt/extraspace2/Dev/sequencer12/build/CMakeFiles/rebuild_cache.dir
