@@ -17,7 +17,6 @@
                 "/mnt/extraspace2/Dev/sequencer12/stm32",
                 "/mnt/extraspace2/Dev/sequencer12/stm32/hw",
                 "/mnt/extraspace2/Dev/sequencer12/platform/mcp23017",
-                "/mnt/extraspace2/Dev/sequencer12/include",
                 "/home/interplain/.platformio/packages/framework-stm32cubef4/Drivers/CMSIS/Include",
                 "/home/interplain/.platformio/packages/framework-stm32cubef4/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
                 "/home/interplain/.platformio/packages/framework-stm32cubef4/Drivers/STM32F4xx_HAL_Driver/Inc",

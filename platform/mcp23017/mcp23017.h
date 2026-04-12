@@ -31,9 +31,9 @@ extern "C" {
 // ─────────────────────────────────────────────
 // Button bits (active low — 0 = pressed)
 // ─────────────────────────────────────────────
-#define BTN_PLAY_BIT    (1u << 0)   // GPA0
-#define BTN_REC_BIT     (1u << 1)   // GPA1
-#define BTN_SHIFT_BIT   (1u << 7)   // GPA7
+#define BTN_PLAY_BIT    (1u << 0)    // GPB0
+#define BTN_REC_BIT     (1u << 1)    // GPB1
+#define BTN_SHIFT_BIT   (1u << 15)   // GPA7
 
 // ─────────────────────────────────────────────
 // Functions

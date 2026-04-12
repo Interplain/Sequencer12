@@ -103,6 +103,15 @@ static void MX_GPIO_Init(void)
     g.Mode  = GPIO_MODE_INPUT;
     g.Pull  = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOC, &g);
+
+    /* I2C1 SDA/SCL — PB8/PB9 */
+    __HAL_RCC_I2C1_CLK_ENABLE();
+    g.Pin       = GPIO_PIN_8 | GPIO_PIN_9;
+    g.Mode      = GPIO_MODE_AF_OD;
+    g.Pull      = GPIO_PULLUP;
+    g.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    g.Alternate = GPIO_AF4_I2C1;
+    HAL_GPIO_Init(GPIOB, &g);
 }
 
 // ─────────────────────────────────────────────
@@ -133,6 +142,8 @@ static void MX_SPI1_Init(void)
 // ─────────────────────────────────────────────
 static void MX_I2C1_Init(void)
 {
+    __HAL_RCC_I2C1_CLK_ENABLE();
+
     hi2c1.Instance             = I2C1;
     hi2c1.Init.ClockSpeed      = 400000;
     hi2c1.Init.DutyCycle       = I2C_DUTYCYCLE_2;
@@ -142,6 +153,7 @@ static void MX_I2C1_Init(void)
     hi2c1.Init.OwnAddress2     = 0;
     hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
     hi2c1.Init.NoStretchMode   = I2C_NOSTRETCH_DISABLE;
+
     if (HAL_I2C_Init(&hi2c1) != HAL_OK) Error_Handler();
 }
 
