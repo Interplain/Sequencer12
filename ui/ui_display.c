@@ -74,7 +74,7 @@ void UI_Display_DrawHeader(uint16_t bpm, TransportState state, uint8_t rec_armed
 void UI_Display_DrawGrid(void)
 {
     for (uint8_t i = 1; i <= 12; i++)
-        UI_Display_DrawStepBox(i, (i == 1) ? 1 : 0, 0);
+        UI_Display_DrawStepBox(i, 0, 0);
 }
 
 void UI_Display_DrawStepBox(uint8_t step, uint8_t selected, uint8_t active)
@@ -124,4 +124,13 @@ static void DrawRectBorder(uint16_t x, uint16_t y,
     ST7789_FillRect(x, y + h - BORDER_T, w,     BORDER_T, color);
     ST7789_FillRect(x, y,             BORDER_T, h,        color);
     ST7789_FillRect(x + w - BORDER_T, y, BORDER_T, h,     color);
+}
+
+/* ── Debug time ────────────────────────────────────────────────────────────── */
+void UI_Display_DrawDebugRow(uint16_t bpm, uint8_t step, uint32_t elapsed_ms)
+{
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%2u %4lu", step, elapsed_ms);
+    ST7789_FillRect(0, 26, SCREEN_W, 24, BLACK);
+    ST7789_DrawString(4, 26, buf, &Font16x24, CYAN, BLACK);
 }

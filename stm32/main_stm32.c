@@ -1,24 +1,12 @@
 #include "stm32f4xx_hal.h"
-#include "ui/ui_sequencer.h"
-#include "ui/ui_input.h"
 #include "st7789.h"
 #include "hw_init.h"
 #include "mcp23017.h"
-#include <stdio.h>
+#include "sequencer_bridge.h"
+#include "ui/ui_sequencer.h"
+#include "ui/ui_input.h"
 
-/* ── UI layout ──────────────────────────────────────────────────────────── */
-#define SCREEN_W    240
-#define SCREEN_H    240
-#define HEADER_H     24
-#define GRID_X        8
-#define GRID_Y       56
-#define BOX_W        50
-#define BOX_H        56
-#define GAP_X         6
-#define GAP_Y         8
-#define BORDER_T      2
-
-  int main(void)
+int main(void)
 {
     HW_Init();
 
@@ -34,13 +22,16 @@
     /* Init MCP23017 */
     MCP23017_Init(&hi2c1);
 
-    /* Init UI — display must be ready before this */
+    /* Init engine */
+    Bridge_Init();
+
+    /* Init UI */
     UI_Input_Init();
     UI_Sequencer_Init();
 
     /* Backlight ON */
     GPIOB->BSRR = (1U << 0);
-  
+
     while (1)
     {
         UI_Input_Poll();
@@ -48,11 +39,3 @@
         HAL_Delay(10);
     }
 }
-
-void HAL_SYSTICK_Callback(void)
-{
-    UI_Sequencer_Tick1ms();
-}
-
-
-

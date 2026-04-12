@@ -1,5 +1,6 @@
 #include "ui_transport.h"
 #include "ui_display.h"
+#include "sequencer_bridge.h"
 
 /* ── State ───────────────────────────────────────────────────────────────── */
 static TransportState s_state     = TRANSPORT_STOPPED;
@@ -21,12 +22,13 @@ void UI_Transport_PlayStop(void)
     if (s_state == TRANSPORT_STOPPED)
     {
         s_state = s_rec_armed ? TRANSPORT_PLAYING_RECORDING : TRANSPORT_PLAYING;
+        Bridge_Start();
     }
     else
     {
         s_state = TRANSPORT_STOPPED;
+        Bridge_Stop();
     }
-
     UI_Display_DrawHeader(s_bpm, s_state, s_rec_armed);
 }
 
@@ -37,15 +39,16 @@ void UI_Transport_RecArm(void)
     UI_Display_DrawHeader(s_bpm, s_state, s_rec_armed);
 }
 
-/* ── Reset — Shift + Button 1 ────────────────────────────────────────────── */
+/* ── Reset — Shift + Button 1 ───────────────────────────────────────────── */
 void UI_Transport_Reset(void)
 {
     s_state     = TRANSPORT_STOPPED;
     s_rec_armed = 0;
+    Bridge_Reset();
     UI_Display_DrawHeader(s_bpm, s_state, s_rec_armed);
 }
 
-/* ── Rec clear — Shift + Button 2 ───────────────────────────────────────── */
+/* ── Rec clear — Shift + Button 2 ──────────────────────────────────────── */
 void UI_Transport_RecClear(void)
 {
     s_rec_armed = 0;
@@ -58,6 +61,7 @@ void UI_Transport_SetBPM(uint16_t bpm)
     if (bpm < 30)  bpm = 30;
     if (bpm > 300) bpm = 300;
     s_bpm = bpm;
+    Bridge_SetBpm(bpm);
     UI_Display_DrawHeader(s_bpm, s_state, s_rec_armed);
 }
 

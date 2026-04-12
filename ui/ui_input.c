@@ -82,19 +82,20 @@ void UI_Input_Poll(void)
             UI_Transport_RecArm();
     }
 
+    
     /* ── Encoder ──────────────────────────────────────────────────────── */
     int16_t enc   = (int16_t)TIM2->CNT;
     int16_t delta = enc - s_last_enc;
 
-    if (delta >= 2)
+    if (delta >= 4)
     {
-        s_last_enc      = enc;
-        s_encoder_delta = 1;
+    s_last_enc      = enc;
+    s_encoder_delta = 1;
     }
-    else if (delta <= -2)
+    else if (delta <= -4)
     {
-        s_last_enc      = enc;
-        s_encoder_delta = -1;
+    s_last_enc      = enc;
+    s_encoder_delta = -1;
     }
 
     /* ── Encoder button — PC15 ────────────────────────────────────────── */

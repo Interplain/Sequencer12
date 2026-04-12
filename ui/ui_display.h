@@ -29,6 +29,9 @@ void UI_Display_DrawHeader(uint16_t bpm, TransportState state, uint8_t rec_armed
 /* ── Transport strip ─────────────────────────────────────────────────────── */
 void UI_Display_SetShiftIndicator(uint8_t active);
 
+/* ── Debug time ────────────────────────────────────────────────────────────── */
+void UI_Display_DrawDebugRow(uint16_t bpm, uint8_t step, uint32_t elapsed_ms);
+
 #ifdef __cplusplus
 }
 #endif
