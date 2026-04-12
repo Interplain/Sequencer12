@@ -14,7 +14,7 @@ static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
-
+void Error_Handler(void);
 // ─────────────────────────────────────────────
 // Master hardware init
 // ─────────────────────────────────────────────
@@ -47,6 +47,7 @@ void SystemClock_Config(void)
     osc.PLL.PLLN       = 336;
     osc.PLL.PLLP       = RCC_PLLP_DIV2;
     osc.PLL.PLLQ       = 7;
+
     if (HAL_RCC_OscConfig(&osc) != HAL_OK) Error_Handler();
 
     clk.ClockType      = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
@@ -61,7 +62,7 @@ void SystemClock_Config(void)
 // ─────────────────────────────────────────────
 // GPIO
 // PA4=CS  PA6=DC  PA8=RST  PB0=BLK
-// PA0=ENC_A  PA1=ENC_B  PC15=ENC_SW
+// PA0=ENC_A  PA1=ENC_B  PC12=ENC_SW
 // ─────────────────────────────────────────────
 static void MX_GPIO_Init(void)
 {
@@ -98,8 +99,8 @@ static void MX_GPIO_Init(void)
     g.Alternate = GPIO_AF5_SPI1;
     HAL_GPIO_Init(GPIOA, &g);
 
-    // PC15 = encoder switch — input with pullup
-    g.Pin   = GPIO_PIN_15;
+    // PC12 = encoder switch — input with pullup
+    g.Pin   = GPIO_PIN_12;
     g.Mode  = GPIO_MODE_INPUT;
     g.Pull  = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOC, &g);
@@ -145,7 +146,7 @@ static void MX_I2C1_Init(void)
     __HAL_RCC_I2C1_CLK_ENABLE();
 
     hi2c1.Instance             = I2C1;
-    hi2c1.Init.ClockSpeed      = 400000;
+    hi2c1.Init.ClockSpeed      = 100000;
     hi2c1.Init.DutyCycle       = I2C_DUTYCYCLE_2;
     hi2c1.Init.OwnAddress1     = 0;
     hi2c1.Init.AddressingMode  = I2C_ADDRESSINGMODE_7BIT;

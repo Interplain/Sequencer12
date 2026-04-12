@@ -8,6 +8,7 @@
         {
             "name": "PlatformIO",
             "includePath": [
+                "/mnt/extraspace2/Dev/sequencer12/include",
                 "/mnt/extraspace2/Dev/sequencer12/src",
                 "/mnt/extraspace2/Dev/sequencer12/lib/ST7789",
                 "/mnt/extraspace2/Dev/sequencer12",
@@ -107,6 +108,7 @@
             "browse": {
                 "limitSymbolsToIncludedHeaders": true,
                 "path": [
+                    "/mnt/extraspace2/Dev/sequencer12/include",
                     "/mnt/extraspace2/Dev/sequencer12/src",
                     "/mnt/extraspace2/Dev/sequencer12/lib/ST7789",
                     "/mnt/extraspace2/Dev/sequencer12",
@@ -116,7 +118,6 @@
                     "/mnt/extraspace2/Dev/sequencer12/stm32",
                     "/mnt/extraspace2/Dev/sequencer12/stm32/hw",
                     "/mnt/extraspace2/Dev/sequencer12/platform/mcp23017",
-                    "/mnt/extraspace2/Dev/sequencer12/include",
                     "/home/interplain/.platformio/packages/framework-stm32cubef4/Drivers/CMSIS/Include",
                     "/home/interplain/.platformio/packages/framework-stm32cubef4/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
                     "/home/interplain/.platformio/packages/framework-stm32cubef4/Drivers/STM32F4xx_HAL_Driver/Inc",
@@ -215,6 +216,7 @@
                 "HARDWARE_BUILD",
                 "USE_HAL_DRIVER",
                 "F_CPU=168000000L",
+                "__PLATFORMIO_BUILD_DEBUG__",
                 ""
             ],
             "compilerPath": "/home/interplain/.platformio/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-gcc",
