@@ -1,6 +1,6 @@
 #include "st7789.h"
 #include "fonts.h"
-
+#include "fonts_extra.h"
 /* ------------------------------------------------------------------------- */
 /* Pin map                                                                   */
 /* PA4=CS  PA5=SCK  PA6=DC  PA7=MOSI  PA8=RST  PB0=BLK                       */
@@ -212,26 +212,17 @@ void ST7789_SetRotation(uint8_t rotation)
         case 0:
             WriteSmallData(ST7789_MADCTL_MX | ST7789_MADCTL_MY | ST7789_MADCTL_RGB);
             break;
-
         case 1:
-        #if ROT1_MODE == 0
-            WriteSmallData(ST7789_MADCTL_MV | ST7789_MADCTL_RGB);
-        #elif ROT1_MODE == 1
             WriteSmallData(ST7789_MADCTL_MX | ST7789_MADCTL_MV | ST7789_MADCTL_RGB);
-        #elif ROT1_MODE == 2
-            WriteSmallData(ST7789_MADCTL_MY | ST7789_MADCTL_MV | ST7789_MADCTL_RGB);
-        #else
-            WriteSmallData(ST7789_MADCTL_MX | ST7789_MADCTL_MY |
-                           ST7789_MADCTL_MV | ST7789_MADCTL_RGB);
-        #endif
             break;
-
         case 2:
             WriteSmallData(ST7789_MADCTL_RGB);
             break;
-
         case 3:
-            WriteSmallData(ST7789_MADCTL_MX | ST7789_MADCTL_MY | ST7789_MADCTL_RGB);
+            WriteSmallData(ST7789_MADCTL_MY | ST7789_MADCTL_MV | ST7789_MADCTL_RGB);
+            break;
+        default:
+            WriteSmallData(ST7789_MADCTL_RGB);
             break;
     }
 }

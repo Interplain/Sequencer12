@@ -17,6 +17,9 @@ public:
     void Tick10ms() override;
     void Tick20ms() override;
     void Process()  override;
+    uint8_t  GetCurrentPatternIndex() const;
+    uint32_t GetRunTimeMs() const;
+    uint32_t GetCompletedLoops() const;
 
     /* ── MidiClockListener ───────────────────────────────────────────── */
     void OnClockTick()     override;
@@ -90,8 +93,9 @@ private:
     bool        arp_note_changed_         = false;
 
     /* ── Timing ──────────────────────────────────────────────────────── */
-    uint32_t    runtime_ms_               = 0; 
-
+    uint32_t run_time_ms_    = 0;
+    uint32_t completed_loops_ = 0; 
+    
     /* ── MIDI clock ──────────────────────────────────────────────────── */
     uint8_t     midi_tick_count_          = 0;
     bool        midi_clock_enabled_       = false;

@@ -45,7 +45,7 @@ void UI_Input_Init(void)
     s_encoder_delta   = 0;
     s_shift_held      = 0;
     s_enc_btn_pressed = 0;
-    s_enc_btn_prev    = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_15);
+    s_enc_btn_prev    = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12);
 
     /* Prime button state from stable hardware read */
     s_prev_raw = PrimeButtons();
@@ -55,32 +55,34 @@ void UI_Input_Init(void)
 void UI_Input_Poll(void)
 {
     /* ── MCP23017 ─────────────────────────────────────────────────────── */
-    uint16_t raw     = MCP23017_ReadGPIO(&hi2c1);
-    uint16_t changed = s_prev_raw ^ raw;
-    uint16_t rising  = changed & raw;    /* 0→1 = press */
-    s_prev_raw       = raw;
+    uint16_t raw            = MCP23017_ReadGPIO(&hi2c1);
+uint16_t changed        = s_prev_raw ^ raw;
+uint16_t falling        = changed & s_prev_raw;   /* 1→0 = press */
+uint8_t  shift_was_held = ((s_prev_raw & BTN_SHIFT_BIT) == 0u) ? 1u : 0u;
 
-    /* Shift — level */
-    s_shift_held = (raw & BTN_SHIFT_BIT) ? 1 : 0;
-    UI_Display_SetShiftIndicator(s_shift_held);
+s_prev_raw = raw;
 
-    /* Button 1 — Play/Stop or Reset */
-    if (rising & BTN_PLAY_BIT)
-    {
-        if (s_shift_held)
-            UI_Transport_Reset();
-        else
-            UI_Transport_PlayStop();
-    }
+/* Shift — level, active LOW */
+s_shift_held = ((raw & BTN_SHIFT_BIT) == 0u) ? 1u : 0u;
+UI_Display_SetShiftIndicator(s_shift_held);
 
-    /* Button 2 — Rec arm or Rec clear */
-    if (rising & BTN_REC_BIT)
-    {
-        if (s_shift_held)
-            UI_Transport_RecClear();
-        else
-            UI_Transport_RecArm();
-    }
+/* Button 1 — Play/Stop or Reset */
+if (falling & BTN_PLAY_BIT)
+{
+    if (shift_was_held)
+        UI_Transport_Reset();
+    else
+        UI_Transport_PlayStop();
+}
+
+/* Button 2 — Rec arm or Rec clear */
+if (falling & BTN_REC_BIT)
+{
+    if (shift_was_held)
+        UI_Transport_RecClear();
+    else
+        UI_Transport_RecArm();
+}
 
     
     /* ── Encoder ──────────────────────────────────────────────────────── */
@@ -99,7 +101,7 @@ void UI_Input_Poll(void)
     }
 
     /* ── Encoder button — PC15 ────────────────────────────────────────── */
-    uint8_t enc_btn = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_15);
+    uint8_t enc_btn = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12);
 
     if (s_enc_btn_prev == 1u && enc_btn == 0u)
         s_enc_btn_pressed = 1;

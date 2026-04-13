@@ -57,7 +57,8 @@ void SequencerDevice::Init()
     elapsed_step_ms_       = 0;
     gate_elapsed_ms_       = 0;
     gate_length_ms_        = 100;
-    runtime_ms_            = 0;
+    run_time_ms_           = 0;
+    completed_loops_       = 0;
 
     /* ── Default pattern — 12 steps, all Chord, forward loop ───────── */
     Pattern& p0 = bank_.GetPattern(0);
@@ -119,7 +120,10 @@ void SequencerDevice::SetBpm(uint32_t bpm)
 /*                                                                            */
 void SequencerDevice::Tick1ms()
 {
-    ++runtime_ms_;
+    if (playing_)
+    {
+        ++run_time_ms_;
+    }
 
     /* Gate timing — turn gate off after gate_length_ms_ */
     if (gate_active_)
@@ -242,6 +246,8 @@ void SequencerDevice::Reset()
     step_direction_        = 1;
     arp_elapsed_ms_        = 0;
     arp_interval_ms_       = 0;
+    run_time_ms_           = 0;
+    completed_loops_       = 0;
     arp_.Init();
     bank_.ChainReset();
     current_pattern_index_ = bank_.ChainCurrentPatternIndex();
@@ -283,6 +289,24 @@ void SequencerDevice::RecalculateStepIntervalMs()
     current_step_interval_ms_ =
         base_step_interval_ms_ *
         CurrentPattern().steps[current_step_].duration_multiplier;
+}
+
+/*.......................................................... */
+/* Time/Pattern Step/Position Display                      */
+
+uint8_t SequencerDevice::GetCurrentPatternIndex() const
+{
+    return current_pattern_index_;
+}
+
+uint32_t SequencerDevice::GetRunTimeMs() const
+{
+    return run_time_ms_;
+}
+
+uint32_t SequencerDevice::GetCompletedLoops() const
+{
+    return completed_loops_;
 }
 
 /*                                                                            */
@@ -341,7 +365,11 @@ void SequencerDevice::AdvanceStep()
         case PlaybackMode::Loop:
         {
             uint32_t next = current_step_ + 1;
-            if (next >= step_count) next = 0;
+            if (next >= step_count)
+            {
+                next             = 0;
+                pattern_complete = true;
+            }
             current_step_ = next;
             break;
         }
@@ -350,6 +378,8 @@ void SequencerDevice::AdvanceStep()
     /* Pattern completion — handle chaining and repeat */
     if (pattern_complete)
     {
+        ++completed_loops_;
+
         switch (pat.playback_mode)
         {
             case PlaybackMode::OneShot:
@@ -357,7 +387,18 @@ void SequencerDevice::AdvanceStep()
                 return;
 
             case PlaybackMode::Loop:
+            {
+                ++repeat_current_;
+
+                if (repeat_current_ >= pat.repeat_count)
+                {
+                    repeat_current_ = 0;
+                    bank_.ChainAdvance();
+                    current_pattern_index_ = bank_.ChainCurrentPatternIndex();
+                    status_changed_        = true;
+                }
                 break;
+            }
 
             case PlaybackMode::Forward:
             case PlaybackMode::PingPong:

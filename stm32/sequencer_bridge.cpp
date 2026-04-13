@@ -15,4 +15,22 @@ extern "C"
     uint32_t Bridge_GetCurrentStep(void)    { return g_sequencer.GetCurrentStep(); }
     uint8_t  Bridge_IsPlaying(void)         { return g_sequencer.IsPlaying() ? 1u : 0u; }
     uint32_t Bridge_GetElapsedMs(void)      { return g_sequencer.GetElapsedMs(); }
+
+
+uint8_t Bridge_GetCurrentPattern(void)
+{
+    return static_cast<uint8_t>(g_sequencer.GetCurrentPatternIndex());
+}
+
+uint32_t Bridge_GetRunTimeMs(void)
+{
+    return g_sequencer.GetRunTimeMs();
+}
+
+uint32_t Bridge_GetCompletedLoops(void)
+{
+    return g_sequencer.GetCompletedLoops();
+}
+
+
 }

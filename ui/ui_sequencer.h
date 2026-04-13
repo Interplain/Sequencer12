@@ -16,6 +16,9 @@ void UI_Sequencer_Update(void);
 /* ── Called from SysTick — 1ms ───────────────────────────────────────────── */
 void UI_Sequencer_Tick1ms(void);
 
+/* ── Direct step access — for dedicated button matrix ───────────────────── */
+void UI_Sequencer_SelectStep(uint8_t step);  /* 1-12 */
+
 #ifdef __cplusplus
 }
 #endif

@@ -17,6 +17,10 @@ void     Bridge_SetBpm(uint32_t bpm);
 uint32_t Bridge_GetCurrentStep(void);
 uint8_t  Bridge_IsPlaying(void);
 uint32_t Bridge_GetElapsedMs(void);
+uint8_t  Bridge_IsPlaying(void);
+uint8_t  Bridge_GetCurrentPattern(void);
+uint32_t Bridge_GetRunTimeMs(void);
+uint32_t Bridge_GetCompletedLoops(void);
 
 #ifdef __cplusplus
 }

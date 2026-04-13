@@ -13,6 +13,8 @@ extern SPI_HandleTypeDef hspi1;
 #define ST7789_WIDTH   240
 #define ST7789_HEIGHT  240
 
+#define RGB565(r,g,b)  ((uint16_t)((((r) & 0x1FU) << 11) | (((g) & 0x3FU) << 5) | ((b) & 0x1FU)))
+
 /*
  * Rotation:
  *   0 = default
