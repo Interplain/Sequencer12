@@ -77,15 +77,50 @@ for chord-based modular synthesis.
 
 ## Project Structure
 
+```text
 sequencer12/
-├── core/                    # Scheduler
-├── devices/sequencer/       # Engine — patterns, arp, chords
-├── platform/midi/           # MIDI clock master/slave
-├── lib/ST7789/              # Display driver + fonts
-├── stm32/                   # STM32 hardware entry point
-├── src/                     # Linux sim entry point
-├── CMakeLists.txt           # Linux sim build
-└── platformio.ini           # STM32 hardware build
+├── core/                          # Scheduler core
+├── devices/
+│   └── sequencer/                 # Sequencer engine
+│       ├── arp_engine.*           # Arpeggiator logic
+│       ├── pattern_bank.*         # Pattern storage / chain support
+│       ├── sequencer_device.*     # Main sequencer runtime
+│       ├── sequencer_types.h      # Shared engine types
+│       └── chords/
+│           ├── chord_library.*    # Preset chord library
+│           └── user_chords.*      # User chord slot model (128 slots)
+├── platform/
+│   ├── midi/                      # MIDI clock and parser
+│   ├── mcp23017/                  # Button matrix / GPIO expander
+│   ├── dac8564/                   # CV DAC driver
+│   └── fram/
+│       └── mb85rc256.*            # FRAM driver scaffold
+├── ui/
+│   ├── ui_sequencer.*             # UI state machine + mode routing
+│   ├── ui_display.*               # Rendering (menus, piano, status)
+│   ├── ui_input.*                 # Encoder/buttons input decode
+│   ├── ui_transport.*             # Transport behavior
+│   ├── ui_regions.h               # UI layout regions
+│   └── ui_icons.h                 # Small icon assets
+├── stm32/
+│   ├── main_stm32.c               # Hardware app entry point
+│   ├── sequencer_bridge.*         # C bridge between UI and engine
+│   ├── user_chord_bridge.*        # C bridge for user chord library
+│   ├── calibration.*              # DAC calibration helpers
+│   └── hw/
+│       └── hw_init.*              # Clock/GPIO/SPI/I2C/UART init
+├── lib/ST7789/                    # Display driver + fonts
+├── src/                           # Linux simulator entry point
+├── app/                           # App-level interface wrapper
+├── CMakeLists.txt                 # Linux simulator build
+└── platformio.ini                 # STM32 hardware build
+```
+
+### Structure Map Notes
+
+- Implemented now: engine, UI flow (Grid/Chord/Custom/Create/Load/Name), MCP23017 input, DAC path scaffold, user chord bridge.
+- In progress / next: FRAM-backed persistence for user chords and song/pattern save strategy.
+- Build output folders such as .pio/ and build/ are generated artifacts, not source modules.
 
 ## Building
 
