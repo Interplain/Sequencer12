@@ -197,12 +197,6 @@ void ST7789_Init(void)
 /* ------------------------------------------------------------------------- */
 /* Rotation / inversion                                                      */
 /* ------------------------------------------------------------------------- */
-/* Pick which MADCTL variant rotation=1 should use */
-#define ROT1_MODE  2
-/* 0 = MV
-   1 = MX | MV
-   2 = MY | MV
-   3 = MX | MY | MV */
 
 void ST7789_SetRotation(uint8_t rotation)
 {

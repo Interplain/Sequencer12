@@ -48,6 +48,18 @@ void MCP23017_Init(I2C_HandleTypeDef *hi2c)
     (void)ReadReg(hi2c, MCP_GPIOB);
 }
 
+void MCP23017_SetDirections(I2C_HandleTypeDef *hi2c, uint8_t iodira, uint8_t iodirb)
+{
+    WriteReg(hi2c, MCP_IODIRA, iodira);
+    WriteReg(hi2c, MCP_IODIRB, iodirb);
+}
+
+void MCP23017_SetPullups(I2C_HandleTypeDef *hi2c, uint8_t gppua, uint8_t gppub)
+{
+    WriteReg(hi2c, MCP_GPPUA, gppua);
+    WriteReg(hi2c, MCP_GPPUB, gppub);
+}
+
 /* ── Read all 16 pins ───────────────────────────────────────────────────── */
 uint16_t MCP23017_ReadGPIO(I2C_HandleTypeDef *hi2c)
 {

@@ -6,6 +6,54 @@ using sequencer::StepType;
 using sequencer::Pattern;
 using namespace sequencer;
 
+static ChordType UiChordTypeToLibraryType(uint8_t chord_type)
+{
+    switch (chord_type)
+    {
+        case 1:  return ChordType::Major;
+        case 2:  return ChordType::Minor;
+        case 3:  return ChordType::Diminished;
+        case 4:  return ChordType::Augmented;
+        case 5:  return ChordType::Sus4;
+        case 6:  return ChordType::Dom7;
+        case 7:  return ChordType::Major7;
+        case 8:  return ChordType::Minor7;
+        case 9:  return ChordType::Dim7;
+        case 10: return ChordType::Dom7;   /* 7sus4 fallback */
+        case 11: return ChordType::Major6;
+        case 12: return ChordType::Minor6;
+        case 13: return ChordType::Dom9;
+        case 14: return ChordType::Major9;
+        case 15: return ChordType::Minor9;
+        case 16: return ChordType::Dom11;
+        default: return ChordType::Major;
+    }
+}
+
+static ArpMode UiArpPatternToMode(uint8_t arp_pattern)
+{
+    switch (arp_pattern)
+    {
+        case 1: return ArpMode::Up;
+        case 2: return ArpMode::Down;
+        case 3: return ArpMode::UpDown;
+        case 4: return ArpMode::Random;
+        default: return ArpMode::Off;
+    }
+}
+
+static uint32_t UiDurationToMultiplier(uint8_t duration)
+{
+    switch (duration)
+    {
+        case 0: return 1; /* 16th */
+        case 1: return 2; /* 8th */
+        case 2: return 4; /* quarter */
+        case 3: return 3; /* dotted 8th */
+        default: return 1;
+    }
+}
+
 /* ── Convenience accessors ──────────────────────────────────────────────── */
 
 Pattern& SequencerDevice::CurrentPattern()
@@ -111,6 +159,128 @@ void SequencerDevice::SetBpm(uint32_t bpm)
     {
         midi_clock_.SetBpm(bpm);
     }
+}
+
+void SequencerDevice::SetPatternStepCount(uint8_t step_count)
+{
+    if (step_count < 1) step_count = 1;
+    if (step_count > kStepCount) step_count = kStepCount;
+    CurrentPattern().step_count = step_count;
+    if (current_step_ >= step_count) current_step_ = 0;
+}
+
+uint8_t SequencerDevice::GetPatternStepCount() const
+{
+    return CurrentPattern().step_count;
+}
+
+void SequencerDevice::SetPatternStepDivision(uint8_t step_division)
+{
+    if (step_division < 1) step_division = 1;
+    if (step_division > 8) step_division = 8;
+    CurrentPattern().step_division = step_division;
+    RecalculateStepIntervalMs();
+}
+
+uint8_t SequencerDevice::GetPatternStepDivision() const
+{
+    return CurrentPattern().step_division;
+}
+
+void SequencerDevice::SetTimeSignature(uint8_t numerator, uint8_t denominator)
+{
+    if (numerator < 1) numerator = 1;
+    if (numerator > 12) numerator = 12;
+    if (!(denominator == 2 || denominator == 4 || denominator == 8)) denominator = 4;
+    bank_.GetSong().time_sig.numerator = numerator;
+    bank_.GetSong().time_sig.denominator = denominator;
+}
+
+uint8_t SequencerDevice::GetTimeSigNumerator() const
+{
+    return bank_.GetSong().time_sig.numerator;
+}
+
+uint8_t SequencerDevice::GetTimeSigDenominator() const
+{
+    return bank_.GetSong().time_sig.denominator;
+}
+
+void SequencerDevice::SetSwing(uint8_t swing)
+{
+    if (swing > 75) swing = 75;
+    bank_.GetSong().swing = swing;
+}
+
+uint8_t SequencerDevice::GetSwing() const
+{
+    return bank_.GetSong().swing;
+}
+
+void SequencerDevice::SetStepChordParams(uint8_t step_index,
+                                         uint8_t root_key,
+                                         uint8_t chord_type,
+                                         uint8_t arp_pattern,
+                                         uint8_t duration)
+{
+    if (step_index >= kStepCount) return;
+
+    StepSlot& slot = CurrentPattern().steps[step_index];
+
+    root_key %= 12;
+    slot.duration_multiplier = UiDurationToMultiplier(duration);
+
+    if (chord_type == 0)
+    {
+        slot.type = StepType::Empty;
+        slot.note_mask = 0;
+    }
+    else
+    {
+        const ChordType mapped = UiChordTypeToLibraryType(chord_type);
+        slot.type = StepType::Chord;
+        slot.note_mask = ChordLibrary::GetNoteMask(static_cast<KeyRoot>(root_key), mapped);
+    }
+
+    CurrentPattern().arp_mode = UiArpPatternToMode(arp_pattern);
+
+    if (step_index == current_step_)
+    {
+        ApplyCurrentStepBehavior();
+        step_changed_ = true;
+    }
+}
+
+void SequencerDevice::SetPatternRepeatCount(uint8_t repeat_count)
+{
+    if (repeat_count < 1) repeat_count = 1;
+    if (repeat_count > 16) repeat_count = 16;
+    CurrentPattern().repeat_count = repeat_count;
+}
+
+uint8_t SequencerDevice::GetPatternRepeatCount() const
+{
+    return CurrentPattern().repeat_count;
+}
+
+void SequencerDevice::SetCurrentPatternIndex(uint8_t pattern_index)
+{
+    if (pattern_index >= kPatternCount) return;
+
+    /* Quick-load behavior: lock chain to selected pattern for now. */
+    bank_.ChainClear();
+    bank_.ChainAppend(pattern_index);
+    bank_.ChainReset();
+
+    current_pattern_index_ = pattern_index;
+    current_step_ = 0;
+    repeat_current_ = 0;
+    step_direction_ = 1;
+    elapsed_step_ms_ = 0;
+
+    ApplyCurrentStepBehavior();
+    step_changed_ = true;
+    status_changed_ = true;
 }
 
 /* ── Tick1ms — called from SysTick ISR every 1ms ───────────────────────── */
@@ -278,13 +448,18 @@ void SequencerDevice::GateOff()
 /*                                                                            */
 /*  RecalculateStepIntervalMs — converts BPM to ms per step, applying       */
 /*  the current pattern's tempo multiplier and step duration multiplier.    */
+/*  A sequencer step is treated as a sixteenth note by default.             */
 /*                                                                            */
 void SequencerDevice::RecalculateStepIntervalMs()
 {
     uint32_t bpm = bank_.GetEffectiveBpm(current_pattern_index_);
     if (bpm == 0) bpm = 1;
 
-    base_step_interval_ms_ = 60000 / bpm;
+    uint8_t division = CurrentPattern().step_division;
+    if (division == 0) division = 4;
+
+    /* Quarter-note ms divided by pattern step division */
+    base_step_interval_ms_ = (60000 / bpm) / division;
 
     current_step_interval_ms_ =
         base_step_interval_ms_ *

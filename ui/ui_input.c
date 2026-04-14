@@ -1,5 +1,4 @@
 #include "ui_input.h"
-#include "ui_transport.h"
 #include "ui_display.h"
 #include "mcp23017.h"
 #include "hw_init.h"
@@ -10,8 +9,60 @@ static int16_t  s_last_enc        = 0;
 static int8_t   s_encoder_delta   = 0;
 static uint8_t  s_shift_held      = 0;
 static uint8_t  s_enc_btn_pressed = 0;
+static uint16_t s_step_pressed_mask = 0;
+static uint16_t s_shift_step_pressed_mask = 0;
 static uint16_t s_prev_raw        = 0xFFFF;
+static uint16_t s_prev_matrix_pressed = 0;
 static uint8_t  s_enc_btn_prev    = 1;
+static uint8_t  s_play_pressed    = 0;
+static uint8_t  s_shift_play_pressed = 0;
+static uint8_t  s_rec_pressed     = 0;
+static uint8_t  s_shift_rec_pressed  = 0;
+
+static const uint8_t s_col_bits[4] = {
+    MCP_MATRIX_COL1_BIT,
+    MCP_MATRIX_COL2_BIT,
+    MCP_MATRIX_COL3_BIT,
+    MCP_MATRIX_COL4_BIT
+};
+
+static const uint8_t s_row_bits[3] = {
+    MCP_MATRIX_ROW1_BIT,
+    MCP_MATRIX_ROW2_BIT,
+    MCP_MATRIX_ROW3_BIT
+};
+
+/* ── Matrix scan (3x4, active low) ─────────────────────────────────────── */
+static uint16_t ScanStepMatrix(void)
+{
+    uint16_t pressed = 0;
+
+    for (uint8_t col = 0; col < 4; col++)
+    {
+        uint8_t out_a = (uint8_t)(MCP_MATRIX_COL_MASK);
+        out_a &= (uint8_t)(~s_col_bits[col]); /* drive selected column low */
+        MCP23017_WriteGPIOA(&hi2c1, out_a);
+
+        /* Small settle delay for MCP write/read propagation */
+        HAL_Delay(1);
+
+        uint8_t gpio_a = MCP23017_ReadGPIOA(&hi2c1);
+
+        for (uint8_t row = 0; row < 3; row++)
+        {
+            if ((gpio_a & s_row_bits[row]) == 0u)
+            {
+                uint8_t step_index = (uint8_t)(row * 4 + col); /* 0..11 */
+                pressed |= (uint16_t)(1u << step_index);
+            }
+        }
+    }
+
+    /* Return all columns high when idle */
+    MCP23017_WriteGPIOA(&hi2c1, (uint8_t)MCP_MATRIX_COL_MASK);
+
+    return pressed;
+}
 
 /* ── Prime — read until stable ───────────────────────────────────────────── */
 static uint16_t PrimeButtons(void)
@@ -45,7 +96,17 @@ void UI_Input_Init(void)
     s_encoder_delta   = 0;
     s_shift_held      = 0;
     s_enc_btn_pressed = 0;
+    s_step_pressed_mask = 0;
+    s_shift_step_pressed_mask = 0;
+     s_prev_matrix_pressed = 0;
     s_enc_btn_prev    = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12);
+
+     /* Configure MCP for matrix scan:
+         A: rows+shift inputs, cols outputs
+         B: all inputs (play/rec on B0/B1) */
+     MCP23017_SetDirections(&hi2c1, 0x87, 0xFF);
+     MCP23017_SetPullups(&hi2c1, 0x87, 0xFF);
+     MCP23017_WriteGPIOA(&hi2c1, (uint8_t)MCP_MATRIX_COL_MASK);
 
     /* Prime button state from stable hardware read */
     s_prev_raw = PrimeButtons();
@@ -70,18 +131,39 @@ UI_Display_SetShiftIndicator(s_shift_held);
 if (falling & BTN_PLAY_BIT)
 {
     if (shift_was_held)
-        UI_Transport_Reset();
+        s_shift_play_pressed = 1;
     else
-        UI_Transport_PlayStop();
+        s_play_pressed = 1;
 }
 
 /* Button 2 — Rec arm or Rec clear */
 if (falling & BTN_REC_BIT)
 {
     if (shift_was_held)
-        UI_Transport_RecClear();
+        s_shift_rec_pressed = 1;
     else
-        UI_Transport_RecArm();
+        s_rec_pressed = 1;
+}
+
+/* Step matrix scan (active low) */
+{
+    uint16_t matrix_pressed = ScanStepMatrix();
+    uint16_t step_falling = (uint16_t)(matrix_pressed & (uint16_t)(~s_prev_matrix_pressed));
+    s_prev_matrix_pressed = matrix_pressed;
+
+    if (step_falling != 0u)
+    {
+        for (uint8_t i = 0; i < 12; i++)
+        {
+            if (step_falling & (uint16_t)(1u << i))
+            {
+                if (shift_was_held)
+                    s_shift_step_pressed_mask |= (uint16_t)(1u << i);
+                else
+                    s_step_pressed_mask |= (uint16_t)(1u << i);
+            }
+        }
+    }
 }
 
     
@@ -127,4 +209,60 @@ uint8_t UI_Input_IsEncoderPressed(void)
     uint8_t p         = s_enc_btn_pressed;
     s_enc_btn_pressed = 0;
     return p;
+}
+
+uint8_t UI_Input_IsPlayPressed(void)
+{
+    uint8_t p      = s_play_pressed;
+    s_play_pressed = 0;
+    return p;
+}
+
+uint8_t UI_Input_IsShiftPlayPressed(void)
+{
+    uint8_t p           = s_shift_play_pressed;
+    s_shift_play_pressed = 0;
+    return p;
+}
+
+uint8_t UI_Input_IsRecPressed(void)
+{
+    uint8_t p     = s_rec_pressed;
+    s_rec_pressed = 0;
+    return p;
+}
+
+uint8_t UI_Input_IsShiftRecPressed(void)
+{
+    uint8_t p          = s_shift_rec_pressed;
+    s_shift_rec_pressed = 0;
+    return p;
+}
+
+uint8_t UI_Input_GetStepPressed(void)
+{
+    for (uint8_t i = 0; i < 12; i++)
+    {
+        uint16_t bit = (uint16_t)(1u << i);
+        if (s_step_pressed_mask & bit)
+        {
+            s_step_pressed_mask &= (uint16_t)(~bit);
+            return (uint8_t)(i + 1);
+        }
+    }
+    return 0;
+}
+
+uint8_t UI_Input_GetShiftStepPressed(void)
+{
+    for (uint8_t i = 0; i < 12; i++)
+    {
+        uint16_t bit = (uint16_t)(1u << i);
+        if (s_shift_step_pressed_mask & bit)
+        {
+            s_shift_step_pressed_mask &= (uint16_t)(~bit);
+            return (uint8_t)(i + 1);
+        }
+    }
+    return 0;
 }

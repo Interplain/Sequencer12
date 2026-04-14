@@ -11,6 +11,7 @@ extern "C" {
 // Peripheral handles — accessible everywhere
 // ─────────────────────────────────────────────
 extern SPI_HandleTypeDef hspi1;
+extern SPI_HandleTypeDef hspi2;
 extern I2C_HandleTypeDef hi2c1;
 extern TIM_HandleTypeDef htim2;
 

@@ -32,6 +32,23 @@ public:
     void     Stop();
     void     Reset();
     void     SetBpm(uint32_t bpm);
+    void     SetPatternStepCount(uint8_t step_count);
+    uint8_t  GetPatternStepCount() const;
+    void     SetPatternStepDivision(uint8_t step_division);
+    uint8_t  GetPatternStepDivision() const;
+    void     SetTimeSignature(uint8_t numerator, uint8_t denominator);
+    uint8_t  GetTimeSigNumerator() const;
+    uint8_t  GetTimeSigDenominator() const;
+    void     SetSwing(uint8_t swing);
+    uint8_t  GetSwing() const;
+    void     SetStepChordParams(uint8_t step_index,
+                                uint8_t root_key,
+                                uint8_t chord_type,
+                                uint8_t arp_pattern,
+                                uint8_t duration);
+    void     SetPatternRepeatCount(uint8_t repeat_count);
+    uint8_t  GetPatternRepeatCount() const;
+    void     SetCurrentPatternIndex(uint8_t pattern_index);
     uint32_t GetCurrentStep() const { return current_step_; }
     uint32_t GetElapsedMs()   const { return elapsed_step_ms_; }
     bool     IsPlaying()      const { return playing_; }

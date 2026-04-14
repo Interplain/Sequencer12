@@ -229,6 +229,7 @@ struct Pattern
 
     // Step range
     uint8_t     step_count        = kStepCount;  // active steps 1-12
+    uint8_t     step_division     = 4;           // steps per quarter: 4=1/16, 2=1/8, 1=1/4
 
     // Playback
     PlaybackMode playback_mode    = PlaybackMode::Forward;

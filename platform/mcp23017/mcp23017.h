@@ -35,10 +35,25 @@ extern "C" {
 #define BTN_REC_BIT     (1u << 1)    // GPB1
 #define BTN_SHIFT_BIT   (1u << 15)   // GPA7
 
+// Matrix wiring (GPA only)
+// Rows: GPA0..GPA2, Cols: GPA3..GPA6, Shift: GPA7
+#define MCP_MATRIX_ROW1_BIT  (1u << 0)
+#define MCP_MATRIX_ROW2_BIT  (1u << 1)
+#define MCP_MATRIX_ROW3_BIT  (1u << 2)
+#define MCP_MATRIX_COL1_BIT  (1u << 3)
+#define MCP_MATRIX_COL2_BIT  (1u << 4)
+#define MCP_MATRIX_COL3_BIT  (1u << 5)
+#define MCP_MATRIX_COL4_BIT  (1u << 6)
+
+#define MCP_MATRIX_ROW_MASK  (MCP_MATRIX_ROW1_BIT | MCP_MATRIX_ROW2_BIT | MCP_MATRIX_ROW3_BIT)
+#define MCP_MATRIX_COL_MASK  (MCP_MATRIX_COL1_BIT | MCP_MATRIX_COL2_BIT | MCP_MATRIX_COL3_BIT | MCP_MATRIX_COL4_BIT)
+
 // ─────────────────────────────────────────────
 // Functions
 // ─────────────────────────────────────────────
 void     MCP23017_Init(I2C_HandleTypeDef *hi2c);
+void     MCP23017_SetDirections(I2C_HandleTypeDef *hi2c, uint8_t iodira, uint8_t iodirb);
+void     MCP23017_SetPullups(I2C_HandleTypeDef *hi2c, uint8_t gppua, uint8_t gppub);
 uint16_t MCP23017_ReadGPIO(I2C_HandleTypeDef *hi2c);
 uint8_t  MCP23017_ReadGPIOA(I2C_HandleTypeDef *hi2c);
 uint8_t  MCP23017_ReadGPIOB(I2C_HandleTypeDef *hi2c);
