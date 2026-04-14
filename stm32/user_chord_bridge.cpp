@@ -44,6 +44,16 @@ uint8_t Bridge_UserChord_Save(const char* name, uint16_t note_mask)
     return (uint8_t)slot;
 }
 
+uint8_t Bridge_UserChord_Rename(uint8_t index, const char* name)
+{
+    if (!g_user_chords.IsSlotUsed(index)) {
+        return 0;
+    }
+
+    const auto& chord = g_user_chords.GetChord(index);
+    return g_user_chords.SaveChord(index, name, chord.note_mask) ? 1 : 0;
+}
+
 void Bridge_UserChord_Delete(uint8_t index)
 {
     g_user_chords.DeleteChord(index);

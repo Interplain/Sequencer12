@@ -14,9 +14,10 @@ typedef enum {
     UI_MODE_CHORD_MENU,       /* chord selection submenu for current step */
     UI_MODE_CHORD_PARAMS,     /* chord parameter editor */
     UI_MODE_TIMING_MENU,      /* pattern timing editor */
-    UI_MODE_USER_CHORD_MENU,  /* user chord: Create/Load/Back */
+    UI_MODE_USER_CHORD_MENU,  /* user chord: Create/Load/Name */
     UI_MODE_USER_CHORD_CREATE,/* user chord: piano keyboard editor */
-    UI_MODE_USER_CHORD_LOAD   /* user chord: load from library */
+    UI_MODE_USER_CHORD_LOAD,  /* user chord: load from library */
+    UI_MODE_USER_CHORD_NAME   /* user chord: name editor */
 } UiMode;
 
 /* ── State ───────────────────────────────────────────────────────────────── */
@@ -37,6 +38,9 @@ static uint8_t     s_last_predefined_chord = 0;
 
 /* ── User Chord State ────────────────────────────────────────────────────── */
 static uint16_t    s_user_chord_note_mask = 0; /* note mask being created */
+static uint8_t     s_last_saved_user_chord = 0xFF;
+static char        s_user_chord_name_edit[17] = {0};
+static uint8_t     s_user_chord_name_cursor = 0;
 
 static uint8_t UI_Sequencer_TimingDraftIsDirty(void);
 static void UI_Sequencer_CommitChordDraft(void);
@@ -117,6 +121,65 @@ static void UI_Sequencer_CommitChordDraft(void)
     }
 
     Bridge_SetPatternRepeatCount(s_step_chords[s_menu_step - 1].loop_count);
+}
+
+static char UI_Sequencer_CycleNameChar(char current, int8_t delta)
+{
+    static const char k_name_chars[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
+    const int16_t count = (int16_t)(sizeof(k_name_chars) - 1);
+    int16_t index = 0;
+
+    for (int16_t i = 0; i < count; i++)
+    {
+        if (k_name_chars[i] == current)
+        {
+            index = i;
+            break;
+        }
+    }
+
+    index += delta;
+    while (index < 0) index += count;
+    while (index >= count) index -= count;
+    return k_name_chars[index];
+}
+
+static void UI_Sequencer_StartUserChordNameEdit(void)
+{
+    if (s_last_saved_user_chord == 0xFF)
+    {
+        for (uint8_t i = 0; i < 128; i++)
+        {
+            if (Bridge_UserChord_Get(i))
+            {
+                s_last_saved_user_chord = i;
+                break;
+            }
+        }
+        if (s_last_saved_user_chord == 0xFF) return;
+    }
+
+    const UserChordInfo* chord_info = Bridge_UserChord_Get(s_last_saved_user_chord);
+    if (!chord_info)
+    {
+        return;
+    }
+
+    memset(s_user_chord_name_edit, 0, sizeof(s_user_chord_name_edit));
+    strncpy(s_user_chord_name_edit, chord_info->name, 16);
+    s_user_chord_name_edit[16] = '\0';
+
+    for (uint8_t i = 0; i < 16; i++)
+    {
+        if (s_user_chord_name_edit[i] == '\0')
+        {
+            s_user_chord_name_edit[i] = ' ';
+        }
+    }
+
+    s_user_chord_name_cursor = 0;
+    s_ui_mode = UI_MODE_USER_CHORD_NAME;
+    UI_Display_DrawUserChordNameEditor(s_user_chord_name_edit, s_user_chord_name_cursor);
 }
 
 /* ── Init ────────────────────────────────────────────────────────────────── */
@@ -271,10 +334,7 @@ void UI_Sequencer_Update(void)
                 }
                 else
                 {
-                    s_ui_mode = UI_MODE_CHORD_MENU;
-                    uint8_t current_type = s_step_chords[s_menu_step - 1].chord_type;
-                    UI_Display_SetChordSelection(current_type);
-                    UI_Display_DrawChordMenu(s_menu_step, &s_step_chords[s_menu_step - 1]);
+                    UI_Sequencer_StartUserChordNameEdit();
                 }
             }
             else if (s_ui_mode == UI_MODE_USER_CHORD_CREATE)
@@ -286,7 +346,7 @@ void UI_Sequencer_Update(void)
                     char auto_name[17];
                     uint8_t idx = Bridge_UserChord_GetCount();
                     snprintf(auto_name, sizeof(auto_name), "USER%02u", (unsigned)(idx + 1));
-                    Bridge_UserChord_Save(auto_name, s_user_chord_note_mask);
+                    s_last_saved_user_chord = Bridge_UserChord_Save(auto_name, s_user_chord_note_mask);
                 }
                 s_ui_mode = UI_MODE_USER_CHORD_MENU;
                 UI_Display_DrawUserChordMenu();
@@ -298,10 +358,33 @@ void UI_Sequencer_Update(void)
                 const UserChordInfo *chord_info = Bridge_UserChord_Get(chord_idx);
                 if (chord_info)
                 {
+                    s_last_saved_user_chord = chord_idx;
                     s_step_chords[s_menu_step - 1].chord_type = 0;
                     UI_Sequencer_CommitChordDraft();
                     UI_Sequencer_ExitToGrid();
                 }
+            }
+            else if (s_ui_mode == UI_MODE_USER_CHORD_NAME)
+            {
+                char final_name[17];
+                memcpy(final_name, s_user_chord_name_edit, 16);
+                final_name[16] = '\0';
+
+                /* Trim trailing spaces before save */
+                for (int8_t i = 15; i >= 0; i--)
+                {
+                    if (final_name[i] == ' ') final_name[i] = '\0';
+                    else break;
+                }
+
+                if (final_name[0] == '\0')
+                {
+                    strncpy(final_name, "USER", sizeof(final_name));
+                }
+
+                Bridge_UserChord_Rename(s_last_saved_user_chord, final_name);
+                s_ui_mode = UI_MODE_USER_CHORD_MENU;
+                UI_Display_DrawUserChordMenu();
             }
         }
 
@@ -322,10 +405,8 @@ void UI_Sequencer_Update(void)
             }
             else if (s_ui_mode == UI_MODE_USER_CHORD_MENU)
             {
-                s_ui_mode = UI_MODE_CHORD_MENU;
-                uint8_t current_type = s_step_chords[s_menu_step - 1].chord_type;
-                UI_Display_SetChordSelection(current_type);
-                UI_Display_DrawChordMenu(s_menu_step, &s_step_chords[s_menu_step - 1]);
+                /* MAIN STEPS footer behavior */
+                UI_Sequencer_ExitToGrid();
             }
             else if (s_ui_mode == UI_MODE_USER_CHORD_CREATE)
             {
@@ -334,6 +415,11 @@ void UI_Sequencer_Update(void)
                 UI_Display_DrawUserChordMenu();
             }
             else if (s_ui_mode == UI_MODE_USER_CHORD_LOAD)
+            {
+                s_ui_mode = UI_MODE_USER_CHORD_MENU;
+                UI_Display_DrawUserChordMenu();
+            }
+            else if (s_ui_mode == UI_MODE_USER_CHORD_NAME)
             {
                 s_ui_mode = UI_MODE_USER_CHORD_MENU;
                 UI_Display_DrawUserChordMenu();
@@ -528,12 +614,9 @@ void UI_Sequencer_Update(void)
                     s_ui_mode = UI_MODE_USER_CHORD_LOAD;
                     UI_Display_DrawUserChordLoad();
                 }
-                else if (selection == 2)  /* BACK */
+                else if (selection == 2)  /* NAME */
                 {
-                    s_ui_mode = UI_MODE_CHORD_MENU;
-                    uint8_t current_type = s_step_chords[s_menu_step - 1].chord_type;
-                    UI_Display_SetChordSelection(current_type);
-                    UI_Display_DrawChordMenu(s_menu_step, &s_step_chords[s_menu_step - 1]);
+                    UI_Sequencer_StartUserChordNameEdit();
                 }
             }
         }
@@ -542,6 +625,12 @@ void UI_Sequencer_Update(void)
             /* Encoder press = toggle current note on/off */
             uint8_t key = UI_Display_GetSelectedPianoKey();
             UI_Display_TogglePianoKey(key);
+        }
+        else if (s_ui_mode == UI_MODE_USER_CHORD_NAME)
+        {
+            /* Encoder press = next character */
+            s_user_chord_name_cursor = (uint8_t)((s_user_chord_name_cursor + 1) % 16);
+            UI_Display_DrawUserChordNameEditor(s_user_chord_name_edit, s_user_chord_name_cursor);
         }
         else if (s_ui_mode == UI_MODE_USER_CHORD_LOAD)
         {
@@ -682,6 +771,13 @@ void UI_Sequencer_Update(void)
             /* Encoder in user chord load: navigate chord list */
             UI_Display_NavigateUserChordLoad(delta);
             UI_Display_DrawUserChordLoad();
+        }
+        else if (s_ui_mode == UI_MODE_USER_CHORD_NAME)
+        {
+            /* Encoder in name editor: cycle current character */
+            s_user_chord_name_edit[s_user_chord_name_cursor] =
+                UI_Sequencer_CycleNameChar(s_user_chord_name_edit[s_user_chord_name_cursor], delta);
+            UI_Display_DrawUserChordNameEditor(s_user_chord_name_edit, s_user_chord_name_cursor);
         }
         else if (s_ui_mode == UI_MODE_CHORD_PARAMS)
         {

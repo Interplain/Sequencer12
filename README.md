@@ -21,12 +21,25 @@ for chord-based modular synthesis.
 - Arpeggiator engine: Up, Down, UpDown, DownUp, Random, AsPlayed
 - Arp rate: 1/4, 1/8, 1/16, 1/32
 - Chord library: 288 presets (12 roots × 24 types)
-- User chord slots: 128 (FRAM backed, stub in sim)
+- User chord slots: 128 (RAM currently, FRAM integration scaffolded)
 - Key signature with diatonic filtering and CV transpose
 - Velocity and probability per step
 - MIDI clock master/slave (DIN only)
 - CV/Gate output via DAC8564
 - 3-level UI: Song → Block → Chord editor
+- Custom Chord workflow:
+	- USER entry from chord menu footer
+	- Custom submenu: CREATE / LOAD / NAME
+	- Piano keyboard chord editor (12-note toggle, full-width layout)
+	- Chord name editor (encoder character edit + save)
+- Transport button repurpose in submenus:
+	- Encoder rotate = navigate
+	- Encoder press = select/toggle
+	- Play = save/commit
+	- Record = back
+- Main grid transport remains standard:
+	- Play/Stop, Shift+Play Reset
+	- Rec Arm, Shift+Rec Clear
 
 ## Hardware
 
@@ -89,6 +102,25 @@ make
 platformio run -e genericSTM32F405RG --target upload
 ```
 
+## Current UI Flow
+
+- Main Grid (12 steps)
+	- Encoder: move selection
+	- Encoder press: open chord menu for selected step
+- Chord Menu
+	- Predefined chords + USER entry
+	- Clear action returns to main grid
+- USER Menu (Custom Chord)
+	- CREATE: open piano chord editor
+	- LOAD: select from saved user chords
+	- NAME: rename last saved/selected user chord
+	- Footer MAIN STEPS: return to main grid
+- Create Chord (Piano)
+	- Encoder rotate: move selected note
+	- Encoder press: toggle note on/off
+	- Play: save chord to user library
+	- Record: back without save
+
 ## Status
 
 - [x] Scheduler
@@ -100,12 +132,12 @@ platformio run -e genericSTM32F405RG --target upload
 - [x] MIDI clock
 - [x] Display driver (ST7789 240×240)
 - [x] Level 1 UI (12 block grid)
-- [ ] Engine → display connection
-- [ ] Level 2 UI (block editor)
-- [ ] Level 3 UI (chord editor)
-- [ ] MCP23017 button input
-- [ ] DAC8564 CV output
-- [ ] FRAM save/load
+- [x] Engine → display connection
+- [x] Level 2 UI (chord menu)
+- [x] Level 3 UI (chord params + custom chord screens)
+- [x] MCP23017 button input
+- [x] DAC8564 CV output path scaffold
+- [ ] FRAM persistence for user chords
 - [x] Encoder navigation
 
 ## Author

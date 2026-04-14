@@ -18,6 +18,7 @@ void Bridge_UserChord_Init(void);
 uint8_t Bridge_UserChord_GetCount(void);
 const UserChordInfo* Bridge_UserChord_Get(uint8_t index);
 uint8_t Bridge_UserChord_Save(const char* name, uint16_t note_mask);
+uint8_t Bridge_UserChord_Rename(uint8_t index, const char* name);
 void Bridge_UserChord_Delete(uint8_t index);
 
 #ifdef __cplusplus

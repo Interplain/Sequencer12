@@ -805,7 +805,7 @@ void UI_Display_SetTimingFooterAction(uint8_t action)
 
 /* ── User Chord Menu ─────────────────────────────────────────────────────── */
 
-static uint8_t s_user_chord_menu_selection = 0;  // 0=Create, 1=Load, 2=Back
+static uint8_t s_user_chord_menu_selection = 0;  // 0=Create, 1=Load, 2=Name
 static uint8_t s_selected_piano_key = 0;         // Currently selected key (0-11)
 static uint16_t s_piano_note_mask = 0;           // Currently selected notes
 
@@ -820,8 +820,8 @@ void UI_Display_DrawUserChordMenu(void)
     ST7789_DrawString(4, 4, title, &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
     MenuTemplate_DrawHeader(title, "USER CHORDS", YELLOW);
 
-    /* Draw 3 buttons: Create, Load, Back */
-    const char* labels[] = {"CREATE", "LOAD", "BACK"};
+    /* Draw 3 buttons: Create, Load, Name */
+    const char* labels[] = {"CREATE", "LOAD", "NAME"};
     uint16_t btn_w = 70;
     uint16_t btn_h = 50;
     uint16_t gap_x = 8;
@@ -1025,6 +1025,37 @@ uint16_t UI_Display_GetCurrentNoteMask(void)
 void UI_Display_SetPianoNoteMask(uint16_t mask)
 {
     s_piano_note_mask = mask;
+}
+
+void UI_Display_DrawUserChordNameEditor(const char* name, uint8_t cursor)
+{
+    MenuTemplate_Begin(MENU_FRAME_CHORD);
+    FillRegion(UI_REGION_MENU_LIST, COLOR_BG);
+
+    const char* title = "Name Chord";
+    ST7789_DrawString(4, 4, title, &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
+    MenuTemplate_DrawHeader(title, "EDIT NAME", YELLOW);
+
+    ST7789_DrawString(10, 58, "Encoder: Char", &Font8x12, COLOR_TEXT_MUTED, COLOR_BG);
+    ST7789_DrawString(10, 74, "Press: Next", &Font8x12, COLOR_TEXT_MUTED, COLOR_BG);
+
+    uint16_t box_x = 8;
+    uint16_t box_y = 98;
+    uint16_t box_w = SCREEN_W - 16;
+    uint16_t box_h = 34;
+    DrawRoundedButton(box_x, box_y, box_w, box_h, COLOR_BOX_BG, COLOR_BOX_BORDER);
+
+    ST7789_DrawString(16, 108, name, &Font10x16, COLOR_TEXT_MAIN, COLOR_BOX_BG);
+
+    if (cursor < 16)
+    {
+        uint16_t cx = 16 + (uint16_t)cursor * 10;
+        ST7789_FillRect(cx, 126, 9, 2, YELLOW);
+    }
+
+    FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
+    DrawCenteredFooterButton("PLAY SAVE / REC BACK", 1);
+    s_chord_footer_valid = 1;
 }
 
 /* ── User Chord Load ─────────────────────────────────────────────────────── */

@@ -92,6 +92,7 @@ uint8_t UI_Display_GetSelectedPianoKey(void);
 void UI_Display_TogglePianoKey(uint8_t key);
 uint16_t UI_Display_GetCurrentNoteMask(void);
 void UI_Display_SetPianoNoteMask(uint16_t mask);
+void UI_Display_DrawUserChordNameEditor(const char* name, uint8_t cursor);
 
 /* ── User Chord Load ─────────────────────────────────────────────────────── */
 void UI_Display_DrawUserChordLoad(void);
