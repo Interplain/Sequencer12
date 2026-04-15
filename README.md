@@ -1,7 +1,7 @@
 # Sequencer12 (S12)
 
 A 12-step chord sequencer / harmonic performance module for Eurorack,
-built on STM32F405RGT6 with a 240×240 ST7789 SPI display. Will be changing for 2.4 screen.
+built on STM32F405RGT6 with a 240×240 ST7789 SPI display for test. Will be changing for 2.4 screen.
 
 ## Concept
 
