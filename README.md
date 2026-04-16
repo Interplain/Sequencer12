@@ -156,6 +156,20 @@ platformio run -e genericSTM32F405RG --target upload
 	- Play: save chord to user library
 	- Record: back without save
 
+ - ---------------------------------------------------------------------
+
+   <img width="426" height="445" alt="image" src="https://github.com/user-attachments/assets/65facc62-3499-4315-a4b4-608dd8155e47" />
+
+   <img width="426" height="445" alt="image" src="https://github.com/user-attachments/assets/e6802996-9e2c-48c3-9316-0eae1cd090a9" />
+
+   <img width="426" height="445" alt="image" src="https://github.com/user-attachments/assets/813bbbe4-c461-432e-8ec4-c1ae83c08cf8" />
+
+   <img width="426" height="445" alt="image" src="https://github.com/user-attachments/assets/120c8832-308b-4524-8161-239faa0964f4" />
+
+
+
+
+
 ## Status
 
 - [x] Scheduler
