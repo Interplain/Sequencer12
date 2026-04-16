@@ -90,6 +90,26 @@ This README is updated to reflect the latest firmware work since the last upload
 
 - Matrix 1-12: open chord menu directly for that step
 
+--------------------------------------
+
+<img width="420" height="440" alt="image" src="https://github.com/user-attachments/assets/27a54389-0bef-4fea-b638-a025a2c24736" />
+
+--------------------------------------
+
+<img width="420" height="440" alt="image" src="https://github.com/user-attachments/assets/4dd10511-03a8-4e69-b7f9-2b1f31ab992a" />
+
+--------------------------------------
+
+<img width="420" height="440" alt="image" src="https://github.com/user-attachments/assets/bda8e4f0-fadb-4365-a04b-f634995fcc8e" />
+
+--------------------------------------
+
+<img width="420" height="440" alt="image" src="https://github.com/user-attachments/assets/b09b02ee-3b01-46fa-93f2-72d0a6dcf1e9" />
+
+--------------------------------------
+  
+
+
 ### TIME Main Mode (Grid)
 
 - Matrix 1: open Pattern Timing menu focused to Step Grid
