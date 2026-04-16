@@ -25,9 +25,10 @@ extern "C"
                                        uint8_t root_key,
                                        uint8_t chord_type,
                                        uint8_t arp_pattern,
-                                       uint8_t duration)
+                                       uint8_t duration,
+                                       uint8_t repeat_count)
     {
-        g_sequencer.SetStepChordParams(step_index, root_key, chord_type, arp_pattern, duration);
+        g_sequencer.SetStepChordParams(step_index, root_key, chord_type, arp_pattern, duration, repeat_count);
     }
     void     Bridge_SetPatternRepeatCount(uint8_t repeat_count)
     {
@@ -40,6 +41,46 @@ extern "C"
     void     Bridge_SetCurrentPattern(uint8_t pattern_index)
     {
         g_sequencer.SetCurrentPatternIndex(pattern_index);
+    }
+    void     Bridge_SetChainLength(uint8_t length)
+    {
+        g_sequencer.SetChainLength(length);
+    }
+    uint8_t  Bridge_GetChainLength(void)
+    {
+        return g_sequencer.GetChainLength();
+    }
+    void     Bridge_SetChainPatternAt(uint8_t pos, uint8_t pattern_index)
+    {
+        g_sequencer.SetChainPatternAt(pos, pattern_index);
+    }
+    uint8_t  Bridge_GetChainPatternAt(uint8_t pos)
+    {
+        return g_sequencer.GetChainPatternAt(pos);
+    }
+    uint8_t  Bridge_GetChainCurrentPosition(void)
+    {
+        return g_sequencer.GetChainCurrentPosition();
+    }
+    uint8_t  Bridge_GetCurrentPatternRepeatProgress(void)
+    {
+        return g_sequencer.GetCurrentPatternRepeatProgress();
+    }
+    uint16_t Bridge_GetStepNoteMask(uint8_t step_index)
+    {
+        return g_sequencer.GetStepNoteMask(step_index);
+    }
+    uint8_t Bridge_GetStepChordUiParams(uint8_t step_index,
+                                        uint8_t* root_key,
+                                        uint8_t* chord_type,
+                                        uint8_t* duration,
+                                        uint8_t* repeat_count)
+    {
+        return g_sequencer.GetStepChordUiParams(step_index,
+                                                root_key,
+                                                chord_type,
+                                                duration,
+                                                repeat_count) ? 1u : 0u;
     }
     uint32_t Bridge_GetCurrentStep(void)    { return g_sequencer.GetCurrentStep(); }
     uint8_t  Bridge_IsPlaying(void)         { return g_sequencer.IsPlaying() ? 1u : 0u; }

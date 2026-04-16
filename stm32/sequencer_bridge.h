@@ -27,10 +27,23 @@ void     Bridge_SetStepChordParams(uint8_t step_index,
 								   uint8_t root_key,
 								   uint8_t chord_type,
 								   uint8_t arp_pattern,
-								   uint8_t duration);
+								   uint8_t duration,
+								   uint8_t repeat_count);
 void     Bridge_SetPatternRepeatCount(uint8_t repeat_count);
 uint8_t  Bridge_GetPatternRepeatCount(void);
 void     Bridge_SetCurrentPattern(uint8_t pattern_index);
+void     Bridge_SetChainLength(uint8_t length);
+uint8_t  Bridge_GetChainLength(void);
+void     Bridge_SetChainPatternAt(uint8_t pos, uint8_t pattern_index);
+uint8_t  Bridge_GetChainPatternAt(uint8_t pos);
+uint8_t  Bridge_GetChainCurrentPosition(void);
+uint8_t  Bridge_GetCurrentPatternRepeatProgress(void);
+uint16_t Bridge_GetStepNoteMask(uint8_t step_index);
+uint8_t  Bridge_GetStepChordUiParams(uint8_t step_index,
+									 uint8_t* root_key,
+									 uint8_t* chord_type,
+									 uint8_t* duration,
+									 uint8_t* repeat_count);
 uint32_t Bridge_GetCurrentStep(void);
 uint8_t  Bridge_IsPlaying(void);
 uint32_t Bridge_GetElapsedMs(void);

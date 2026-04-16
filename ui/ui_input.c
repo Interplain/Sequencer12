@@ -18,6 +18,8 @@ static uint8_t  s_play_pressed    = 0;
 static uint8_t  s_shift_play_pressed = 0;
 static uint8_t  s_rec_pressed     = 0;
 static uint8_t  s_shift_rec_pressed  = 0;
+static uint8_t  s_shift_tap       = 0;
+static uint8_t  s_shift_consumed  = 0;
 
 static const uint8_t s_col_bits[4] = {
     MCP_MATRIX_COL1_BIT,
@@ -100,6 +102,12 @@ void UI_Input_Init(void)
     s_shift_step_pressed_mask = 0;
      s_prev_matrix_pressed = 0;
     s_enc_btn_prev    = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12);
+    s_play_pressed    = 0;
+    s_shift_play_pressed = 0;
+    s_rec_pressed     = 0;
+    s_shift_rec_pressed = 0;
+    s_shift_tap       = 0;
+    s_shift_consumed  = 0;
 
      /* Configure MCP for matrix scan:
          A: rows+shift inputs, cols outputs
@@ -117,54 +125,83 @@ void UI_Input_Poll(void)
 {
     /* ── MCP23017 ─────────────────────────────────────────────────────── */
     uint16_t raw            = MCP23017_ReadGPIO(&hi2c1);
-uint16_t changed        = s_prev_raw ^ raw;
-uint16_t falling        = changed & s_prev_raw;   /* 1→0 = press */
-uint8_t  shift_was_held = ((s_prev_raw & BTN_SHIFT_BIT) == 0u) ? 1u : 0u;
+    uint16_t changed        = s_prev_raw ^ raw;
+    uint16_t falling        = changed & s_prev_raw;   /* 1→0 = press */
+    uint8_t  shift_was_held = ((s_prev_raw & BTN_SHIFT_BIT) == 0u) ? 1u : 0u;
+    uint8_t  shift_now_held = ((raw & BTN_SHIFT_BIT) == 0u) ? 1u : 0u;
 
-s_prev_raw = raw;
-
-/* Shift — level, active LOW */
-s_shift_held = ((raw & BTN_SHIFT_BIT) == 0u) ? 1u : 0u;
-UI_Display_SetShiftIndicator(s_shift_held);
-
-/* Button 1 — Play/Stop or Reset */
-if (falling & BTN_PLAY_BIT)
-{
-    if (shift_was_held)
-        s_shift_play_pressed = 1;
-    else
-        s_play_pressed = 1;
-}
-
-/* Button 2 — Rec arm or Rec clear */
-if (falling & BTN_REC_BIT)
-{
-    if (shift_was_held)
-        s_shift_rec_pressed = 1;
-    else
-        s_rec_pressed = 1;
-}
-
-/* Step matrix scan (active low) */
-{
-    uint16_t matrix_pressed = ScanStepMatrix();
-    uint16_t step_falling = (uint16_t)(matrix_pressed & (uint16_t)(~s_prev_matrix_pressed));
-    s_prev_matrix_pressed = matrix_pressed;
-
-    if (step_falling != 0u)
+    /* Shift tap detection: release with no modified input use. */
+    if (!shift_was_held && shift_now_held)
     {
-        for (uint8_t i = 0; i < 12; i++)
+        s_shift_consumed = 0;
+    }
+    if (shift_was_held && !shift_now_held)
+    {
+        if (!s_shift_consumed)
         {
-            if (step_falling & (uint16_t)(1u << i))
+            s_shift_tap = 1;
+        }
+    }
+
+    s_prev_raw = raw;
+
+    /* Shift — level, active LOW */
+    s_shift_held = shift_now_held;
+    UI_Display_SetShiftIndicator(s_shift_held);
+
+    /* Button 1 — Play/Stop or Reset */
+    if (falling & BTN_PLAY_BIT)
+    {
+        if (shift_was_held)
+        {
+            s_shift_play_pressed = 1;
+            s_shift_consumed = 1;
+        }
+        else
+        {
+            s_play_pressed = 1;
+        }
+    }
+
+    /* Button 2 — Rec arm or Rec clear */
+    if (falling & BTN_REC_BIT)
+    {
+        if (shift_was_held)
+        {
+            s_shift_rec_pressed = 1;
+            s_shift_consumed = 1;
+        }
+        else
+        {
+            s_rec_pressed = 1;
+        }
+    }
+
+    /* Step matrix scan (active low) */
+    {
+        uint16_t matrix_pressed = ScanStepMatrix();
+        uint16_t step_falling = (uint16_t)(matrix_pressed & (uint16_t)(~s_prev_matrix_pressed));
+        s_prev_matrix_pressed = matrix_pressed;
+
+        if (step_falling != 0u)
+        {
+            for (uint8_t i = 0; i < 12; i++)
             {
-                if (shift_was_held)
-                    s_shift_step_pressed_mask |= (uint16_t)(1u << i);
-                else
-                    s_step_pressed_mask |= (uint16_t)(1u << i);
+                if (step_falling & (uint16_t)(1u << i))
+                {
+                    if (shift_was_held)
+                    {
+                        s_shift_step_pressed_mask |= (uint16_t)(1u << i);
+                        s_shift_consumed = 1;
+                    }
+                    else
+                    {
+                        s_step_pressed_mask |= (uint16_t)(1u << i);
+                    }
+                }
             }
         }
     }
-}
 
     
     /* ── Encoder ──────────────────────────────────────────────────────── */
@@ -173,20 +210,25 @@ if (falling & BTN_REC_BIT)
 
     if (delta >= 4)
     {
-    s_last_enc      = enc;
-    s_encoder_delta = 1;
+        s_last_enc      = enc;
+        s_encoder_delta = 1;
+        if (s_shift_held) s_shift_consumed = 1;
     }
     else if (delta <= -4)
     {
-    s_last_enc      = enc;
-    s_encoder_delta = -1;
+        s_last_enc      = enc;
+        s_encoder_delta = -1;
+        if (s_shift_held) s_shift_consumed = 1;
     }
 
     /* ── Encoder button — PC15 ────────────────────────────────────────── */
     uint8_t enc_btn = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12);
 
     if (s_enc_btn_prev == 1u && enc_btn == 0u)
+    {
         s_enc_btn_pressed = 1;
+        if (s_shift_held) s_shift_consumed = 1;
+    }
 
     s_enc_btn_prev = enc_btn;
 }
@@ -237,6 +279,13 @@ uint8_t UI_Input_IsShiftRecPressed(void)
     uint8_t p          = s_shift_rec_pressed;
     s_shift_rec_pressed = 0;
     return p;
+}
+
+uint8_t UI_Input_GetShiftTap(void)
+{
+    uint8_t tap = s_shift_tap;
+    s_shift_tap = 0;
+    return tap;
 }
 
 uint8_t UI_Input_GetStepPressed(void)

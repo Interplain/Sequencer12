@@ -21,6 +21,7 @@ uint8_t UI_Input_IsPlayPressed(void);        /* 1 if Play pressed (consume) */
 uint8_t UI_Input_IsShiftPlayPressed(void);   /* 1 if Shift+Play pressed (consume) */
 uint8_t UI_Input_IsRecPressed(void);         /* 1 if Rec pressed (consume) */
 uint8_t UI_Input_IsShiftRecPressed(void);    /* 1 if Shift+Rec pressed (consume) */
+uint8_t UI_Input_GetShiftTap(void);          /* 1 if short Shift tap occurred (consume) */
 uint8_t UI_Input_GetStepPressed(void);       /* consume next step press (1-12, 0=none) */
 uint8_t UI_Input_GetShiftStepPressed(void);  /* consume next shift+step press (1-12, 0=none) */
 

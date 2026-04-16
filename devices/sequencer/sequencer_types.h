@@ -166,6 +166,7 @@ struct StepSlot
 {
     StepType type                = StepType::Empty;
     uint32_t duration_multiplier = 1;
+    uint8_t  repeat_count        = 1;     // times to play this step before advancing
     uint16_t note_mask           = 0;
     uint8_t  velocity            = 100;   // 0-127 MIDI standard
     uint8_t  probability         = 100;   // 0-100 percent chance of firing

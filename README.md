@@ -1,198 +1,187 @@
 # Sequencer12 (S12)
 
-A 12-step chord sequencer / harmonic performance module for Eurorack,
-built on STM32F405RGT6 with a 240×240 ST7789 SPI display for test. Will be changing for 2.4 screen.
+12-step chord sequencer / harmonic performance module for Eurorack, built on STM32F405RGT6 with a 240x240 ST7789 SPI display (current test target; 2.4in display migration planned).
 
-## Concept
+## Current State (April 2026)
 
-The S12 is not a conventional step sequencer. Each step holds a full
-chord rather than a single note, making it a harmonic composition tool
-for Eurorack. Inspired by the MPC One workflow but designed specifically
-for chord-based modular synthesis.
+This README is updated to reflect the latest firmware work since the last upload.
 
-## Features
+## What Is Working Now
 
-- 12-step chord progression sequencer
-- Each step holds a chord (up to 12 notes via bitmask)
-- 32 patterns per song, user-defined chain order
-- Per-pattern: tempo multiplier, step count, playback mode
-- Playback modes: Forward, PingPong, Loop, OneShot
-- Repeat count per pattern before chain advance
-- Arpeggiator engine: Up, Down, UpDown, DownUp, Random, AsPlayed
-- Arp rate: 1/4, 1/8, 1/16, 1/32
-- Chord library: 288 presets (12 roots × 24 types)
-- User chord slots: 128 (RAM currently, FRAM integration scaffolded)
-- Key signature with diatonic filtering and CV transpose
-- Velocity and probability per step
-- MIDI clock master/slave (DIN only)
-- CV/Gate output via DAC8564
-- 3-level UI: Song → Block → Chord editor
-- Custom Chord workflow:
-	- USER entry from chord menu footer
-	- Custom submenu: CREATE / LOAD / NAME
-	- Piano keyboard chord editor (12-note toggle, full-width layout)
-	- Chord name editor (encoder character edit + save)
-- Transport button repurpose in submenus:
-	- Encoder rotate = navigate
-	- Encoder press = select/toggle
-	- Play = save/commit
-	- Record = back
-- Main grid transport remains standard:
-	- Play/Stop, Shift+Play Reset
-	- Rec Arm, Shift+Rec Clear
+- Main mode cycling on Shift tap:
+  - STEP
+  - CHORD
+  - TIME
+  - SONG
+- Chord workflow updates:
+  - Matrix 1-4 in chord params are footer actions:
+    - 1 MAIN
+    - 2 PREV
+    - 3 NEXT
+    - 4 SAVE
+  - PREV/NEXT carries chord params to neighboring steps for rapid programming
+  - SAVE no longer leaves footer locked on SAVE
+- Timing UI cleanup and naming:
+  - Timing -> Pattern Timing
+  - Duration -> Gate
+  - TS Num -> Beats Per Bar
+  - TS Den -> Beat Unit
+  - Value columns moved right to prevent overlap
+- Per-step repeat behavior (engine-level):
+  - Step Repeats is stored per step
+  - Repeat plays step N multiple times before advancing
+- Repeat visual feedback in grid:
+  - Active repeating step flashes white/blue
+  - Flicker fix applied to redraw only on transitions/toggle phases
+- Song chain editor:
+  - SONG mode matrix 1 opens chain editor
+  - Matrix 1-4 select visible slots
+  - Matrix 5 add slot
+  - Matrix 6 remove slot
+  - Encoder edits slot pattern assignment
+  - Playing slot blinks in chain view
+- Pattern step-count live update:
+  - Pattern Steps now applies immediately while playing
+- Chord-preservation fixes:
+  - Per-pattern chord draft cache in UI
+  - UI auto-switches chord cache on pattern change
+  - Hydration from engine note-mask metadata for pink-step recovery in chord mode
+- Main loop responsiveness:
+  - Loop delay now targets a 10 ms floor instead of always adding 10 ms
+
+## Known Issues / Needs Sorting
+
+- Persistence:
+  - FRAM save/load for full song, pattern, and user chord state is not complete
+- User chord integration:
+  - USER chord load path still uses placeholder behavior for mapping external chord data into per-step chord params
+- Build hygiene:
+  - Build artifacts under .pio/build should stay out of commits (current repo contains tracked binary build outputs)
+- Test coverage:
+  - No formal regression test harness yet for mode transitions and input maps
+
+## Control Map (Current Firmware)
+
+### Global Input Layer
+
+- Shift tap: cycle main mode STEP -> CHORD -> TIME -> SONG
+- Play: transport play/stop on grid, save/confirm in submenus
+- Rec: rec arm on grid, back/cancel in submenus
+- Shift+Play: transport reset on grid
+- Shift+Rec: transport clear on grid
+- Encoder turn:
+  - Grid + Shift held: BPM adjust
+  - Menu contexts: navigate/edit context-specific fields
+- Encoder press:
+  - Context-specific select/enter/toggle
+- Matrix 1-12:
+  - Context-specific (see mode tables)
+- Shift+Matrix 1-12:
+  - Context-specific (pattern select, timing jump, footer shortcuts)
+
+### STEP Main Mode (Grid)
+
+- Matrix 1-12: open per-step piano roll for that step
+- Encoder turn (no Shift): currently ignored in grid
+- Encoder press: open chord menu for selected step
+- Shift+Encoder press: open Pattern Timing menu
+
+### CHORD Main Mode (Grid)
+
+- Matrix 1-12: open chord menu directly for that step
+
+### TIME Main Mode (Grid)
+
+- Matrix 1: open Pattern Timing menu focused to Step Grid
+- Shift+Matrix 1-12: open that step's params focused on Gate
+
+### SONG Main Mode (Grid)
+
+- Matrix 1: open Song Chain editor
+- Shift+Matrix 1-12: set current pattern P01-P12
+
+### Chord Params Mode
+
+- Matrix 1-4: footer actions (MAIN/PREV/NEXT/SAVE)
+- Matrix 5-12: jump editing target step
+- Shift+Matrix 1-4: same footer actions
+- Shift+Encoder turn: navigate footer actions
+- Encoder turn (normal): edit selected parameter
+
+### Song Chain Mode
+
+- Matrix 1-4: select visible slot on page
+- Matrix 5: add slot
+- Matrix 6: remove slot
+- Encoder turn: change pattern assigned to selected slot
+
+## Potentially Free Buttons / Combos (For Manual Planning)
+
+These appear unassigned or effectively no-op in current code paths.
+
+### High-value free combos
+
+- Grid, STEP mode:
+  - Encoder turn without Shift (currently intentionally ignored)
+- Grid, TIME mode:
+  - Matrix 2-12 (plain press)
+- Grid, SONG mode:
+  - Matrix 2-12 (plain press)
+
+### Submenu free combos
+
+- Song Chain mode:
+  - Matrix 7-12
+  - Shift+Matrix 1-12 (currently falls through and does nothing useful)
+- Step Piano mode:
+  - Encoder press is reserved (no action yet)
+- Most submenu contexts:
+  - Shift+Play
+  - Shift+Rec
+  (transport shift combos are only handled on grid)
+
+### Gesture-level free space
+
+- Long-press actions are not implemented
+- Double-tap actions are not implemented
+- Chorded combos beyond Shift modifier are not implemented
+
+## Suggested Next Priorities
+
+1. Finish FRAM-backed persistence for patterns, chain, and user chords.
+2. Finalize USER chord load/write path so loaded user chords are represented consistently in step params.
+3. Assign SONG mode spare matrix buttons (2-12) for direct slot/pattern workflows.
+4. Add a simple input-map regression test checklist before each upload.
 
 ## Hardware
 
-| Component       | Part                  |
-|-----------------|-----------------------|
-| MCU             | STM32F405RGT6         |
-| Display         | ST7789 240×240 SPI    |
-| CV DAC          | DAC8564               |
-| Buttons         | MCP23017 I2C expander |
-| Storage         | MB85RC256V FRAM       |
-| Encoder         | EC12R quadrature      |
-| MIDI            | DIN IN + OUT          |
+| Component | Part |
+|---|---|
+| MCU | STM32F405RGT6 |
+| Display | ST7789 240x240 SPI |
+| CV DAC | DAC8564 |
+| Buttons | MCP23017 I2C expander |
+| Storage | MB85RC256V FRAM |
+| Encoder | EC12R quadrature |
+| MIDI | DIN IN + OUT |
 
-## Pin Map
+## Build
 
-| Signal        | Pin  |
-|---------------|------|
-| SPI1 SCK      | PA5  |
-| SPI1 MOSI     | PA7  |
-| Display DC    | PA6  |
-| Display RST   | PA8  |
-| Display BLK   | PB0  |
-| SPI2 DAC CS   | PB12 |
-| SPI2 DAC SCK  | PB13 |
-| SPI2 DAC MOSI | PB15 |
-| I2C1 SCL      | PB8  |
-| I2C1 SDA      | PB9  |
-| Encoder A     | PA0  |
-| Encoder B     | PA1  |
-| Encoder SW    | PC15 |
-| MIDI TX       | PA2  |
-| MIDI RX       | PA3  |
-| Clock IN      | PC0  |
-| Clock OUT     | PC1  |
+### STM32 Hardware
 
-## Project Structure
-
-```text
-sequencer12/
-├── core/                          # Scheduler core
-├── devices/
-│   └── sequencer/                 # Sequencer engine
-│       ├── arp_engine.*           # Arpeggiator logic
-│       ├── pattern_bank.*         # Pattern storage / chain support
-│       ├── sequencer_device.*     # Main sequencer runtime
-│       ├── sequencer_types.h      # Shared engine types
-│       └── chords/
-│           ├── chord_library.*    # Preset chord library
-│           └── user_chords.*      # User chord slot model (128 slots)
-├── platform/
-│   ├── midi/                      # MIDI clock and parser
-│   ├── mcp23017/                  # Button matrix / GPIO expander
-│   ├── dac8564/                   # CV DAC driver
-│   └── fram/
-│       └── mb85rc256.*            # FRAM driver scaffold
-├── ui/
-│   ├── ui_sequencer.*             # UI state machine + mode routing
-│   ├── ui_display.*               # Rendering (menus, piano, status)
-│   ├── ui_input.*                 # Encoder/buttons input decode
-│   ├── ui_transport.*             # Transport behavior
-│   ├── ui_regions.h               # UI layout regions
-│   └── ui_icons.h                 # Small icon assets
-├── stm32/
-│   ├── main_stm32.c               # Hardware app entry point
-│   ├── sequencer_bridge.*         # C bridge between UI and engine
-│   ├── user_chord_bridge.*        # C bridge for user chord library
-│   ├── calibration.*              # DAC calibration helpers
-│   └── hw/
-│       └── hw_init.*              # Clock/GPIO/SPI/I2C/UART init
-├── lib/ST7789/                    # Display driver + fonts
-├── src/                           # Linux simulator entry point
-├── app/                           # App-level interface wrapper
-├── CMakeLists.txt                 # Linux simulator build
-└── platformio.ini                 # STM32 hardware build
+```bash
+platformio run -e genericSTM32F405RG --target upload
 ```
 
-### Structure Map Notes
-
-- Implemented now: engine, UI flow (Grid/Chord/Custom/Create/Load/Name), MCP23017 input, DAC path scaffold, user chord bridge.
-- In progress / next: FRAM-backed persistence for user chords and song/pattern save strategy.
-- Build output folders such as .pio/ and build/ are generated artifacts, not source modules.
-
-## Building
-
 ### Linux Simulator
+
 ```bash
-mkdir build && cd build
+mkdir -p build && cd build
 cmake ..
 make
 ./sequencer12
 ```
 
-### STM32 Hardware
-```bash
-platformio run -e genericSTM32F405RG --target upload
-```
-
-## Current UI Flow
-
-- Main Grid (12 steps)
-	- Encoder: move selection
-	- Encoder press: open chord menu for selected step
-- Chord Menu
-	- Predefined chords + USER entry
-	- Clear action returns to main grid
-- USER Menu (Custom Chord)
-	- CREATE: open piano chord editor
-	- LOAD: select from saved user chords
-	- NAME: rename last saved/selected user chord
-	- Footer MAIN STEPS: return to main grid
-- Create Chord (Piano)
-	- Encoder rotate: move selected note
-	- Encoder press: toggle note on/off
-	- Play: save chord to user library
-	- Record: back without save
-
- - ---------------------------------------------------------------------
-
-   <img width="426" height="445" alt="image" src="https://github.com/user-attachments/assets/65facc62-3499-4315-a4b4-608dd8155e47" />
-
-   <img width="426" height="445" alt="image" src="https://github.com/user-attachments/assets/e6802996-9e2c-48c3-9316-0eae1cd090a9" />
-
-   <img width="426" height="445" alt="image" src="https://github.com/user-attachments/assets/813bbbe4-c461-432e-8ec4-c1ae83c08cf8" />
-
-   <img width="426" height="445" alt="image" src="https://github.com/user-attachments/assets/120c8832-308b-4524-8161-239faa0964f4" />
-
-
-
-
-
-## Status
-
-- [x] Scheduler
-- [x] Step engine
-- [x] Pattern bank (32 patterns)
-- [x] Pattern chain
-- [x] Chord library (288 presets)
-- [x] Arp engine
-- [x] MIDI clock
-- [x] Display driver (ST7789 240×240)
-- [x] Level 1 UI (12 block grid)
-- [x] Engine → display connection
-- [x] Level 2 UI (chord menu)
-- [x] Level 3 UI (chord params + custom chord screens)
-- [x] MCP23017 button input
-- [x] DAC8564 CV output path scaffold
-- [ ] FRAM persistence for user chords
-- [x] Encoder navigation
-
-## Author
-
-Richard Phillips (Interplain)
-
-## Licence
+## License
 
 MIT

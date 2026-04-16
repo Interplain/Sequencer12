@@ -45,10 +45,23 @@ public:
                                 uint8_t root_key,
                                 uint8_t chord_type,
                                 uint8_t arp_pattern,
-                                uint8_t duration);
+                                uint8_t duration,
+                                uint8_t repeat_count);
     void     SetPatternRepeatCount(uint8_t repeat_count);
     uint8_t  GetPatternRepeatCount() const;
     void     SetCurrentPatternIndex(uint8_t pattern_index);
+    void     SetChainLength(uint8_t length);
+    uint8_t  GetChainLength() const;
+    void     SetChainPatternAt(uint8_t pos, uint8_t pattern_index);
+    uint8_t  GetChainPatternAt(uint8_t pos) const;
+    uint8_t  GetChainCurrentPosition() const;
+    uint8_t  GetCurrentPatternRepeatProgress() const;
+    uint16_t GetStepNoteMask(uint8_t step_index) const;
+    bool     GetStepChordUiParams(uint8_t step_index,
+                                  uint8_t* root_key,
+                                  uint8_t* chord_type,
+                                  uint8_t* duration,
+                                  uint8_t* repeat_count) const;
     uint32_t GetCurrentStep() const { return current_step_; }
     uint32_t GetElapsedMs()   const { return elapsed_step_ms_; }
     bool     IsPlaying()      const { return playing_; }
@@ -90,6 +103,7 @@ private:
     uint32_t    current_step_             = 0;
     int8_t      step_direction_           = 1;
     uint8_t     repeat_current_           = 0;
+    uint8_t     step_repeat_current_      = 0;
 
     uint32_t    elapsed_step_ms_          = 0;
     uint32_t    base_step_interval_ms_    = 500;

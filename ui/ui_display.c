@@ -58,12 +58,16 @@ static void DrawChordButton(uint8_t slot, uint8_t chord_idx, uint8_t selected, c
 static void DrawRoundedButton(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t fill, uint16_t border);
 static void DrawParamFooterButton(uint8_t slot, const char* label, uint8_t selected);
 static void DrawCenteredFooterButton(const char* label, uint8_t selected);
+static void DrawPianoWhiteKey(uint8_t slot, uint8_t note);
+static void DrawPianoBlackKey(uint8_t slot, uint8_t note);
+static void DrawMainModeBox(void);
 
 enum {
     MENU_FRAME_NONE = 0,
     MENU_FRAME_CHORD,
     MENU_FRAME_PARAMS,
-    MENU_FRAME_TIMING
+    MENU_FRAME_TIMING,
+    MENU_FRAME_SONG
 };
 
 /* Status row cache shared with init so we can force redraw after menu exits */
@@ -89,6 +93,10 @@ static uint8_t  s_param_row_cursor = 0xFF;
 
 /* ── Timing menu row cache (prevent list flashing) ──────────────────────── */
 static uint8_t  s_timing_row_cursor = 0xFF;
+static UiMainMode s_main_mode = UI_MAIN_MODE_STEP;
+static UiMainMode s_prev_main_mode = (UiMainMode)0xFF;
+static uint8_t s_repeat_flash_enabled = 0;
+static uint8_t s_repeat_flash_on = 0;
 
 /* ── Init ────────────────────────────────────────────────────────────────── */
 void UI_Display_Init(void)
@@ -155,7 +163,9 @@ void UI_Display_DrawStepBox(uint8_t step, uint8_t selected, uint8_t active, uint
 
     /* Priority: active (playing) > selected+saved > selected+empty > saved > normal */
     uint16_t colour;
-    if (active)
+    if (active && s_repeat_flash_enabled)
+        colour = s_repeat_flash_on ? WHITE : BLUE;
+    else if (active)
         colour = COL_ACTIVE;
     else if (selected && has_chord)
         colour = COL_CHORD;
@@ -183,11 +193,17 @@ void UI_Display_DrawStepBox(uint8_t step, uint8_t selected, uint8_t active, uint
     ST7789_DrawStringScaled(tx, ty, s, &Font8x12, 2, colour, COLOR_BOX_BG);
 }
 
+void UI_Display_SetRepeatFlash(uint8_t enabled, uint8_t on_phase)
+{
+    s_repeat_flash_enabled = enabled ? 1u : 0u;
+    s_repeat_flash_on = on_phase ? 1u : 0u;
+}
+
 /* ── Shift indicator ─────────────────────────────────────────────────────── */
 void UI_Display_SetShiftIndicator(uint8_t active)
 {
-    ST7789_FillRect(0, 45, SCREEN_W, 4,
-                    active ? COL_SHIFT : COLOR_BG);
+    (void)active;
+    ST7789_FillRect(0, 45, SCREEN_W, 4, COLOR_BG);
 }
 
 /* ── Internal ────────────────────────────────────────────────────────────── */
@@ -261,6 +277,55 @@ static void MenuTemplate_DrawHeader(const char* title, const char* indicator, ui
     s_menu_header_valid = 1;
 }
 
+static void DrawMainModeBox(void)
+{
+    uint16_t box_x = 4;
+    uint16_t box_y = 25;
+    uint16_t box_w = 44;
+    uint16_t box_h = 18;
+    uint16_t fill = WHITE;
+    uint16_t border = COLOR_BOX_BORDER;
+    uint16_t text = BLACK;
+    const char* label = "STEP";
+
+    if (s_main_mode == UI_MAIN_MODE_CHORD)
+    {
+        fill = RGB565(70, 140, 255);
+        text = WHITE;
+        label = "CHRD";
+    }
+    else if (s_main_mode == UI_MAIN_MODE_TIMING)
+    {
+        fill = ORANGE;
+        text = WHITE;
+        label = "TIME";
+    }
+    else if (s_main_mode == UI_MAIN_MODE_PATTERN)
+    {
+        fill = RGB565(0, 135, 0);
+        text = WHITE;
+        label = "SONG";
+    }
+
+    ST7789_FillRect(box_x, box_y, box_w, box_h, fill);
+    DrawRectBorder(box_x, box_y, box_w, box_h, border);
+    ST7789_DrawString(8, 28, label, &Font8x12, text, fill);
+    s_prev_main_mode = s_main_mode;
+}
+
+void UI_Display_SetMainMode(UiMainMode mode)
+{
+    if (mode > UI_MAIN_MODE_PATTERN)
+    {
+        mode = UI_MAIN_MODE_STEP;
+    }
+    if (s_main_mode != mode)
+    {
+        s_main_mode = mode;
+        s_force_status_redraw = 1;
+    }
+}
+
 /* ── Time Display ────────────────────────────────────────────────────────────── */
 void UI_Display_DrawStatusRow(uint8_t pattern,
                               uint8_t step,
@@ -271,10 +336,8 @@ void UI_Display_DrawStatusRow(uint8_t pattern,
     uint32_t mins      = total_sec / 60;
     uint32_t secs      = total_sec % 60;
 
-    if (s_force_status_redraw || pattern != s_prev_pattern) {
-        char p[8];
-        snprintf(p, sizeof(p), "P%02u", pattern + 1);
-        ST7789_DrawString(4, 26, p, &Font10x16, COLOR_TEXT_MAIN, COLOR_BG);
+    if (s_force_status_redraw || s_main_mode != s_prev_main_mode || pattern != s_prev_pattern) {
+        DrawMainModeBox();
         s_prev_pattern = pattern;
     }
     if (s_force_status_redraw || step != s_prev_step) {
@@ -505,7 +568,8 @@ void UI_Display_SetChordSelection(uint8_t selection)
 /* ── Chord Parameters ─────────────────────────────────────────────────────── */
 static void DrawParamRow(uint8_t index, const ChordParams* chord, uint8_t is_selected)
 {
-    const char* param_names[] = {"Root Key:", "Type:", "Arp:", "Duration:", "Repeat:"};
+    const char* param_names[] = {"Root Key:", "Type:", "Arp:", "Gate:", "Step Repeats:"};
+    const uint16_t value_x = 178;
     const char* root_keys[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
     const char* chord_types[] = {"Clear", "Major", "Minor", "Dim", "Aug", "Sus4", "7th", "Maj7", "Min7", "Dim7", "7sus4", "6th", "Min6", "9th", "Maj9", "Min9", "11th"};
     const char* arp_patterns[] = {"Block", "Up", "Down", "UpDn", "Random"};
@@ -530,7 +594,7 @@ static void DrawParamRow(uint8_t index, const ChordParams* chord, uint8_t is_sel
         case 4: snprintf(value, sizeof(value), "%u", chord->loop_count); break;
         default: value[0] = 0; break;
     }
-    ST7789_DrawString(120, y, value, &Font12x20, color, COLOR_BG);
+    ST7789_DrawString(value_x, y, value, &Font12x20, color, COLOR_BG);
 }
 
 void UI_Display_DrawChordParams(uint8_t step, const ChordParams* chord, uint8_t param_cursor)
@@ -563,7 +627,7 @@ void UI_Display_DrawChordParams(uint8_t step, const ChordParams* chord, uint8_t 
     /* Title */
     char title[20];
     snprintf(title, sizeof(title), "Step %u Parameters", step);
-    MenuTemplate_DrawHeader(title, "Repeat = before next block", COLOR_TEXT_MUTED);
+    MenuTemplate_DrawHeader(title, "Gate+Repeats are per-step", COLOR_TEXT_MUTED);
 
     /* Footer action buttons */
     if (!s_param_footer_valid)
@@ -628,7 +692,7 @@ void UI_Display_NavigateChordParams(int8_t delta, uint8_t step, ChordParams* cho
 
 void UI_Display_DrawParamFooterActions(uint8_t selected_action)
 {
-    static const char* labels[PARAM_ACTION_COUNT] = {"MAIN", "PREV", "NEXT", "SAVE"};
+    static const char* labels[PARAM_ACTION_COUNT] = {"1 MAIN", "2 PREV", "3 NEXT", "4 SAVE"};
     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
 
     for (uint8_t i = 0; i < PARAM_ACTION_COUNT; i++)
@@ -646,13 +710,13 @@ void UI_Display_NavigateParamFooterActions(int8_t delta, uint8_t step, const Cho
 
     s_param_footer_selection = (uint8_t)next;
 
-    DrawParamFooterButton(old, (old == PARAM_ACTION_MAIN) ? "MAIN" :
-                               (old == PARAM_ACTION_PREV) ? "PREV" :
-                               (old == PARAM_ACTION_NEXT) ? "NEXT" : "SAVE", 0);
+    DrawParamFooterButton(old, (old == PARAM_ACTION_MAIN) ? "1 MAIN" :
+                               (old == PARAM_ACTION_PREV) ? "2 PREV" :
+                               (old == PARAM_ACTION_NEXT) ? "3 NEXT" : "4 SAVE", 0);
     DrawParamFooterButton(s_param_footer_selection,
-                          (s_param_footer_selection == PARAM_ACTION_MAIN) ? "MAIN" :
-                          (s_param_footer_selection == PARAM_ACTION_PREV) ? "PREV" :
-                          (s_param_footer_selection == PARAM_ACTION_NEXT) ? "NEXT" : "SAVE", 1);
+                          (s_param_footer_selection == PARAM_ACTION_MAIN) ? "1 MAIN" :
+                          (s_param_footer_selection == PARAM_ACTION_PREV) ? "2 PREV" :
+                          (s_param_footer_selection == PARAM_ACTION_NEXT) ? "3 NEXT" : "4 SAVE", 1);
 }
 
 uint8_t UI_Display_GetSelectedParamAction(void)
@@ -685,6 +749,7 @@ static void DrawTimingFooterButton(uint8_t slot, const char* label, uint8_t sele
 static void DrawTimingRow(uint8_t index, uint8_t step_count, uint8_t step_division, uint8_t ts_num, uint8_t ts_den, uint8_t swing, uint8_t is_selected)
 {
     const uint16_t y_positions[] = {48, 72, 96, 120, 144};
+    const uint16_t value_x = 184;
     uint16_t y = y_positions[index];
     uint16_t color = is_selected ? COLOR_ACTIVE : COLOR_TEXT_MAIN;
 
@@ -707,34 +772,34 @@ static void DrawTimingRow(uint8_t index, uint8_t step_count, uint8_t step_divisi
     {
         char b[12];
         snprintf(b, sizeof(b), "%u", step_count);
-        ST7789_DrawString(4, y, "Steps",      &Font12x20, color, COLOR_BG);
-        ST7789_DrawString(130, y, b,          &Font12x20, color, COLOR_BG);
+        ST7789_DrawString(4, y, "Pattern Steps", &Font12x20, color, COLOR_BG);
+        ST7789_DrawString(value_x, y, b,      &Font12x20, color, COLOR_BG);
     }
     else if (index == 1)
     {
-        ST7789_DrawString(4, y, "Resolution", &Font12x20, color, COLOR_BG);
-        ST7789_DrawString(130, y, div_text,   &Font12x20, color, COLOR_BG);
+        ST7789_DrawString(4, y, "Step Grid",  &Font12x20, color, COLOR_BG);
+        ST7789_DrawString(value_x, y, div_text, &Font12x20, color, COLOR_BG);
     }
     else if (index == 2)
     {
         char b[12];
         snprintf(b, sizeof(b), "%u", ts_num);
-        ST7789_DrawString(4, y, "TS Num",     &Font12x20, color, COLOR_BG);
-        ST7789_DrawString(130, y, b,          &Font12x20, color, COLOR_BG);
+        ST7789_DrawString(4, y, "Beats Per Bar", &Font12x20, color, COLOR_BG);
+        ST7789_DrawString(value_x, y, b,      &Font12x20, color, COLOR_BG);
     }
     else if (index == 3)
     {
         char b[12];
         snprintf(b, sizeof(b), "%u", ts_den);
-        ST7789_DrawString(4, y, "TS Den",     &Font12x20, color, COLOR_BG);
-        ST7789_DrawString(130, y, b,          &Font12x20, color, COLOR_BG);
+        ST7789_DrawString(4, y, "Beat Unit",  &Font12x20, color, COLOR_BG);
+        ST7789_DrawString(value_x, y, b,      &Font12x20, color, COLOR_BG);
     }
     else if (index == 4)
     {
         char b[12];
         snprintf(b, sizeof(b), "%u%%", swing);
         ST7789_DrawString(4, y, "Swing",      &Font12x20, color, COLOR_BG);
-        ST7789_DrawString(130, y, b,          &Font12x20, color, COLOR_BG);
+        ST7789_DrawString(value_x, y, b,      &Font12x20, color, COLOR_BG);
     }
 }
 
@@ -772,7 +837,7 @@ void UI_Display_DrawTimingMenu(uint8_t step_count,
 
     s_timing_row_cursor = cursor;
 
-    MenuTemplate_DrawHeader("Timing", has_unsaved_changes ? "*UNSAVED" : "", YELLOW);
+    MenuTemplate_DrawHeader("Pattern Timing", has_unsaved_changes ? "*UNSAVED" : "Global sequencer timing", YELLOW);
 
     /* Footer buttons */
     if (!s_timing_footer_valid || (s_timing_footer_drawn != footer_action))
@@ -803,11 +868,81 @@ void UI_Display_SetTimingFooterAction(uint8_t action)
     if (action < 2) s_timing_footer_selection = action;
 }
 
+void UI_Display_DrawSongChainMenu(const uint8_t* chain,
+                                  uint8_t length,
+                                  uint8_t cursor,
+                                  uint8_t playing_slot,
+                                  uint8_t repeat_index,
+                                  uint8_t repeat_total,
+                                  uint8_t blink_on)
+{
+    MenuTemplate_Begin(MENU_FRAME_SONG);
+    FillRegion(UI_REGION_MENU_LIST, COLOR_BG);
+
+    if (length < 1) length = 1;
+    if (length > 32) length = 32;
+    if (cursor >= length) cursor = (uint8_t)(length - 1);
+
+    uint8_t page_base = (uint8_t)((cursor / 4) * 4);
+    for (uint8_t i = 0; i < 4; i++)
+    {
+        uint8_t pos = (uint8_t)(page_base + i);
+        uint16_t y = (uint16_t)(48 + (i * 24));
+        uint8_t selected = (pos == cursor) ? 1 : 0;
+        uint16_t color = selected ? COLOR_ACTIVE : COLOR_TEXT_MAIN;
+
+        ST7789_FillRect(0, y, SCREEN_W, 22, COLOR_BG);
+
+        if (pos < length)
+        {
+            char slot_label[20];
+            char pat_label[16];
+            snprintf(slot_label, sizeof(slot_label), "%u Slot %u", (unsigned)(i + 1), (unsigned)(pos + 1));
+            snprintf(pat_label, sizeof(pat_label), "P%02u", (unsigned)(chain[pos] + 1));
+            ST7789_DrawString(4, y, slot_label, &Font12x20, color, COLOR_BG);
+            ST7789_DrawString(184, y, pat_label, &Font12x20, color, COLOR_BG);
+
+            if (pos == playing_slot)
+            {
+                uint16_t outline = blink_on ? LIGHTBLUE : RGB565(12, 22, 36);
+                DrawRectBorder(0, y, SCREEN_W, 22, outline);
+            }
+        }
+        else
+        {
+            char slot_label[20];
+            snprintf(slot_label, sizeof(slot_label), "%u Slot --", (unsigned)(i + 1));
+            ST7789_DrawString(4, y, slot_label, &Font12x20, COLOR_TEXT_MUTED, COLOR_BG);
+        }
+    }
+
+    {
+        char indicator[32];
+        if (repeat_total < 1) repeat_total = 1;
+        if (repeat_index >= repeat_total) repeat_index = (uint8_t)(repeat_total - 1);
+        snprintf(indicator, sizeof(indicator), "Len:%u  Rep:%u/%u", (unsigned)length,
+                 (unsigned)(repeat_index + 1), (unsigned)repeat_total);
+        MenuTemplate_DrawHeader("Song Chain", indicator, LIGHTBLUE);
+    }
+
+    FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
+    ST7789_DrawString(6, 188, "1-4 Slot", &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL);
+    ST7789_DrawString(6, 206, "5 +Slot 6 -Slot", &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL);
+    ST7789_DrawString(142, 197, "REC MAIN", &Font10x16, COLOR_ACTIVE, COLOR_PANEL);
+}
+
 /* ── User Chord Menu ─────────────────────────────────────────────────────── */
 
 static uint8_t s_user_chord_menu_selection = 0;  // 0=Create, 1=Load, 2=Name
 static uint8_t s_selected_piano_key = 0;         // Currently selected key (0-11)
 static uint16_t s_piano_note_mask = 0;           // Currently selected notes
+static char s_piano_header_title[24] = "Create Chord";
+static uint8_t s_step_roll_step = 1;
+typedef enum {
+    PIANO_VIEW_KEYBOARD = 0,
+    PIANO_VIEW_ROLL = 1
+} PianoViewMode;
+static PianoViewMode s_piano_view_mode = PIANO_VIEW_KEYBOARD;
 
 
 void UI_Display_DrawUserChordMenu(void)
@@ -879,6 +1014,70 @@ static const uint8_t k_piano_white_keys[PIANO_WHITE_COUNT] = {0, 2, 4, 5, 7, 9, 
 static const uint8_t k_piano_black_keys[PIANO_BLACK_COUNT] = {1, 3, 6, 8, 10};
 static const uint8_t k_piano_black_after_white_idx[PIANO_BLACK_COUNT] = {0, 1, 3, 4, 5};
 static const char* k_note_names[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+static const char* k_note_labels_oct5[12] = {"C5", "C#5", "D5", "D#5", "E5", "F5", "F#5", "G5", "G#5", "A5", "A#5", "B5"};
+
+#define ROLL_LABEL_X     0
+#define ROLL_LABEL_W     34
+#define ROLL_GRID_X      36
+#define ROLL_HEADER_H    24
+#define ROLL_FOOTER_H    48
+#define ROLL_FOOTER_Y    (SCREEN_H - ROLL_FOOTER_H)
+#define ROLL_GRID_Y      48
+#define ROLL_KEY_H       11
+#define ROLL_ROW_H       12
+#define ROLL_GRID_W      (SCREEN_W - ROLL_GRID_X - 4)
+#define ROLL_BLOCK_X     (ROLL_GRID_X + (ROLL_GRID_W / 3))
+#define ROLL_BLOCK_W     18
+
+static uint16_t PianoRollLabelBg(uint8_t note)
+{
+    if (note == 1 || note == 3 || note == 6 || note == 8 || note == 10)
+        return BLACK;                /* black-key rows */
+    return WHITE;                    /* white-key rows */
+}
+
+static uint8_t PianoRollIsBlackKey(uint8_t note)
+{
+    return (note == 1 || note == 3 || note == 6 || note == 8 || note == 10) ? 1u : 0u;
+}
+
+static void DrawPianoRollRow(uint8_t note)
+{
+    uint8_t row = (uint8_t)(11 - note);
+    uint16_t y = (uint16_t)(ROLL_GRID_Y + row * ROLL_ROW_H);
+    uint8_t on = (s_piano_note_mask & (1U << note)) ? 1 : 0;
+    uint8_t selected = (s_selected_piano_key == note);
+    uint8_t is_black_key = PianoRollIsBlackKey(note);
+    uint16_t label_bg = PianoRollLabelBg(note);
+    uint16_t label_fg = is_black_key ? WHITE : BLACK;
+    uint16_t lane_bg = (row & 1u) ? RGB565(54, 56, 60) : RGB565(46, 48, 52);
+
+    ST7789_FillRect(ROLL_LABEL_X, y, ROLL_LABEL_W, ROLL_KEY_H, label_bg);
+    ST7789_FillRect(ROLL_GRID_X, y, ROLL_GRID_W, ROLL_KEY_H, lane_bg);
+
+    ST7789_DrawString(2, y + 1, k_note_labels_oct5[note], &Font8x12, label_fg, label_bg);
+
+    if (selected)
+    {
+        uint16_t focus_col = RGB565(184, 172, 142);
+        ST7789_FillRect(ROLL_GRID_X, y, 2, ROLL_KEY_H, focus_col);
+        ST7789_FillRect(ROLL_LABEL_W - 2, y, 2, ROLL_KEY_H, focus_col);
+    }
+
+    if (on)
+    {
+        ST7789_FillRect(ROLL_BLOCK_X, y + 2, ROLL_BLOCK_W, ROLL_KEY_H - 4, RGB565(118, 34, 34));
+        ST7789_FillRect(ROLL_BLOCK_X, y + 2, 2, ROLL_KEY_H - 4, RGB565(162, 74, 66));
+    }
+}
+
+static void DrawStepPianoRollHeader(void)
+{
+    char header[30];
+    snprintf(header, sizeof(header), "Step %u Piano %s", s_step_roll_step, k_note_names[s_selected_piano_key]);
+    ST7789_FillRect(0, 0, SCREEN_W, ROLL_HEADER_H, COLOR_PANEL_ALT);
+    ST7789_DrawString(4, 4, header, &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
+}
 
 static int8_t PianoWhiteSlotForNote(uint8_t note)
 {
@@ -898,8 +1097,8 @@ static void DrawPianoWhiteKey(uint8_t slot, uint8_t note)
     uint16_t y = PIANO_START_Y;
     uint8_t selected = (s_selected_piano_key == note);
     uint8_t on = (s_piano_note_mask & (1U << note)) ? 1 : 0;
-    uint16_t fill = on ? RGB565(220, 255, 235) : WHITE;
-    uint16_t border = selected ? YELLOW : COLOR_BOX_BORDER;
+    uint16_t fill = on ? RGB565(238, 214, 206) : RGB565(226, 218, 198);
+    uint16_t border = selected ? RGB565(184, 172, 142) : COLOR_BOX_BORDER;
     uint8_t border_thickness = selected ? 3 : 1;
 
     ST7789_FillRect(x, y, PIANO_KEY_W, PIANO_KEY_H, fill);
@@ -919,8 +1118,8 @@ static void DrawPianoBlackKey(uint8_t slot, uint8_t note)
     uint16_t y = PIANO_START_Y;
     uint8_t selected = (s_selected_piano_key == note);
     uint8_t on = (s_piano_note_mask & (1U << note)) ? 1 : 0;
-    uint16_t fill = on ? RGB565(160, 18, 18) : BLACK;
-    uint16_t border = selected ? YELLOW : GRAY;
+    uint16_t fill = on ? RGB565(116, 32, 32) : BLACK;
+    uint16_t border = selected ? RGB565(184, 172, 142) : GRAY;
     uint8_t border_thickness = selected ? 2 : 1;
 
     ST7789_FillRect(x, y, PIANO_BLACK_W, PIANO_BLACK_H, fill);
@@ -934,7 +1133,7 @@ static void DrawPianoBlackKey(uint8_t slot, uint8_t note)
 
     if (on)
     {
-        ST7789_FillRect(x + (PIANO_BLACK_W / 2) - 2, y + (PIANO_BLACK_H / 2) - 2, 4, 4, YELLOW);
+        ST7789_FillRect(x + (PIANO_BLACK_W / 2) - 2, y + (PIANO_BLACK_H / 2) - 2, 4, 4, RGB565(184, 172, 142));
     }
 }
 
@@ -959,14 +1158,14 @@ static void DrawPianoKeyByNote(uint8_t note)
     }
 }
 
-void UI_Display_DrawPianoKeyboard(const uint16_t note_mask, uint8_t selected_key)
+static void DrawPianoKeyboardScreen(const char* title, const char* footer_label, const uint16_t note_mask, uint8_t selected_key)
 {
     MenuTemplate_Begin(MENU_FRAME_CHORD);
     FillRegion(UI_REGION_MENU_LIST, COLOR_BG);
 
-    const char* title = "Create Chord";
     ST7789_DrawString(4, 4, title, &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
     MenuTemplate_DrawHeader(title, k_note_names[(selected_key < 12) ? selected_key : 0], YELLOW);
+    StrCopy(s_piano_header_title, sizeof(s_piano_header_title), title);
 
     s_piano_note_mask = note_mask;
     s_selected_piano_key = (selected_key < 12) ? selected_key : 0;
@@ -981,10 +1180,52 @@ void UI_Display_DrawPianoKeyboard(const uint16_t note_mask, uint8_t selected_key
         DrawPianoBlackKey(i, k_piano_black_keys[i]);
     }
 
-    /* Footer: Show help text */
     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-    DrawCenteredFooterButton("SAVE/DONE", 1);
+    DrawCenteredFooterButton(footer_label, 1);
     s_chord_footer_valid = 1;
+}
+
+static void DrawStepPianoRollScreen(uint8_t step, const uint16_t note_mask, uint8_t selected_key)
+{
+    MenuTemplate_Begin(MENU_FRAME_CHORD);
+    ST7789_FillRect(0, ROLL_HEADER_H, SCREEN_W, SCREEN_H - ROLL_HEADER_H, BLACK);
+
+    s_piano_note_mask = note_mask;
+    s_selected_piano_key = (selected_key < 12) ? selected_key : 0;
+    s_step_roll_step = step;
+    DrawStepPianoRollHeader();
+
+    ST7789_FillRect(ROLL_GRID_X + (ROLL_GRID_W / 4), ROLL_GRID_Y, 1, 12 * ROLL_ROW_H, RGB565(64, 66, 70));
+    ST7789_FillRect(ROLL_GRID_X + (ROLL_GRID_W / 2), ROLL_GRID_Y, 1, 12 * ROLL_ROW_H, RGB565(64, 66, 70));
+    ST7789_FillRect(ROLL_GRID_X + ((ROLL_GRID_W * 3) / 4), ROLL_GRID_Y, 1, 12 * ROLL_ROW_H, RGB565(64, 66, 70));
+
+    for (uint8_t note = 0; note < 12; note++)
+    {
+        DrawPianoRollRow(note);
+    }
+
+    ST7789_FillRect(0, ROLL_FOOTER_Y, SCREEN_W, ROLL_FOOTER_H, COLOR_PANEL);
+    {
+        uint16_t w = 140;
+        uint16_t h = 32;
+        uint16_t x = (SCREEN_W - w) / 2;
+        uint16_t y = ROLL_FOOTER_Y + 8;
+        DrawRoundedButton(x, y, w, h, COLOR_BOX_BG, COLOR_ACTIVE);
+        ST7789_DrawString(x + 34, y + 8, "REC BACK", &Font10x16, WHITE, COLOR_BOX_BG);
+    }
+    s_chord_footer_valid = 1;
+}
+
+void UI_Display_DrawPianoKeyboard(const uint16_t note_mask, uint8_t selected_key)
+{
+    s_piano_view_mode = PIANO_VIEW_KEYBOARD;
+    DrawPianoKeyboardScreen("Create Chord", "SAVE/DONE", note_mask, selected_key);
+}
+
+void UI_Display_DrawStepPianoRoll(uint8_t step, const uint16_t note_mask, uint8_t selected_key)
+{
+    s_piano_view_mode = PIANO_VIEW_ROLL;
+    DrawStepPianoRollScreen(step, note_mask, selected_key);
 }
 
 void UI_Display_NavigatePianoKeyboard(int8_t delta)
@@ -997,9 +1238,20 @@ void UI_Display_NavigatePianoKeyboard(int8_t delta)
 
     if (old != s_selected_piano_key)
     {
-        DrawPianoKeyByNote(old);
-        DrawPianoKeyByNote(s_selected_piano_key);
-        MenuTemplate_DrawHeader("Create Chord", k_note_names[s_selected_piano_key], YELLOW);
+        if (s_piano_view_mode == PIANO_VIEW_ROLL)
+        {
+            DrawPianoRollRow(old);
+            DrawPianoRollRow(s_selected_piano_key);
+        }
+        else
+        {
+            DrawPianoKeyByNote(old);
+            DrawPianoKeyByNote(s_selected_piano_key);
+        }
+        if (s_piano_view_mode == PIANO_VIEW_ROLL)
+            DrawStepPianoRollHeader();
+        else
+            MenuTemplate_DrawHeader(s_piano_header_title, k_note_names[s_selected_piano_key], YELLOW);
     }
 }
 
@@ -1013,7 +1265,10 @@ void UI_Display_TogglePianoKey(uint8_t key)
     if (key < 12)
     {
         s_piano_note_mask ^= (1U << key);
-        DrawPianoKeyByNote(key);
+        if (s_piano_view_mode == PIANO_VIEW_ROLL)
+            DrawPianoRollRow(key);
+        else
+            DrawPianoKeyByNote(key);
     }
 }
 

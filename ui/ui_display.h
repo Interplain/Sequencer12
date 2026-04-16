@@ -34,12 +34,21 @@ typedef enum
     TRANSPORT_PLAYING_RECORDING
 } TransportState;
 
+typedef enum
+{
+    UI_MAIN_MODE_STEP = 0,
+    UI_MAIN_MODE_CHORD,
+    UI_MAIN_MODE_TIMING,
+    UI_MAIN_MODE_PATTERN
+} UiMainMode;
+
 /* ── Init ────────────────────────────────────────────────────────────────── */
 void UI_Display_Init(void);
 
 /* ── Grid ────────────────────────────────────────────────────────────────── */
 void UI_Display_DrawGrid(void);
 void UI_Display_DrawStepBox(uint8_t step, uint8_t selected, uint8_t active, uint8_t has_chord);
+void UI_Display_SetRepeatFlash(uint8_t enabled, uint8_t on_phase);
 
 /* ── Header ──────────────────────────────────────────────────────────────── */
 void UI_Display_DrawHeader(uint16_t bpm, TransportState state, uint8_t rec_armed);
@@ -52,6 +61,7 @@ void UI_Display_DrawStatusRow(uint8_t pattern,
                               uint8_t step,
                               uint32_t loops,
                               uint32_t run_time_ms);
+void UI_Display_SetMainMode(UiMainMode mode);
 
 /* ── Chord Menu ───────────────────────────────────────────────────────────── */
 void UI_Display_DrawChordMenu(uint8_t step, const ChordParams* chord);
@@ -80,6 +90,15 @@ void UI_Display_NavigateTimingFooter(int8_t delta);
 uint8_t UI_Display_GetTimingFooterAction(void);
 void UI_Display_SetTimingFooterAction(uint8_t action);
 
+/* ── Song Chain Menu ─────────────────────────────────────────────────────── */
+void UI_Display_DrawSongChainMenu(const uint8_t* chain,
+                                  uint8_t length,
+                                  uint8_t cursor,
+                                  uint8_t playing_slot,
+                                  uint8_t repeat_index,
+                                  uint8_t repeat_total,
+                                  uint8_t blink_on);
+
 /* ── User Chord Menu ─────────────────────────────────────────────────────── */
 void UI_Display_DrawUserChordMenu(void);
 void UI_Display_NavigateUserChordMenu(int8_t delta);
@@ -87,6 +106,7 @@ uint8_t UI_Display_GetUserChordMenuSelection(void);
 
 /* ── User Chord Create (Piano keyboard) ────────────────────────────────── */
 void UI_Display_DrawPianoKeyboard(const uint16_t note_mask, uint8_t selected_key);
+void UI_Display_DrawStepPianoRoll(uint8_t step, const uint16_t note_mask, uint8_t selected_key);
 void UI_Display_NavigatePianoKeyboard(int8_t delta);
 uint8_t UI_Display_GetSelectedPianoKey(void);
 void UI_Display_TogglePianoKey(uint8_t key);

@@ -52,8 +52,11 @@ int main(void)
 
     while (1)
     {
+        uint32_t t0 = HAL_GetTick();
         UI_Input_Poll();
         UI_Sequencer_Update();
-        HAL_Delay(10);
+        uint32_t elapsed = HAL_GetTick() - t0;
+        if (elapsed < 10)
+            HAL_Delay(10 - elapsed);
     }
 }
