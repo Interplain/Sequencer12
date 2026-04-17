@@ -592,7 +592,7 @@ void UI_Sequencer_Update(void)
                 {
                     s_last_saved_user_chord = chord_idx;
                     s_step_chords[s_menu_step - 1].chord_type = 0;
-                    UI_Sequencer_CommitChordDraft();
+                    Bridge_SetStepCustomNoteMask((uint8_t)(s_menu_step - 1), chord_info->note_mask);
                     UI_Sequencer_SetMainMode(UI_MAIN_MODE_STEP);
                     UI_Sequencer_ExitToGrid();
                 }
@@ -986,11 +986,9 @@ void UI_Sequencer_Update(void)
                 const UserChordInfo *chord_info = Bridge_UserChord_Get(chord_idx);
                 if (chord_info)
                 {
-                    /* Apply loaded chord to current step */
-                    s_step_chords[s_menu_step - 1].chord_type = 0;  /* External chord */
-                    /* Store note mask somehow - we may need to extend ChordParams */
-                    
-                    UI_Sequencer_CommitChordDraft();
+                    s_last_saved_user_chord = chord_idx;
+                    s_step_chords[s_menu_step - 1].chord_type = 0;
+                    Bridge_SetStepCustomNoteMask((uint8_t)(s_menu_step - 1), chord_info->note_mask);
                     UI_Sequencer_SetMainMode(UI_MAIN_MODE_STEP);
                     UI_Sequencer_ExitToGrid();
                 }

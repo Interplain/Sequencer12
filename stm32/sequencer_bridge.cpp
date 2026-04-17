@@ -1,5 +1,8 @@
 #include "sequencer_bridge.h"
 #include "devices/sequencer/sequencer_device.h"
+#include "devices/sequencer/chords/chord_library.h"
+#include <cstdio>
+#include <cstring>
 
 static SequencerDevice g_sequencer;
 
@@ -29,6 +32,10 @@ extern "C"
                                        uint8_t repeat_count)
     {
         g_sequencer.SetStepChordParams(step_index, root_key, chord_type, arp_pattern, duration, repeat_count);
+    }
+    void     Bridge_SetStepCustomNoteMask(uint8_t step_index, uint16_t note_mask)
+    {
+        g_sequencer.SetStepCustomNoteMask(step_index, note_mask);
     }
     void     Bridge_SetPatternRepeatCount(uint8_t repeat_count)
     {
@@ -69,6 +76,26 @@ extern "C"
     uint16_t Bridge_GetStepNoteMask(uint8_t step_index)
     {
         return g_sequencer.GetStepNoteMask(step_index);
+    }
+
+    const char* Bridge_FindChordName(uint16_t note_mask, char* buf, uint8_t buf_len)
+    {
+        if (!buf || buf_len == 0) return "";
+        const sequencer::ChordPreset* presets = sequencer::ChordLibrary::GetPresets();
+        uint32_t count = sequencer::ChordLibrary::GetPresetCount();
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            if (presets[i].note_mask == note_mask)
+            {
+                const char* root = sequencer::ChordLibrary::GetRootName(presets[i].root);
+                const char* type = sequencer::ChordLibrary::GetTypeName(presets[i].type);
+                snprintf(buf, buf_len, "%s %s", root, type);
+                return buf;
+            }
+        }
+        strncpy(buf, "Custom", buf_len);
+        buf[buf_len - 1] = '\0';
+        return buf;
     }
     uint8_t Bridge_GetStepChordUiParams(uint8_t step_index,
                                         uint8_t* root_key,

@@ -47,6 +47,7 @@ public:
                                 uint8_t arp_pattern,
                                 uint8_t duration,
                                 uint8_t repeat_count);
+    void     SetStepCustomNoteMask(uint8_t step_index, uint16_t note_mask);
     void     SetPatternRepeatCount(uint8_t repeat_count);
     uint8_t  GetPatternRepeatCount() const;
     void     SetCurrentPatternIndex(uint8_t pattern_index);

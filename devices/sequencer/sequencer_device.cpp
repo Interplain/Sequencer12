@@ -268,6 +268,21 @@ void SequencerDevice::SetStepChordParams(uint8_t step_index,
     }
 }
 
+void SequencerDevice::SetStepCustomNoteMask(uint8_t step_index, uint16_t note_mask)
+{
+    if (step_index >= kStepCount) return;
+
+    StepSlot& slot = CurrentPattern().steps[step_index];
+    slot.type = (note_mask != 0u) ? StepType::Chord : StepType::Empty;
+    slot.note_mask = (uint16_t)(note_mask & 0x0FFFu);
+
+    if (step_index == current_step_)
+    {
+        ApplyCurrentStepBehavior();
+        step_changed_ = true;
+    }
+}
+
 void SequencerDevice::SetPatternRepeatCount(uint8_t repeat_count)
 {
     if (repeat_count < 1) repeat_count = 1;

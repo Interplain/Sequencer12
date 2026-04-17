@@ -4,6 +4,7 @@
 #include "lib/ST7789/st7789.h"
 #include <stdio.h>
 #include "fonts_extra.h"
+#include "sequencer_bridge.h"
 /* ── Layout constants ────────────────────────────────────────────────────── */
 #define SCREEN_W    240
 #define SCREEN_H    240
@@ -627,7 +628,7 @@ void UI_Display_DrawChordParams(uint8_t step, const ChordParams* chord, uint8_t 
     /* Title */
     char title[20];
     snprintf(title, sizeof(title), "Step %u Parameters", step);
-    MenuTemplate_DrawHeader(title, "Gate+Repeats are per-step", COLOR_TEXT_MUTED);
+    MenuTemplate_DrawHeader(title, "Per-step Parameters", COLOR_TEXT_MUTED);
 
     /* Footer action buttons */
     if (!s_param_footer_valid)
@@ -692,7 +693,7 @@ void UI_Display_NavigateChordParams(int8_t delta, uint8_t step, ChordParams* cho
 
 void UI_Display_DrawParamFooterActions(uint8_t selected_action)
 {
-    static const char* labels[PARAM_ACTION_COUNT] = {"1 MAIN", "2 PREV", "3 NEXT", "4 SAVE"};
+    static const char* labels[PARAM_ACTION_COUNT] = {"MAIN", "PREV", "NEXT", "SAVE"};
     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
 
     for (uint8_t i = 0; i < PARAM_ACTION_COUNT; i++)
@@ -1097,7 +1098,7 @@ static void DrawPianoWhiteKey(uint8_t slot, uint8_t note)
     uint16_t y = PIANO_START_Y;
     uint8_t selected = (s_selected_piano_key == note);
     uint8_t on = (s_piano_note_mask & (1U << note)) ? 1 : 0;
-    uint16_t fill = on ? RGB565(200, 200, 200) : WHITE;
+    uint16_t fill = on ? RGB565(244, 244, 244) : WHITE;
     uint16_t border = selected ? YELLOW : COLOR_BOX_BORDER;
     uint8_t border_thickness = selected ? 3 : 1;
 
@@ -1108,6 +1109,11 @@ static void DrawPianoWhiteKey(uint8_t slot, uint8_t note)
         ST7789_FillRect(x + t, y + PIANO_KEY_H - 1 - t, PIANO_KEY_W - (2 * t), 1, border);
         ST7789_FillRect(x + t, y + t, 1, PIANO_KEY_H - (2 * t), border);
         ST7789_FillRect(x + PIANO_KEY_W - 1 - t, y + t, 1, PIANO_KEY_H - (2 * t), border);
+    }
+
+    if (selected)
+    {
+        ST7789_FillRect(x + (PIANO_KEY_W / 2) - 2, y + (PIANO_KEY_H / 2) - 2, 4, 4, BLACK);
     }
 }
 
@@ -1211,7 +1217,7 @@ static void DrawStepPianoRollScreen(uint8_t step, const uint16_t note_mask, uint
         uint16_t x = (SCREEN_W - w) / 2;
         uint16_t y = ROLL_FOOTER_Y + 8;
         DrawRoundedButton(x, y, w, h, COLOR_BOX_BG, COLOR_ACTIVE);
-        ST7789_DrawString(x + 34, y + 8, "BACK", &Font10x16, WHITE, COLOR_BOX_BG);
+        ST7789_DrawString(x + 34, y + 8, " BACK", &Font10x16, WHITE, COLOR_BOX_BG);
     }
     s_chord_footer_valid = 1;
 }
@@ -1269,6 +1275,13 @@ void UI_Display_TogglePianoKey(uint8_t key)
             DrawPianoRollRow(key);
         else
             DrawPianoKeyByNote(key);
+
+        if (s_piano_view_mode == PIANO_VIEW_KEYBOARD)
+        {
+            char chord_name[20];
+            Bridge_FindChordName(s_piano_note_mask, chord_name, sizeof(chord_name));
+            MenuTemplate_DrawHeader(s_piano_header_title, chord_name, YELLOW);
+        }
     }
 }
 
@@ -1353,7 +1366,7 @@ void UI_Display_DrawUserChordLoad(void)
 
     /* Footer */
     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-    DrawCenteredFooterButton("SELECT", 1);
+    DrawCenteredFooterButton("   SELECT", 1);
     s_chord_footer_valid = 1;
 }
 
