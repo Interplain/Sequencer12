@@ -14,9 +14,8 @@ int main(void)
 {
     HW_Init();
 
-    /* Init I2C peripherals first (MCP23017 + FRAM) before display to avoid conflicts */
+    /* Init MCP23017 (GPIO expander) before display */
     MCP23017_Init(&hi2c1);
-    MB85RC256_Init(&hi2c1);
 
     /* Display reset */
     GPIOA->BSRR = (1U << (8 + 16));
@@ -29,6 +28,9 @@ int main(void)
 
     /* Backlight ON early so startup diagnostics are visible */
     GPIOB->BSRR = (1U << 0);
+
+    /* Init FRAM after display is stable to avoid startup artifacts */
+    MB85RC256_Init(&hi2c1);
 
     /* Init DAC8564 */
     DAC8564_Init(&hspi2);
