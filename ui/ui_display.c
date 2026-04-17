@@ -396,7 +396,7 @@ void UI_Display_DrawChordMenu(uint8_t step, const ChordParams* chord)
     /* Content region redraw only. */
     FillRegion(UI_REGION_MENU_LIST, COLOR_BG);
     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-    DrawCenteredFooterButton("USER", (s_chord_selection == 17) ? 1 : 0);
+    DrawCenteredFooterButton("USER CHORDS", (s_chord_selection == 17) ? 1 : 0);
     s_chord_footer_valid = 1;
 
     /* Title */
@@ -956,7 +956,7 @@ void UI_Display_DrawUserChordMenu(void)
     MenuTemplate_DrawHeader(title, "USER CHORDS", YELLOW);
 
     /* Draw 3 buttons: Create, Load, Name */
-    const char* labels[] = {"CREATE", "LOAD", "NAME"};
+    const char* labels[] = {"MAKE", "LOAD", "NAME"};
     uint16_t btn_w = 70;
     uint16_t btn_h = 50;
     uint16_t gap_x = 8;
@@ -979,7 +979,7 @@ void UI_Display_DrawUserChordMenu(void)
 
     /* Footer */
     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-    DrawCenteredFooterButton("MAIN STEPS", 1);
+    DrawCenteredFooterButton(" MAIN STEPS", 1);
     s_chord_footer_valid = 1;
 }
 
@@ -1097,8 +1097,8 @@ static void DrawPianoWhiteKey(uint8_t slot, uint8_t note)
     uint16_t y = PIANO_START_Y;
     uint8_t selected = (s_selected_piano_key == note);
     uint8_t on = (s_piano_note_mask & (1U << note)) ? 1 : 0;
-    uint16_t fill = on ? RGB565(238, 214, 206) : RGB565(226, 218, 198);
-    uint16_t border = selected ? RGB565(184, 172, 142) : COLOR_BOX_BORDER;
+    uint16_t fill = on ? RGB565(200, 200, 200) : WHITE;
+    uint16_t border = selected ? YELLOW : COLOR_BOX_BORDER;
     uint8_t border_thickness = selected ? 3 : 1;
 
     ST7789_FillRect(x, y, PIANO_KEY_W, PIANO_KEY_H, fill);
@@ -1119,7 +1119,7 @@ static void DrawPianoBlackKey(uint8_t slot, uint8_t note)
     uint8_t selected = (s_selected_piano_key == note);
     uint8_t on = (s_piano_note_mask & (1U << note)) ? 1 : 0;
     uint16_t fill = on ? RGB565(116, 32, 32) : BLACK;
-    uint16_t border = selected ? RGB565(184, 172, 142) : GRAY;
+    uint16_t border = selected ? YELLOW : GRAY;
     uint8_t border_thickness = selected ? 2 : 1;
 
     ST7789_FillRect(x, y, PIANO_BLACK_W, PIANO_BLACK_H, fill);
@@ -1133,7 +1133,7 @@ static void DrawPianoBlackKey(uint8_t slot, uint8_t note)
 
     if (on)
     {
-        ST7789_FillRect(x + (PIANO_BLACK_W / 2) - 2, y + (PIANO_BLACK_H / 2) - 2, 4, 4, RGB565(184, 172, 142));
+        ST7789_FillRect(x + (PIANO_BLACK_W / 2) - 3, y + (PIANO_BLACK_H / 2) - 3, 6, 6, YELLOW);
     }
 }
 
@@ -1211,7 +1211,7 @@ static void DrawStepPianoRollScreen(uint8_t step, const uint16_t note_mask, uint
         uint16_t x = (SCREEN_W - w) / 2;
         uint16_t y = ROLL_FOOTER_Y + 8;
         DrawRoundedButton(x, y, w, h, COLOR_BOX_BG, COLOR_ACTIVE);
-        ST7789_DrawString(x + 34, y + 8, "REC BACK", &Font10x16, WHITE, COLOR_BOX_BG);
+        ST7789_DrawString(x + 34, y + 8, "BACK", &Font10x16, WHITE, COLOR_BOX_BG);
     }
     s_chord_footer_valid = 1;
 }
