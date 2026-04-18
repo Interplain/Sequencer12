@@ -48,13 +48,25 @@ This README is updated to reflect the latest firmware work since the last upload
   - Hydration from engine note-mask metadata for pink-step recovery in chord mode
 - Main loop responsiveness:
   - Loop delay now targets a 10 ms floor instead of always adding 10 ms
+- FRAM persistence (User Chords):
+  - MB85RC256 32KB FRAM on dedicated I2C3 bus (PA8 SCL, PC9 SDA)
+  - 128 user chord slots with ~2560 bytes total storage (offset 0x0010)
+  - Auto-preload entire library at boot for instant menu access
+  - Per-slot write optimization (~20 bytes per save instead of full block)
+  - Persistent across power cycles with integrity validation
+  - Full CRUD operations: Create, Save (with Shift+Play), Rename, Delete (with Shift+Rec)
+- User Chord UI standardization:
+  - Load Chord screen: flat-text footer ("PLAY LOAD" / "REC BACK")
+  - Name Chord screen: flat-text footer ("PLAY SAVE" / "REC BACK")
+  - Create Chord (piano keyboard): flat-text footer ("PLAY SAVE" / "REC BACK")
+  - Step Piano Roll: flat-text footer ("PLAY SAVE" / "REC BACK")
+  - Consistent visual language across all chord workflow screens
+  - Live chord name identification on piano keyboard header
 
 ## Known Issues / Needs Sorting
 
-- Persistence:
-  - FRAM save/load for full song, pattern, and user chord state is not complete
-- User chord integration:
-  - USER chord load path still uses placeholder behavior for mapping external chord data into per-step chord params
+- Persistence (remaining):
+  - FRAM save/load for full song and pattern state is not complete (user chords done)
 - Build hygiene:
   - Build artifacts under .pio/build should stay out of commits (current repo contains tracked binary build outputs)
 - Test coverage:
@@ -168,7 +180,7 @@ These appear unassigned or effectively no-op in current code paths.
 
 ## Suggested Next Priorities
 
-1. Finish FRAM-backed persistence for patterns, chain, and user chords.
+1. Extend FRAM persistence to patterns and song chain (user chords complete).
 2. Finalize USER chord load/write path so loaded user chords are represented consistently in step params.
 3. Assign SONG mode spare matrix buttons (2-12) for direct slot/pattern workflows.
 4. Add a simple input-map regression test checklist before each upload.
