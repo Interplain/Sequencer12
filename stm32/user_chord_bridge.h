@@ -13,6 +13,11 @@ typedef struct {
 
 // Initialize user chord system
 void Bridge_UserChord_Init(void);
+void Bridge_UserChord_EnsureLoaded(void);
+uint8_t Bridge_UserChord_IsFramEnabled(void);
+uint8_t Bridge_UserChord_IsFramReady(void);
+uint8_t Bridge_UserChord_WasLoadedFromFram(void);
+uint8_t Bridge_UserChord_LastIoOk(void);
 
 // User chord access
 uint8_t Bridge_UserChord_GetCount(void);

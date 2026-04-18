@@ -18,9 +18,9 @@ int main(void)
     MCP23017_Init(&hi2c1);
 
     /* Display reset */
-    GPIOA->BSRR = (1U << (8 + 16));
+    GPIOA->BSRR = (1U << (9 + 16));
     HAL_Delay(20);
-    GPIOA->BSRR = (1U << 8);
+    GPIOA->BSRR = (1U << 9);
     HAL_Delay(120);
 
     /* Init display */
@@ -29,8 +29,8 @@ int main(void)
     /* Backlight ON early so startup diagnostics are visible */
     GPIOB->BSRR = (1U << 0);
 
-    /* Init FRAM after display is stable to avoid startup artifacts */
-    MB85RC256_Init(&hi2c1);
+    /* Init FRAM on dedicated I2C3 bus (PA8=SCL / PC9=SDA) */
+    MB85RC256_Init(&hi2c3);
 
     /* Init DAC8564 */
     DAC8564_Init(&hspi2);
@@ -54,6 +54,9 @@ int main(void)
 
     while (1)
     {
+        /* Keep OLED reset line asserted high to avoid transient blanking. */
+        GPIOA->BSRR = (1U << 9);
+
         uint32_t t0 = HAL_GetTick();
         UI_Input_Poll();
         UI_Sequencer_Update();

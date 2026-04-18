@@ -332,7 +332,8 @@ static void UI_Sequencer_StartUserChordNameEdit(void)
 {
     if (s_last_saved_user_chord == 0xFF)
     {
-        for (uint8_t i = 0; i < 128; i++)
+        uint8_t count = Bridge_UserChord_GetCount();
+        for (uint8_t i = 0; i < count; i++)
         {
             if (Bridge_UserChord_Get(i))
             {
@@ -508,6 +509,7 @@ void UI_Sequencer_Update(void)
                 uint8_t selected_idx = UI_Display_GetSelectedChord();
                 if (selected_idx == 17)
                 {
+                    Bridge_UserChord_EnsureLoaded();
                     s_ui_mode = UI_MODE_USER_CHORD_MENU;
                     UI_Display_DrawUserChordMenu();
                 }
@@ -561,6 +563,7 @@ void UI_Sequencer_Update(void)
                 }
                 else if (selection == 1)
                 {
+                    Bridge_UserChord_EnsureLoaded();
                     s_ui_mode = UI_MODE_USER_CHORD_LOAD;
                     UI_Display_DrawUserChordLoad();
                 }
@@ -621,8 +624,27 @@ void UI_Sequencer_Update(void)
             }
         }
 
+        if (shift_rec_pressed && s_ui_mode == UI_MODE_USER_CHORD_LOAD)
+        {
+            uint8_t chord_idx = UI_Display_GetSelectedUserChord();
+            uint8_t count = Bridge_UserChord_GetCount();
+
+            if (count > 0)
+            {
+                Bridge_UserChord_Delete(chord_idx);
+
+                count = Bridge_UserChord_GetCount();
+                if (count == 0)
+                    UI_Display_SetSelectedUserChord(0);
+                else if (chord_idx >= count)
+                    UI_Display_SetSelectedUserChord((uint8_t)(count - 1));
+
+                UI_Display_DrawUserChordLoad();
+            }
+        }
+
         /* ── Record = Back ────────────────────────────────────────────── */
-        if (rec_pressed)
+        if (rec_pressed && !shift_rec_pressed)
         {
             if (s_ui_mode == UI_MODE_CHORD_MENU || s_ui_mode == UI_MODE_TIMING_MENU)
             {
@@ -950,6 +972,7 @@ void UI_Sequencer_Update(void)
                 }
                 else if (selection == 1)  /* LOAD */
                 {
+                    Bridge_UserChord_EnsureLoaded();
                     s_ui_mode = UI_MODE_USER_CHORD_LOAD;
                     UI_Display_DrawUserChordLoad();
                 }

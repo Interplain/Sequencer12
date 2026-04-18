@@ -79,6 +79,11 @@ uint8_t MCP23017_ReadGPIOB(I2C_HandleTypeDef *hi2c)
     return ReadReg(hi2c, MCP_GPIOB);
 }
 
+uint8_t MCP23017_ReadReg(I2C_HandleTypeDef *hi2c, uint8_t reg)
+{
+    return ReadReg(hi2c, reg);
+}
+
 /* ── Output writes ──────────────────────────────────────────────────────── */
 void MCP23017_WriteGPIOA(I2C_HandleTypeDef *hi2c, uint8_t val)
 {

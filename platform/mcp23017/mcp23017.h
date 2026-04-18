@@ -57,6 +57,7 @@ void     MCP23017_SetPullups(I2C_HandleTypeDef *hi2c, uint8_t gppua, uint8_t gpp
 uint16_t MCP23017_ReadGPIO(I2C_HandleTypeDef *hi2c);
 uint8_t  MCP23017_ReadGPIOA(I2C_HandleTypeDef *hi2c);
 uint8_t  MCP23017_ReadGPIOB(I2C_HandleTypeDef *hi2c);
+uint8_t  MCP23017_ReadReg(I2C_HandleTypeDef *hi2c, uint8_t reg);
 void     MCP23017_WriteGPIOA(I2C_HandleTypeDef *hi2c, uint8_t val);
 void     MCP23017_WriteGPIOB(I2C_HandleTypeDef *hi2c, uint8_t val);
 

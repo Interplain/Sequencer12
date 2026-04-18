@@ -6,6 +6,7 @@
 SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi2;
 I2C_HandleTypeDef hi2c1;
+I2C_HandleTypeDef hi2c3;
 TIM_HandleTypeDef htim2;
 
 // ─────────────────────────────────────────────
@@ -15,6 +16,7 @@ static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_SPI2_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_I2C3_Init(void);
 static void MX_TIM2_Init(void);
 void Error_Handler(void);
 // ─────────────────────────────────────────────
@@ -28,6 +30,7 @@ void HW_Init(void)
     MX_SPI1_Init();
     MX_SPI2_Init();
     MX_I2C1_Init();
+    MX_I2C3_Init();
     MX_TIM2_Init();
 }
 
@@ -64,7 +67,7 @@ void SystemClock_Config(void)
 
 // ─────────────────────────────────────────────
 // GPIO
-// PA4=CS  PA6=DC  PA8=RST  PB0=BLK
+// PA4=CS  PA6=DC  PA9=RST  PB0=BLK
 // PA0=ENC_A  PA1=ENC_B  PC12=ENC_SW
 // PB12=DAC_CS PB14=DAC_LDAC PC4=DAC_CLR
 // ─────────────────────────────────────────────
@@ -78,13 +81,21 @@ static void MX_GPIO_Init(void)
     __HAL_RCC_DMA2_CLK_ENABLE();
     __DSB();
 
-    // PA4=CS  PA6=DC  PA8=RST — outputs HIGH
+    // PA4=CS  PA6=DC — outputs HIGH
     HAL_GPIO_WritePin(GPIOA,
-        GPIO_PIN_4 | GPIO_PIN_6 | GPIO_PIN_8, GPIO_PIN_SET);
-    g.Pin   = GPIO_PIN_4 | GPIO_PIN_6 | GPIO_PIN_8;
+        GPIO_PIN_4 | GPIO_PIN_6, GPIO_PIN_SET);
+    g.Pin   = GPIO_PIN_4 | GPIO_PIN_6;
     g.Mode  = GPIO_MODE_OUTPUT_PP;
     g.Pull  = GPIO_NOPULL;
     g.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    HAL_GPIO_Init(GPIOA, &g);
+
+    // PA9=RST — hold HIGH with pull-up, low-speed to reduce line sensitivity
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
+    g.Pin   = GPIO_PIN_9;
+    g.Mode  = GPIO_MODE_OUTPUT_PP;
+    g.Pull  = GPIO_PULLUP;
+    g.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOA, &g);
 
     // PB0 = backlight — OFF until display ready
@@ -181,7 +192,7 @@ static void MX_SPI2_Init(void)
 }
 
 // ─────────────────────────────────────────────
-// I2C1 — MCP23017 + FRAM
+// I2C1 — MCP23017
 // PB8=SCL  PB9=SDA
 // ─────────────────────────────────────────────
 static void MX_I2C1_Init(void)
@@ -199,6 +210,27 @@ static void MX_I2C1_Init(void)
     hi2c1.Init.NoStretchMode   = I2C_NOSTRETCH_DISABLE;
 
     if (HAL_I2C_Init(&hi2c1) != HAL_OK) Error_Handler();
+}
+
+// ─────────────────────────────────────────────
+// I2C3 — FRAM (dedicated bus)
+// PA8=SCL  PC9=SDA
+// ─────────────────────────────────────────────
+static void MX_I2C3_Init(void)
+{
+    __HAL_RCC_I2C3_CLK_ENABLE();
+
+    hi2c3.Instance             = I2C3;
+    hi2c3.Init.ClockSpeed      = 100000;
+    hi2c3.Init.DutyCycle       = I2C_DUTYCYCLE_2;
+    hi2c3.Init.OwnAddress1     = 0;
+    hi2c3.Init.AddressingMode  = I2C_ADDRESSINGMODE_7BIT;
+    hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+    hi2c3.Init.OwnAddress2     = 0;
+    hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+    hi2c3.Init.NoStretchMode   = I2C_NOSTRETCH_DISABLE;
+
+    if (HAL_I2C_Init(&hi2c3) != HAL_OK) Error_Handler();
 }
 
 // ─────────────────────────────────────────────

@@ -1187,7 +1187,8 @@ static void DrawPianoKeyboardScreen(const char* title, const char* footer_label,
     }
 
     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-    DrawCenteredFooterButton(footer_label, 1);
+    ST7789_DrawString(6, 188, "PLAY SAVE", &Font10x16, COLOR_ACTIVE, COLOR_PANEL);
+    ST7789_DrawString(126, 188, "REC BACK", &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL);
     s_chord_footer_valid = 1;
 }
 
@@ -1211,14 +1212,8 @@ static void DrawStepPianoRollScreen(uint8_t step, const uint16_t note_mask, uint
     }
 
     ST7789_FillRect(0, ROLL_FOOTER_Y, SCREEN_W, ROLL_FOOTER_H, COLOR_PANEL);
-    {
-        uint16_t w = 140;
-        uint16_t h = 32;
-        uint16_t x = (SCREEN_W - w) / 2;
-        uint16_t y = ROLL_FOOTER_Y + 8;
-        DrawRoundedButton(x, y, w, h, COLOR_BOX_BG, COLOR_ACTIVE);
-        ST7789_DrawString(x + 34, y + 8, " BACK", &Font10x16, WHITE, COLOR_BOX_BG);
-    }
+    ST7789_DrawString(6, ROLL_FOOTER_Y + 12, "PLAY SAVE", &Font10x16, COLOR_ACTIVE, COLOR_PANEL);
+    ST7789_DrawString(126, ROLL_FOOTER_Y + 12, "REC BACK", &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL);
     s_chord_footer_valid = 1;
 }
 
@@ -1322,7 +1317,8 @@ void UI_Display_DrawUserChordNameEditor(const char* name, uint8_t cursor)
     }
 
     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-    DrawCenteredFooterButton("PLAY SAVE / REC BACK", 1);
+    ST7789_DrawString(6, 188, "PLAY SAVE", &Font10x16, COLOR_ACTIVE, COLOR_PANEL);
+    ST7789_DrawString(126, 188, "REC BACK", &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL);
     s_chord_footer_valid = 1;
 }
 
@@ -1343,7 +1339,7 @@ void UI_Display_DrawUserChordLoad(void)
 
     /* Draw user chord list */
     uint8_t count = Bridge_UserChord_GetCount();
-    uint16_t y = 48;
+    uint16_t y = 52;
     
     for (uint8_t i = 0; i < count && i < 7; i++)
     {
@@ -1366,7 +1362,9 @@ void UI_Display_DrawUserChordLoad(void)
 
     /* Footer */
     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-    DrawCenteredFooterButton("   SELECT", 1);
+    ST7789_DrawString(6, 188, "PLAY LOAD", &Font10x16, COLOR_ACTIVE, COLOR_PANEL);
+    ST7789_DrawString(126, 188, "REC BACK", &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL);
+    ST7789_DrawString(6, 206, "SHIFT+REC DELETE", &Font10x16, ORANGE, COLOR_PANEL);
     s_chord_footer_valid = 1;
 }
 
@@ -1384,4 +1382,9 @@ void UI_Display_NavigateUserChordLoad(int8_t delta)
 uint8_t UI_Display_GetSelectedUserChord(void)
 {
     return s_selected_user_chord;
+}
+
+void UI_Display_SetSelectedUserChord(uint8_t index)
+{
+    s_selected_user_chord = index;
 }

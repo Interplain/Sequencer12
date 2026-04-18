@@ -3,14 +3,14 @@
 #include "fonts_extra.h"
 /* ------------------------------------------------------------------------- */
 /* Pin map                                                                   */
-/* PA4=CS  PA5=SCK  PA6=DC  PA7=MOSI  PA8=RST  PB0=BLK                       */
+/* PA4=CS  PA5=SCK  PA6=DC  PA7=MOSI  PA9=RST  PB0=BLK                       */
 /* ------------------------------------------------------------------------- */
 #define CS_LOW()   (GPIOA->BSRR = (1U << (4 + 16)))
 #define CS_HIGH()  (GPIOA->BSRR = (1U << 4))
 #define DC_LOW()   (GPIOA->BSRR = (1U << (6 + 16)))
 #define DC_HIGH()  (GPIOA->BSRR = (1U << 6))
-#define RST_LOW()  (GPIOA->BSRR = (1U << (8 + 16)))
-#define RST_HIGH() (GPIOA->BSRR = (1U << 8))
+#define RST_LOW()  (GPIOA->BSRR = (1U << (9 + 16)))
+#define RST_HIGH() (GPIOA->BSRR = (1U << 9))
 
 /* One scanline buffer, 4-byte aligned for DMA */
 static uint8_t __attribute__((aligned(4))) lineBuf[ST7789_WIDTH * 2];

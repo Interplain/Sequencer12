@@ -97,6 +97,24 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef* hi2c)
         GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
         HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
     }
+    else if (hi2c->Instance == I2C3)
+    {
+        __HAL_RCC_I2C3_CLK_ENABLE();
+        __HAL_RCC_GPIOA_CLK_ENABLE();
+        __HAL_RCC_GPIOC_CLK_ENABLE();
+
+        // PA8 = SCL, PC9 = SDA
+        GPIO_InitStruct.Pin       = GPIO_PIN_8;
+        GPIO_InitStruct.Mode      = GPIO_MODE_AF_OD;
+        GPIO_InitStruct.Pull      = GPIO_PULLUP;
+        GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+        GPIO_InitStruct.Alternate = GPIO_AF4_I2C3;
+        HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+        GPIO_InitStruct.Pin       = GPIO_PIN_9;
+        GPIO_InitStruct.Alternate = GPIO_AF4_I2C3;
+        HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+    }
 }
 
 void HAL_I2C_MspDeInit(I2C_HandleTypeDef* hi2c)
@@ -105,5 +123,11 @@ void HAL_I2C_MspDeInit(I2C_HandleTypeDef* hi2c)
     {
         __HAL_RCC_I2C1_CLK_DISABLE();
         HAL_GPIO_DeInit(GPIOB, GPIO_PIN_8 | GPIO_PIN_9);
+    }
+    else if (hi2c->Instance == I2C3)
+    {
+        __HAL_RCC_I2C3_CLK_DISABLE();
+        HAL_GPIO_DeInit(GPIOA, GPIO_PIN_8);
+        HAL_GPIO_DeInit(GPIOC, GPIO_PIN_9);
     }
 }

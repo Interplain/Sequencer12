@@ -118,6 +118,7 @@ void UI_Display_DrawUserChordNameEditor(const char* name, uint8_t cursor);
 void UI_Display_DrawUserChordLoad(void);
 void UI_Display_NavigateUserChordLoad(int8_t delta);
 uint8_t UI_Display_GetSelectedUserChord(void);
+void UI_Display_SetSelectedUserChord(uint8_t index);
 
 #ifdef __cplusplus
 }
