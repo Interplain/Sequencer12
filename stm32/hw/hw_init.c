@@ -8,6 +8,7 @@ SPI_HandleTypeDef hspi2;
 I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c3;
 TIM_HandleTypeDef htim2;
+DMA_HandleTypeDef hdma_spi1_tx;
 
 // ─────────────────────────────────────────────
 // Forward declarations
@@ -67,7 +68,7 @@ void SystemClock_Config(void)
 
 // ─────────────────────────────────────────────
 // GPIO
-// PA4=CS  PA6=DC  PA9=RST  PB0=BLK
+// PB0=CS  PA6=DC  PA9=RST
 // PA0=ENC_A  PA1=ENC_B  PC12=ENC_SW
 // PB12=DAC_CS PB14=DAC_LDAC PC4=DAC_CLR
 // ─────────────────────────────────────────────
@@ -81,9 +82,9 @@ static void MX_GPIO_Init(void)
     __HAL_RCC_DMA2_CLK_ENABLE();
     __DSB();
 
-    // PA4=CS  PA6=DC — outputs HIGH
-    HAL_GPIO_WritePin(GPIOA,
-        GPIO_PIN_4 | GPIO_PIN_6, GPIO_PIN_SET);
+    // PA4 unused, PA6=DC HIGH
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);
     g.Pin   = GPIO_PIN_4 | GPIO_PIN_6;
     g.Mode  = GPIO_MODE_OUTPUT_PP;
     g.Pull  = GPIO_NOPULL;
@@ -98,8 +99,8 @@ static void MX_GPIO_Init(void)
     g.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOA, &g);
 
-    // PB0 = backlight — OFF until display ready
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+    // PB0 = LCD CS idle HIGH (active-low)
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
     g.Pin   = GPIO_PIN_0;
     g.Mode  = GPIO_MODE_OUTPUT_PP;
     g.Pull  = GPIO_NOPULL;
@@ -156,15 +157,36 @@ static void MX_SPI1_Init(void)
     hspi1.Init.Mode              = SPI_MODE_MASTER;
     hspi1.Init.Direction         = SPI_DIRECTION_2LINES;
     hspi1.Init.DataSize          = SPI_DATASIZE_8BIT;
-    hspi1.Init.CLKPolarity       = SPI_POLARITY_HIGH;
-    hspi1.Init.CLKPhase          = SPI_PHASE_2EDGE;
+     /* Mode 3 is the stable edge timing for this wiring; mode 0 regressed to all-white. */
+     hspi1.Init.CLKPolarity       = SPI_POLARITY_HIGH;
+     hspi1.Init.CLKPhase          = SPI_PHASE_2EDGE;
     hspi1.Init.NSS               = SPI_NSS_SOFT;
-    hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+    /* 10.5 MHz (168/16): confirmed clean pixel output on this panel. */
+    /* 10.5 MHz (168/16): confirmed clean pixel output on this panel. */
+    hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
     hspi1.Init.FirstBit          = SPI_FIRSTBIT_MSB;
     hspi1.Init.TIMode            = SPI_TIMODE_DISABLE;
     hspi1.Init.CRCCalculation    = SPI_CRCCALCULATION_DISABLE;
     hspi1.Init.CRCPolynomial     = 10;
     if (HAL_SPI_Init(&hspi1) != HAL_OK) Error_Handler();
+
+    /* DMA2 Stream3 Ch3 — SPI1 TX */
+    hdma_spi1_tx.Instance                 = DMA2_Stream3;
+    hdma_spi1_tx.Init.Channel             = DMA_CHANNEL_3;
+    hdma_spi1_tx.Init.Direction           = DMA_MEMORY_TO_PERIPH;
+    hdma_spi1_tx.Init.PeriphInc           = DMA_PINC_DISABLE;
+    hdma_spi1_tx.Init.MemInc              = DMA_MINC_ENABLE;
+    hdma_spi1_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_spi1_tx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
+    hdma_spi1_tx.Init.Mode                = DMA_NORMAL;
+    hdma_spi1_tx.Init.Priority            = DMA_PRIORITY_HIGH;
+    hdma_spi1_tx.Init.FIFOMode            = DMA_FIFOMODE_DISABLE;
+    if (HAL_DMA_Init(&hdma_spi1_tx) != HAL_OK) Error_Handler();
+
+    __HAL_LINKDMA(&hspi1, hdmatx, hdma_spi1_tx);
+
+    HAL_NVIC_SetPriority(DMA2_Stream3_IRQn, 1, 0);
+    HAL_NVIC_EnableIRQ(DMA2_Stream3_IRQn);
 }
 
 // ─────────────────────────────────────────────

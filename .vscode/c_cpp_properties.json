@@ -8,6 +8,7 @@
         {
             "name": "PlatformIO",
             "includePath": [
+                "/mnt/extraspace2/Dev/sequencer12/include",
                 "/mnt/extraspace2/Dev/sequencer12/src",
                 "/mnt/extraspace2/Dev/sequencer12/lib/ST7789",
                 "/mnt/extraspace2/Dev/sequencer12",
@@ -18,7 +19,6 @@
                 "/mnt/extraspace2/Dev/sequencer12/stm32/hw",
                 "/mnt/extraspace2/Dev/sequencer12/platform/mcp23017",
                 "/mnt/extraspace2/Dev/sequencer12/ui",
-                "/mnt/extraspace2/Dev/sequencer12/include",
                 "/home/interplain/.platformio/packages/framework-stm32cubef4/Drivers/CMSIS/Include",
                 "/home/interplain/.platformio/packages/framework-stm32cubef4/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
                 "/home/interplain/.platformio/packages/framework-stm32cubef4/Drivers/STM32F4xx_HAL_Driver/Inc",
@@ -109,6 +109,7 @@
             "browse": {
                 "limitSymbolsToIncludedHeaders": true,
                 "path": [
+                    "/mnt/extraspace2/Dev/sequencer12/include",
                     "/mnt/extraspace2/Dev/sequencer12/src",
                     "/mnt/extraspace2/Dev/sequencer12/lib/ST7789",
                     "/mnt/extraspace2/Dev/sequencer12",
@@ -119,7 +120,6 @@
                     "/mnt/extraspace2/Dev/sequencer12/stm32/hw",
                     "/mnt/extraspace2/Dev/sequencer12/platform/mcp23017",
                     "/mnt/extraspace2/Dev/sequencer12/ui",
-                    "/mnt/extraspace2/Dev/sequencer12/include",
                     "/home/interplain/.platformio/packages/framework-stm32cubef4/Drivers/CMSIS/Include",
                     "/home/interplain/.platformio/packages/framework-stm32cubef4/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
                     "/home/interplain/.platformio/packages/framework-stm32cubef4/Drivers/STM32F4xx_HAL_Driver/Inc",
@@ -216,6 +216,15 @@
                 "STM32F405xx",
                 "USE_HAL_DRIVER",
                 "HARDWARE_BUILD",
+                "ST7789_ROTATION=3",
+                "LCD_USE_18BIT_COLOR=0",
+                "ST7789_USE_DMA=1",
+                "ST7789_CS_ALWAYS_ACTIVE=0",
+                "ST7789_CS_ACTIVE_LOW=1",
+                "ST7789_COLOR_ORDER_BGR=0",
+                "ST7789_INVERT_DEFAULT=0",
+                "X_SHIFT=0",
+                "Y_SHIFT=0",
                 "USE_HAL_DRIVER",
                 "F_CPU=168000000L",
                 "__PLATFORMIO_BUILD_DEBUG__",

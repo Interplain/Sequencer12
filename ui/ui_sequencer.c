@@ -148,13 +148,41 @@ static uint8_t UI_Sequencer_StepHasNotes(uint8_t step)
     return (s_step_chords[step - 1].chord_type != 0) ? 1 : 0;
 }
 
+static uint8_t UI_Sequencer_GetStepPianoInitialKey(uint8_t step)
+{
+    if (step < 1 || step > 12) return 0;
+
+    const uint8_t step_index = (uint8_t)(step - 1);
+    const uint16_t note_mask = Bridge_GetStepNoteMask(step_index);
+    uint8_t root_key = 0;
+    uint8_t chord_type = 0;
+    uint8_t duration = 0;
+    uint8_t repeat_count = 0;
+
+    if (note_mask != 0 &&
+        Bridge_GetStepChordUiParams(step_index, &root_key, &chord_type, &duration, &repeat_count) &&
+        chord_type != 0)
+    {
+        return root_key;
+    }
+
+    for (uint8_t note = 0; note < 12; note++)
+    {
+        if (note_mask & (1u << note)) return note;
+    }
+
+    return 0;
+}
+
 static void UI_Sequencer_EnterStepPianoView(uint8_t step)
 {
     if (step < 1 || step > 12) return;
 
     s_selected_step = step;
     s_ui_mode = UI_MODE_STEP_PIANO;
-    UI_Display_DrawStepPianoRoll(step, Bridge_GetStepNoteMask((uint8_t)(step - 1)), 0);
+    UI_Display_DrawStepPianoRoll(step,
+                                 Bridge_GetStepNoteMask((uint8_t)(step - 1)),
+                                 UI_Sequencer_GetStepPianoInitialKey(step));
 }
 
 static void UI_Sequencer_SetMainMode(UiMainMode mode)
@@ -430,7 +458,9 @@ void UI_Sequencer_SelectStep(uint8_t step)
     }
     else if (s_ui_mode == UI_MODE_STEP_PIANO)
     {
-        UI_Display_DrawStepPianoRoll(step, Bridge_GetStepNoteMask((uint8_t)(step - 1)), UI_Display_GetSelectedPianoKey());
+        UI_Display_DrawStepPianoRoll(step,
+                                     Bridge_GetStepNoteMask((uint8_t)(step - 1)),
+                                     UI_Sequencer_GetStepPianoInitialKey(step));
     }
     else if (s_ui_mode == UI_MODE_CHORD_MENU)
     {
@@ -467,9 +497,10 @@ void UI_Sequencer_Update(void)
 
     if (UI_Input_GetShiftTap())
     {
-        UI_Sequencer_SetMainMode((UiMainMode)(((uint8_t)s_main_mode + 1u) % 4u));
+        /* Only cycle main mode when in grid — ignore shift-tap inside menus */
         if (s_ui_mode == UI_MODE_GRID)
         {
+            UI_Sequencer_SetMainMode((UiMainMode)(((uint8_t)s_main_mode + 1u) % 4u));
             UI_Display_DrawStatusRow(Bridge_GetCurrentPattern(),
                                      Bridge_GetCurrentStep(),
                                      Bridge_GetCompletedLoops(),
@@ -511,6 +542,7 @@ void UI_Sequencer_Update(void)
                 {
                     Bridge_UserChord_EnsureLoaded();
                     s_ui_mode = UI_MODE_USER_CHORD_MENU;
+                    UI_Display_ResetUserChordMenuCache();
                     UI_Display_DrawUserChordMenu();
                 }
                 else if (selected_idx == 0)
@@ -557,6 +589,7 @@ void UI_Sequencer_Update(void)
                 if (selection == 0)
                 {
                     s_ui_mode = UI_MODE_USER_CHORD_CREATE;
+                    UI_Display_ResetUserChordMenuCache();
                     s_user_chord_note_mask = 0;
                     UI_Display_SetPianoNoteMask(0);
                     UI_Display_DrawPianoKeyboard(0, 0);
@@ -584,6 +617,7 @@ void UI_Sequencer_Update(void)
                     s_last_saved_user_chord = Bridge_UserChord_Save(auto_name, s_user_chord_note_mask);
                 }
                 s_ui_mode = UI_MODE_USER_CHORD_MENU;
+                UI_Display_ResetUserChordMenuCache();
                 UI_Display_DrawUserChordMenu();
             }
             else if (s_ui_mode == UI_MODE_USER_CHORD_LOAD)
@@ -595,7 +629,7 @@ void UI_Sequencer_Update(void)
                 {
                     s_last_saved_user_chord = chord_idx;
                     s_step_chords[s_menu_step - 1].chord_type = 0;
-                    Bridge_SetStepCustomNoteMask((uint8_t)(s_menu_step - 1), chord_info->note_mask);
+                    Bridge_SetStepCustomUserChord((uint8_t)(s_menu_step - 1), chord_info->note_mask, chord_info->name);
                     UI_Sequencer_SetMainMode(UI_MAIN_MODE_STEP);
                     UI_Sequencer_ExitToGrid();
                 }
@@ -620,6 +654,7 @@ void UI_Sequencer_Update(void)
 
                 Bridge_UserChord_Rename(s_last_saved_user_chord, final_name);
                 s_ui_mode = UI_MODE_USER_CHORD_MENU;
+                UI_Display_ResetUserChordMenuCache();
                 UI_Display_DrawUserChordMenu();
             }
         }
@@ -675,16 +710,19 @@ void UI_Sequencer_Update(void)
             {
                 /* Back: discard and return to user chord menu */
                 s_ui_mode = UI_MODE_USER_CHORD_MENU;
+                UI_Display_ResetUserChordMenuCache();
                 UI_Display_DrawUserChordMenu();
             }
             else if (s_ui_mode == UI_MODE_USER_CHORD_LOAD)
             {
                 s_ui_mode = UI_MODE_USER_CHORD_MENU;
+                UI_Display_ResetUserChordMenuCache();
                 UI_Display_DrawUserChordMenu();
             }
             else if (s_ui_mode == UI_MODE_USER_CHORD_NAME)
             {
                 s_ui_mode = UI_MODE_USER_CHORD_MENU;
+                UI_Display_ResetUserChordMenuCache();
                 UI_Display_DrawUserChordMenu();
             }
         }
@@ -891,6 +929,7 @@ void UI_Sequencer_Update(void)
                 if (selected_idx == 17)  /* USER button */
                 {
                     s_ui_mode = UI_MODE_USER_CHORD_MENU;
+                    UI_Display_ResetUserChordMenuCache();
                     UI_Display_DrawUserChordMenu();
                 }
                 else if (selected_idx == 0)
@@ -966,6 +1005,7 @@ void UI_Sequencer_Update(void)
                 if (selection == 0)  /* CREATE */
                 {
                     s_ui_mode = UI_MODE_USER_CHORD_CREATE;
+                    UI_Display_ResetUserChordMenuCache();
                     s_user_chord_note_mask = 0;
                     UI_Display_SetPianoNoteMask(0);
                     UI_Display_DrawPianoKeyboard(0, 0);
@@ -1000,6 +1040,7 @@ void UI_Sequencer_Update(void)
             {
                 /* Back to user chord menu */
                 s_ui_mode = UI_MODE_USER_CHORD_MENU;
+                UI_Display_ResetUserChordMenuCache();
                 UI_Display_DrawUserChordMenu();
             }
             else
@@ -1011,7 +1052,7 @@ void UI_Sequencer_Update(void)
                 {
                     s_last_saved_user_chord = chord_idx;
                     s_step_chords[s_menu_step - 1].chord_type = 0;
-                    Bridge_SetStepCustomNoteMask((uint8_t)(s_menu_step - 1), chord_info->note_mask);
+                    Bridge_SetStepCustomUserChord((uint8_t)(s_menu_step - 1), chord_info->note_mask, chord_info->name);
                     UI_Sequencer_SetMainMode(UI_MAIN_MODE_STEP);
                     UI_Sequencer_ExitToGrid();
                 }
@@ -1188,10 +1229,12 @@ void UI_Sequencer_Update(void)
     {
         uint32_t now_ms = HAL_GetTick();
         uint8_t repeat_flash_enabled = 0;
+        uint8_t active_has_notes = 0;
         static uint8_t s_repeat_flash_was_enabled = 0;
 
         if (s_active_step >= 1 && s_active_step <= 12 && Bridge_IsPlaying())
         {
+            active_has_notes = UI_Sequencer_StepHasNotes(s_active_step);
             if (s_step_chords[s_active_step - 1].loop_count > 1)
             {
                 repeat_flash_enabled = 1;
@@ -1208,7 +1251,7 @@ void UI_Sequencer_Update(void)
                 if (s_active_step > 0)
                 {
                     uint8_t is_selected = (s_active_step == s_selected_step);
-                    UI_Display_DrawStepBox(s_active_step, is_selected, 1, UI_Sequencer_StepHasNotes(s_active_step));
+                    UI_Display_DrawStepBox(s_active_step, is_selected, 1, active_has_notes);
                 }
             }
 
@@ -1220,7 +1263,7 @@ void UI_Sequencer_Update(void)
                 if (s_active_step > 0)
                 {
                     uint8_t is_selected = (s_active_step == s_selected_step);
-                    UI_Display_DrawStepBox(s_active_step, is_selected, 1, UI_Sequencer_StepHasNotes(s_active_step));
+                    UI_Display_DrawStepBox(s_active_step, is_selected, 1, active_has_notes);
                 }
             }
         }
@@ -1233,7 +1276,7 @@ void UI_Sequencer_Update(void)
                 if (s_active_step > 0)
                 {
                     uint8_t is_selected = (s_active_step == s_selected_step);
-                    UI_Display_DrawStepBox(s_active_step, is_selected, 1, UI_Sequencer_StepHasNotes(s_active_step));
+                    UI_Display_DrawStepBox(s_active_step, is_selected, 1, active_has_notes);
                 }
             }
         }
@@ -1245,10 +1288,14 @@ void UI_Sequencer_Update(void)
             if (s_last_active > 0)
             {
                 uint8_t was_selected = (s_last_active == s_selected_step);
-                                UI_Display_DrawStepBox(s_last_active, was_selected, 0, UI_Sequencer_StepHasNotes(s_last_active));
-                        }
-            uint8_t is_selected = (s_active_step == s_selected_step);
-                        UI_Display_DrawStepBox(s_active_step, is_selected, 1, UI_Sequencer_StepHasNotes(s_active_step));
+                uint8_t last_has_notes = UI_Sequencer_StepHasNotes(s_last_active);
+                UI_Display_DrawStepBox(s_last_active, was_selected, 0, last_has_notes);
+            }
+            if (s_active_step > 0)
+            {
+                uint8_t is_selected = (s_active_step == s_selected_step);
+                UI_Display_DrawStepBox(s_active_step, is_selected, 1, active_has_notes);
+            }
             
             /* Update last active step for next comparison */
             s_last_active = s_active_step;

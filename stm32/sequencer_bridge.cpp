@@ -37,6 +37,10 @@ extern "C"
     {
         g_sequencer.SetStepCustomNoteMask(step_index, note_mask);
     }
+    void     Bridge_SetStepCustomUserChord(uint8_t step_index, uint16_t note_mask, const char* name)
+    {
+        g_sequencer.SetStepCustomUserChord(step_index, note_mask, name);
+    }
     void     Bridge_SetPatternRepeatCount(uint8_t repeat_count)
     {
         g_sequencer.SetPatternRepeatCount(repeat_count);
@@ -76,6 +80,16 @@ extern "C"
     uint16_t Bridge_GetStepNoteMask(uint8_t step_index)
     {
         return g_sequencer.GetStepNoteMask(step_index);
+    }
+
+    const char* Bridge_GetStepChordDisplayName(uint8_t step_index, char* buf, uint8_t buf_len)
+    {
+        if (!buf || buf_len == 0) return "";
+        if (g_sequencer.GetStepCustomChordName(step_index, buf, buf_len))
+        {
+            return buf;
+        }
+        return Bridge_FindChordName(g_sequencer.GetStepNoteMask(step_index), buf, buf_len);
     }
 
     const char* Bridge_FindChordName(uint16_t note_mask, char* buf, uint8_t buf_len)

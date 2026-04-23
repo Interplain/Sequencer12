@@ -1,5 +1,6 @@
 #include "devices/sequencer/sequencer_device.h"
 #include "devices/sequencer/arp_engine.h"
+#include <cstring>
 
 using sequencer::StepSlot;
 using sequencer::StepType;
@@ -251,12 +252,14 @@ void SequencerDevice::SetStepChordParams(uint8_t step_index,
     {
         slot.type = StepType::Empty;
         slot.note_mask = 0;
+        slot.custom_chord_name[0] = '\0';
     }
     else
     {
         const ChordType mapped = UiChordTypeToLibraryType(chord_type);
         slot.type = StepType::Chord;
         slot.note_mask = ChordLibrary::GetNoteMask(static_cast<KeyRoot>(root_key), mapped);
+        slot.custom_chord_name[0] = '\0';
     }
 
     CurrentPattern().arp_mode = UiArpPatternToMode(arp_pattern);
@@ -275,6 +278,32 @@ void SequencerDevice::SetStepCustomNoteMask(uint8_t step_index, uint16_t note_ma
     StepSlot& slot = CurrentPattern().steps[step_index];
     slot.type = (note_mask != 0u) ? StepType::Chord : StepType::Empty;
     slot.note_mask = (uint16_t)(note_mask & 0x0FFFu);
+    slot.custom_chord_name[0] = '\0';
+
+    if (step_index == current_step_)
+    {
+        ApplyCurrentStepBehavior();
+        step_changed_ = true;
+    }
+}
+
+void SequencerDevice::SetStepCustomUserChord(uint8_t step_index, uint16_t note_mask, const char* name)
+{
+    if (step_index >= kStepCount) return;
+
+    StepSlot& slot = CurrentPattern().steps[step_index];
+    slot.type = (note_mask != 0u) ? StepType::Chord : StepType::Empty;
+    slot.note_mask = (uint16_t)(note_mask & 0x0FFFu);
+
+    if (name && name[0] != '\0')
+    {
+        strncpy(slot.custom_chord_name, name, sizeof(slot.custom_chord_name));
+        slot.custom_chord_name[sizeof(slot.custom_chord_name) - 1] = '\0';
+    }
+    else
+    {
+        slot.custom_chord_name[0] = '\0';
+    }
 
     if (step_index == current_step_)
     {
@@ -420,6 +449,24 @@ bool SequencerDevice::GetStepChordUiParams(uint8_t step_index,
 
     *root_key = 0;
     *chord_type = 1;
+    return true;
+}
+
+bool SequencerDevice::GetStepCustomChordName(uint8_t step_index, char* buf, size_t buf_len) const
+{
+    if (step_index >= kStepCount || !buf || buf_len == 0)
+    {
+        return false;
+    }
+
+    const StepSlot& slot = CurrentPattern().steps[step_index];
+    if (slot.custom_chord_name[0] == '\0')
+    {
+        return false;
+    }
+
+    strncpy(buf, slot.custom_chord_name, buf_len);
+    buf[buf_len - 1] = '\0';
     return true;
 }
 

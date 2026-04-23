@@ -102,6 +102,7 @@ void UI_Display_DrawSongChainMenu(const uint8_t* chain,
 /* ── User Chord Menu ─────────────────────────────────────────────────────── */
 void UI_Display_DrawUserChordMenu(void);
 void UI_Display_NavigateUserChordMenu(int8_t delta);
+void UI_Display_ResetUserChordMenuCache(void);
 uint8_t UI_Display_GetUserChordMenuSelection(void);
 
 /* ── User Chord Create (Piano keyboard) ────────────────────────────────── */

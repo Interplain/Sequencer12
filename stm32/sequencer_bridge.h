@@ -30,6 +30,7 @@ void     Bridge_SetStepChordParams(uint8_t step_index,
 								   uint8_t duration,
 								   uint8_t repeat_count);
 void     Bridge_SetStepCustomNoteMask(uint8_t step_index, uint16_t note_mask);
+void     Bridge_SetStepCustomUserChord(uint8_t step_index, uint16_t note_mask, const char* name);
 void     Bridge_SetPatternRepeatCount(uint8_t repeat_count);
 uint8_t  Bridge_GetPatternRepeatCount(void);
 void     Bridge_SetCurrentPattern(uint8_t pattern_index);
@@ -40,6 +41,7 @@ uint8_t  Bridge_GetChainPatternAt(uint8_t pos);
 uint8_t  Bridge_GetChainCurrentPosition(void);
 uint8_t  Bridge_GetCurrentPatternRepeatProgress(void);
 uint16_t Bridge_GetStepNoteMask(uint8_t step_index);
+const char* Bridge_GetStepChordDisplayName(uint8_t step_index, char* buf, uint8_t buf_len);
 const char* Bridge_FindChordName(uint16_t note_mask, char* buf, uint8_t buf_len);
 uint8_t  Bridge_GetStepChordUiParams(uint8_t step_index,
 									 uint8_t* root_key,

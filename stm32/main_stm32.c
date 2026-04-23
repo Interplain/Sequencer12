@@ -10,6 +10,8 @@
 #include "ui/ui_sequencer.h"
 #include "ui/ui_input.h"
 
+#define DISPLAY_BRINGUP_TEST 0
+
 int main(void)
 {
     HW_Init();
@@ -26,8 +28,17 @@ int main(void)
     /* Init display */
     ST7789_Init();
 
-    /* Backlight ON early so startup diagnostics are visible */
-    GPIOB->BSRR = (1U << 0);
+#if DISPLAY_BRINGUP_TEST
+    ST7789_Fill_Color(BLACK);
+    HAL_Delay(40);
+    ST7789_Fill_Color(BLACK);
+    ST7789_DrawStringScaled(12, 40, "BPM", &Font16x24, 2, WHITE, BLACK);
+    ST7789_DrawStringScaled(12, 110, "123", &Font16x24, 2, GREEN, BLACK);
+    ST7789_DrawStringScaled(12, 180, "RGB", &Font16x24, 2, RED, BLACK);
+    while (1)
+    {
+    }
+#endif
 
     /* Init FRAM on dedicated I2C3 bus (PA8=SCL / PC9=SDA) */
     MB85RC256_Init(&hi2c3);

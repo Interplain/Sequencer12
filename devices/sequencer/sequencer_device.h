@@ -7,6 +7,7 @@
 #include "devices/sequencer/chords/user_chords.h"
 #include "platform/midi/midi_clock.h"
 #include <cstdint>
+#include <cstddef>
 
 class SequencerDevice : public Device, public midi::MidiClockListener
 {
@@ -48,6 +49,7 @@ public:
                                 uint8_t duration,
                                 uint8_t repeat_count);
     void     SetStepCustomNoteMask(uint8_t step_index, uint16_t note_mask);
+    void     SetStepCustomUserChord(uint8_t step_index, uint16_t note_mask, const char* name);
     void     SetPatternRepeatCount(uint8_t repeat_count);
     uint8_t  GetPatternRepeatCount() const;
     void     SetCurrentPatternIndex(uint8_t pattern_index);
@@ -63,6 +65,7 @@ public:
                                   uint8_t* chord_type,
                                   uint8_t* duration,
                                   uint8_t* repeat_count) const;
+    bool     GetStepCustomChordName(uint8_t step_index, char* buf, size_t buf_len) const;
     uint32_t GetCurrentStep() const { return current_step_; }
     uint32_t GetElapsedMs()   const { return elapsed_step_ms_; }
     bool     IsPlaying()      const { return playing_; }
