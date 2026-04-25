@@ -122,6 +122,20 @@ static void MX_GPIO_Init(void)
     g.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(GPIOC, &g);
 
+    // Gate outputs (PC5..PC8) + Clock Out (PC1). Initialized LOW (0V).
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8, GPIO_PIN_RESET);
+    g.Pin   = GPIO_PIN_1 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8;
+    g.Mode  = GPIO_MODE_OUTPUT_PP;
+    g.Pull  = GPIO_NOPULL;
+    g.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GPIOC, &g);
+
+    // Clock In (PC0). Input, no pull.
+    g.Pin   = GPIO_PIN_0;
+    g.Mode  = GPIO_MODE_INPUT;
+    g.Pull  = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOC, &g);
+
     // PA5=SCK  PA7=MOSI — SPI1 AF5
     g.Pin       = GPIO_PIN_5 | GPIO_PIN_7;
     g.Mode      = GPIO_MODE_AF_PP;

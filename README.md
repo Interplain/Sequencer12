@@ -185,6 +185,36 @@ These appear unassigned or effectively no-op in current code paths.
 3. Assign SONG mode spare matrix buttons (2-12) for direct slot/pattern workflows.
 4. Add a simple input-map regression test checklist before each upload.
 
+## April 2026: Hardware Bring-up & Gate/Clock Pin Mapping
+
+### DAC & Gate/Clock Output Integration Progress
+
+- **DAC8564 4-Channel CV Output:**
+  - All 4 DAC channels (CH_OUT_A/B/C/D) are now confirmed working and mapped to CV jacks via OPA4171 op-amps.
+  - Output range is bipolar (±5V) as per schematic.
+- **Gate Outputs:**
+  - GATE_A → PC5
+  - GATE_B → PC6
+  - GATE_C → PC7
+  - GATE_D → PC8
+  - All mapped directly to STM32 for low-latency, sample-accurate timing.
+- **Clock I/O:**
+  - Clock_IN → PC0 (input, no pull)
+  - Clock_OUT → PC1 (output, initialized LOW)
+  - Clock_OUT is inverted by 74HC14, so firmware must invert logic for correct polarity at the jack.
+- **DAC_CLR:**
+  - DAC_CLR → PC4 (output, initialized HIGH)
+
+### Next Steps (for firmware & repo):
+- [ ] Implement sequencer engine logic to drive GATE_A/B/C/D and Clock_OUT pins in real time.
+- [ ] Add code to read Clock_IN for external sync.
+- [ ] Document pin mappings in code and README.
+- [ ] Push all bring-up and pin mapping changes to GitHub after confirming hardware and code.
+
+**Schematic and firmware are now in sync for all CV, Gate, and Clock outputs.**
+
+---
+
 ## Hardware
 
 | Component | Part |
