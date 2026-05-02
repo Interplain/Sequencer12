@@ -1,13 +1,12 @@
 #include "user_chord_bridge.h"
 #include "devices/sequencer/chords/user_chords.h"
 #include "platform/fram/mb85rc256.h"
+#include "platform/fram/fram_layout.h"
 #include <cstring>
 
 using namespace sequencer;
 
-/* FRAM layout for user chord block */
-#define FRAM_MAGIC_ADDR  0x0000u
-#define FRAM_CHORDS_ADDR 0x0010u
+// FRAM layout for user chord block now in fram_layout.h
 static const uint8_t kFramMagic[4] = { 0xC4, 0x0D, 0x55, 0x01 };
 
 // Global user chords instance
@@ -42,11 +41,6 @@ static uint8_t SlotToOrdinal(uint32_t slot_index)
     return 0xFFu;
 }
 
-static uint16_t FramSlotAddr(uint8_t index)
-{
-    return (uint16_t)(FRAM_CHORDS_ADDR + (uint16_t)(sizeof(UserChord) * index));
-}
-
 static void FramLoadAll(void)
 {
     if (s_fram_checked) return;
@@ -57,24 +51,29 @@ static void FramLoadAll(void)
     s_fram_ready = MB85RC256_IsReady() ? 1u : 0u;
     if (!s_fram_ready)
     {
-        s_last_io_ok = 0;
+        g_user_chords.Init();   /* ensure clean state even when FRAM absent */
         return;
     }
 
+    // Read magic - if not present, no chords saved yet
     uint8_t magic[4] = {0};
     if (!MB85RC256_Read(FRAM_MAGIC_ADDR, magic, sizeof(magic)))
     {
         s_last_io_ok = 0;
-        return;
-    }
-    if (memcmp(magic, kFramMagic, sizeof(kFramMagic)) != 0)
-    {
-        s_last_io_ok = 1;
+        g_user_chords.Init();   /* read failed — reset to empty so count is 0 */
         return;
     }
 
+    if (memcmp(magic, kFramMagic, sizeof(kFramMagic)) != 0)
+    {
+        // No saved chords (magic not set) - this is normal for first boot
+        g_user_chords.Init();
+        return;
+    }
+
+    // Magic found - read chord data
     static uint8_t s_buf[kUserChordBlockSize];
-    if (MB85RC256_Read(FRAM_CHORDS_ADDR, s_buf, (uint16_t)kUserChordBlockSize))
+    if (MB85RC256_Read(FRAM_USERCHORDS_ADDR, s_buf, (uint16_t)kUserChordBlockSize))
     {
         g_user_chords.Load(s_buf, kUserChordBlockSize);
         s_loaded_from_fram = 1;
@@ -83,20 +82,33 @@ static void FramLoadAll(void)
     else
     {
         s_last_io_ok = 0;
+        g_user_chords.Init();   /* read failed — reset so count doesn't lie */
     }
 }
 
-static void FramWriteSlot(uint8_t index)
+static void FramWriteSlot(uint8_t index, uint8_t* out_ok)
 {
+    if (out_ok) *out_ok = 0;
+    
     if (!kFramEnabled) return;
-    if (!s_fram_ready) return;
 
-    const UserChord& chord = g_user_chords.GetChord(index);
+    // Step 1: Write chord block
+    static uint8_t s_buf[kUserChordBlockSize];
+    g_user_chords.Save(s_buf, kUserChordBlockSize);
+    uint8_t ok_block = MB85RC256_Write(FRAM_USERCHORDS_ADDR, s_buf, (uint16_t)kUserChordBlockSize);
+    
+    if (!ok_block)
+    {
+        s_last_io_ok = 0;
+        if (out_ok) *out_ok = 0;
+        return;
+    }
+    
+    // Step 2: Write magic (this marks chords as valid)
     uint8_t ok_magic = MB85RC256_Write(FRAM_MAGIC_ADDR, kFramMagic, sizeof(kFramMagic));
-    uint8_t ok_slot = MB85RC256_Write(FramSlotAddr(index),
-                                      reinterpret_cast<const uint8_t*>(&chord),
-                                      (uint16_t)sizeof(UserChord));
-    s_last_io_ok = (ok_magic && ok_slot) ? 1u : 0u;
+    
+    s_last_io_ok = ok_magic ? 1u : 0u;
+    if (out_ok) *out_ok = s_last_io_ok;
 }
 
 void Bridge_UserChord_Init(void)
@@ -170,8 +182,9 @@ uint8_t Bridge_UserChord_Save(const char* name, uint16_t note_mask)
     }
     
     g_user_chords.SaveChord(slot, name, note_mask);
-    FramWriteSlot((uint8_t)slot);
-    return SlotToOrdinal(slot);
+    uint8_t ok = 0;
+    FramWriteSlot((uint8_t)slot, &ok);
+    return ok ? SlotToOrdinal(slot) : 0xFF;
 }
 
 uint8_t Bridge_UserChord_Rename(uint8_t index, const char* name)
@@ -185,7 +198,9 @@ uint8_t Bridge_UserChord_Rename(uint8_t index, const char* name)
 
     const auto& chord = g_user_chords.GetChord(slot);
     uint8_t ok = g_user_chords.SaveChord(slot, name, chord.note_mask) ? 1 : 0;
-    if (ok) FramWriteSlot((uint8_t)slot);
+    if (ok) {
+        FramWriteSlot((uint8_t)slot, &ok);
+    }
     return ok;
 }
 
@@ -196,5 +211,6 @@ void Bridge_UserChord_Delete(uint8_t index)
     if (slot >= g_user_chords.Capacity()) return;
 
     g_user_chords.DeleteChord(slot);
-    FramWriteSlot((uint8_t)slot);
+    uint8_t ok = 0;
+    FramWriteSlot((uint8_t)slot, &ok);
 }

@@ -14,6 +14,8 @@ void     Bridge_Start(void);
 void     Bridge_Stop(void);
 void     Bridge_Reset(void);
 void     Bridge_SetBpm(uint32_t bpm);
+void     Bridge_PersistBegin(void);
+void     Bridge_PersistEnd(void);
 void     Bridge_SetPatternStepCount(uint8_t step_count);
 uint8_t  Bridge_GetPatternStepCount(void);
 void     Bridge_SetPatternStepDivision(uint8_t step_division);

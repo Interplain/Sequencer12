@@ -12,11 +12,15 @@ extern "C" {
 #define MB85RC256_ADDR_7BIT 0x50u
 #define MB85RC256_SIZE_BYTES 32768u
 
+// Robust write-then-verify for critical data (e.g., calibration)
+uint8_t MB85RC256_WriteAndVerify(uint16_t address, const uint8_t* src, uint16_t len);
+
 void    MB85RC256_Init(I2C_HandleTypeDef* hi2c);
 uint8_t MB85RC256_GetAddress7bit(void);
 uint8_t MB85RC256_IsReady(void);
 uint8_t MB85RC256_Read(uint16_t address, uint8_t* dst, uint16_t len);
 uint8_t MB85RC256_Write(uint16_t address, const uint8_t* src, uint16_t len);
+uint8_t MB85RC256_Format(void);  // Erase entire FRAM by writing 0xFF
 
 #ifdef __cplusplus
 }

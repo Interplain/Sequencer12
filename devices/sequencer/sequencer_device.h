@@ -60,6 +60,8 @@ public:
     uint8_t  GetChainCurrentPosition() const;
     uint8_t  GetCurrentPatternRepeatProgress() const;
     uint16_t GetStepNoteMask(uint8_t step_index) const;
+    void     ExportSong(sequencer::Song* out_song) const;
+    void     ImportSong(const sequencer::Song& song);
     bool     GetStepChordUiParams(uint8_t step_index,
                                   uint8_t* root_key,
                                   uint8_t* chord_type,
@@ -69,6 +71,10 @@ public:
     uint32_t GetCurrentStep() const { return current_step_; }
     uint32_t GetElapsedMs()   const { return elapsed_step_ms_; }
     bool     IsPlaying()      const { return playing_; }
+    /* Consume a pending CV/gate event. Returns true if note+gate state changed.
+     * note is 0-11 (semitone within octave). gate is true when gate is active.
+     * Clears the dirty flag atomically — call once per Process() cycle. */
+    bool     ConsumeCvEvent(uint8_t* note, bool* gate);
 private:
     void RecalculateStepIntervalMs();
     void AdvanceStep();

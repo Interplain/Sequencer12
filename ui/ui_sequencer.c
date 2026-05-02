@@ -125,7 +125,8 @@ static void UI_Sequencer_HydrateStepChordFromEngine(uint8_t step)
 static void UI_Sequencer_ExitToGrid(void)
 {
     s_ui_mode = UI_MODE_GRID;
-    UI_Display_Init();
+    UI_Display_FastReturnToGrid();
+    UI_Display_DrawHeader(UI_Transport_GetBPM(), UI_Transport_GetState(), UI_Transport_IsRecArmed());
 
     for (uint8_t i = 1; i <= 12; i++)
     {
@@ -180,6 +181,7 @@ static void UI_Sequencer_EnterStepPianoView(uint8_t step)
 
     s_selected_step = step;
     s_ui_mode = UI_MODE_STEP_PIANO;
+    UI_Display_ResetStepPianoRollCache();
     UI_Display_DrawStepPianoRoll(step,
                                  Bridge_GetStepNoteMask((uint8_t)(step - 1)),
                                  UI_Sequencer_GetStepPianoInitialKey(step));
@@ -304,10 +306,12 @@ static void UI_Sequencer_LoadTimingDraft(void)
 
 static void UI_Sequencer_CommitTimingDraft(void)
 {
+    Bridge_PersistBegin();
     Bridge_SetPatternStepCount(s_timing_step_count);
     Bridge_SetPatternStepDivision(s_timing_step_division);
     Bridge_SetTimeSignature(s_timing_ts_num, s_timing_ts_den);
     Bridge_SetSwing(s_timing_swing);
+    Bridge_PersistEnd();
 }
 
 static uint8_t UI_Sequencer_TimingDraftIsDirty(void)
@@ -324,6 +328,7 @@ static void UI_Sequencer_CommitChordDraft(void)
 {
     UI_Sequencer_SaveChordDraftForPattern();
 
+    Bridge_PersistBegin();
     for (uint8_t i = 0; i < 12; i++)
     {
         Bridge_SetStepChordParams(i,
@@ -333,6 +338,7 @@ static void UI_Sequencer_CommitChordDraft(void)
                                   s_step_chords[i].duration,
                                   s_step_chords[i].loop_count);
     }
+    Bridge_PersistEnd();
 }
 
 static char UI_Sequencer_CycleNameChar(char current, int8_t delta)
@@ -547,8 +553,16 @@ void UI_Sequencer_Update(void)
                 }
                 else if (selected_idx == 0)
                 {
-                    s_step_chords[s_menu_step - 1].chord_type = 0;
-                    UI_Sequencer_CommitChordDraft();
+                    uint8_t step_index = (uint8_t)(s_menu_step - 1);
+                    s_step_chords[step_index].chord_type = 0;
+
+                    Bridge_SetStepChordParams(step_index,
+                                              s_step_chords[step_index].root_key,
+                                              0,
+                                              s_step_chords[step_index].arp_pattern,
+                                              s_step_chords[step_index].duration,
+                                              s_step_chords[step_index].loop_count);
+                    UI_Sequencer_SaveChordDraftForPattern();
                     UI_Sequencer_SetMainMode(UI_MAIN_MODE_STEP);
                     UI_Sequencer_ExitToGrid();
                 }

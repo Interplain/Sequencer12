@@ -2,7 +2,7 @@
 
 12-step chord sequencer / harmonic performance module for Eurorack, built on STM32F405RGT6 with a 240x320 ST7789 SPI display.
 
-## Current State (April 2026)
+## Current State (May 2026)
 
 This README is updated to reflect the latest firmware work since the last upload.
 
@@ -48,6 +48,22 @@ This README is updated to reflect the latest firmware work since the last upload
   - Hydration from engine note-mask metadata for pink-step recovery in chord mode
 - Main loop responsiveness:
   - Loop delay now targets a 10 ms floor instead of always adding 10 ms
+- DAC8564 calibration (all 4 channels):
+  - Per-channel two-point calibration (low/high voltage reference measurements)
+  - Calibration data persisted to FRAM and loaded at boot
+  - All 4 CV output channels (A/B/C/D) calibrated independently
+  - Calibration mode accessible via Shift+Encoder press in STEP grid
+  - Real-world voltage accuracy corrected for DAC offset and gain error
+- ST7789 display speed improvements:
+  - SPI1 boosted from 10.5 MHz to 42 MHz (prescaler /4)
+  - DMA enabled for all display writes (ST7789_USE_DMA=1, DMA2 Stream3 Ch3)
+  - Eliminates visible "roller blind" rendering artefact
+- Step piano roll UI:
+  - Completely redesigned — each row owns all its pixels, no partial repaints
+  - Pastel green (white keys) and sky blue (black keys) lane colours
+  - Clean 1 px row separators, no bleed artefacts
+  - Header covers full 48 px (matches main screen header+status strip)
+  - Shift indicator and sidebar suppressed while roll is active
 - FRAM persistence (User Chords):
   - MB85RC256 32KB FRAM on dedicated I2C3 bus (PA8 SCL, PC9 SDA)
   - 128 user chord slots with ~2560 bytes total storage (offset 0x0010)

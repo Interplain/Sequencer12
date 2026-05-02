@@ -1,4 +1,6 @@
+
 #include "platform/fram/mb85rc256.h"
+#include <string.h>
 
 static I2C_HandleTypeDef* s_i2c = 0;
 static uint8_t s_addr_7bit = MB85RC256_ADDR_7BIT;
@@ -17,6 +19,32 @@ void MB85RC256_Init(I2C_HandleTypeDef* hi2c)
         }
     }
 }
+
+// Write, then read back and verify in chunks (safe for large payloads)
+uint8_t MB85RC256_WriteAndVerify(uint16_t address, const uint8_t* src, uint16_t len)
+{
+    uint8_t verify_buf[64];
+    uint16_t offset = 0;
+
+    if (!MB85RC256_Write(address, src, len)) return 0;
+
+    while (offset < len)
+    {
+        uint16_t chunk = (uint16_t)(len - offset);
+        if (chunk > (uint16_t)sizeof(verify_buf))
+        {
+            chunk = (uint16_t)sizeof(verify_buf);
+        }
+
+        if (!MB85RC256_Read((uint16_t)(address + offset), verify_buf, chunk)) return 0;
+        if (memcmp(src + offset, verify_buf, chunk) != 0) return 0;
+
+        offset = (uint16_t)(offset + chunk);
+    }
+
+    return 1;
+}
+
 
 uint8_t MB85RC256_GetAddress7bit(void)
 {
@@ -114,4 +142,23 @@ uint8_t MB85RC256_Write(uint16_t address, const uint8_t* src, uint16_t len)
     }
 
     return 1;
+}
+
+// Format/erase entire FRAM by writing 0xFF to all addresses
+uint8_t MB85RC256_Format(void)
+{
+    uint8_t erase_buf[32];
+    memset(erase_buf, 0xFF, sizeof(erase_buf));
+    
+    // Write 0xFF in 32-byte chunks to all 32KB (1024 chunks total)
+    for (uint16_t i = 0; i < 1024u; i++)
+    {
+        uint16_t address = (uint16_t)(i * 32u);
+        if (!MB85RC256_Write(address, erase_buf, sizeof(erase_buf)))
+        {
+            return 0;  // Failed
+        }
+    }
+    
+    return 1;  // Success
 }

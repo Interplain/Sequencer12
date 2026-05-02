@@ -28,6 +28,9 @@ uint16_t DAC8564_PitchVoltsToCodeForChannel(Dac8564Channel channel, float volts)
 void     DAC8564_SetPitchCalibration(uint16_t code_neg1v, uint16_t code_pos2v);
 void     DAC8564_GetPitchCalibration(uint16_t* code_neg1v, uint16_t* code_pos2v);
 uint16_t DAC8564_PitchVoltsToCode(float volts);
+HAL_StatusTypeDef DAC8564_GetLastSpiStatus(void);
+uint32_t DAC8564_GetWriteCount(void);
+uint8_t  DAC8564_GetLastTx0(void);
 
 #ifdef __cplusplus
 }

@@ -8,6 +8,7 @@ extern "C" {
 #include <stdint.h>
 
 uint8_t Calibration_ShouldEnterOnBoot(void);
+uint8_t Calibration_EnterIfHeldOnBoot(void);
 void    Calibration_ApplySaved(void);
 void    Calibration_RunWizard(void);
 

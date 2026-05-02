@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <array>
 #include "devices/sequencer/sequencer_types.h"
+#include "platform/fram/fram_layout.h"
 
 namespace sequencer
 {
@@ -27,6 +28,9 @@ struct UserChord
 
 constexpr uint32_t kUserChordBlockSize =
     sizeof(UserChord) * kUserChordCount;
+
+static_assert(kUserChordBlockSize == FRAM_USERCHORDS_SIZE,
+              "FRAM_USERCHORDS_SIZE must match UserChord storage footprint");
 
 // ─────────────────────────────────────────────
 // User chord library

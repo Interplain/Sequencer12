@@ -44,6 +44,7 @@ typedef enum
 
 /* ── Init ────────────────────────────────────────────────────────────────── */
 void UI_Display_Init(void);
+void UI_Display_FastReturnToGrid(void);
 
 /* ── Grid ────────────────────────────────────────────────────────────────── */
 void UI_Display_DrawGrid(void);
@@ -108,6 +109,7 @@ uint8_t UI_Display_GetUserChordMenuSelection(void);
 /* ── User Chord Create (Piano keyboard) ────────────────────────────────── */
 void UI_Display_DrawPianoKeyboard(const uint16_t note_mask, uint8_t selected_key);
 void UI_Display_DrawStepPianoRoll(uint8_t step, const uint16_t note_mask, uint8_t selected_key);
+void UI_Display_ResetStepPianoRollCache(void);
 void UI_Display_NavigatePianoKeyboard(int8_t delta);
 uint8_t UI_Display_GetSelectedPianoKey(void);
 void UI_Display_TogglePianoKey(uint8_t key);

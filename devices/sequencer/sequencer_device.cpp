@@ -407,6 +407,40 @@ uint16_t SequencerDevice::GetStepNoteMask(uint8_t step_index) const
     return CurrentPattern().steps[step_index].note_mask;
 }
 
+void SequencerDevice::ExportSong(sequencer::Song* out_song) const
+{
+    if (!out_song) return;
+    *out_song = bank_.GetSong();
+}
+
+void SequencerDevice::ImportSong(const sequencer::Song& song)
+{
+    bank_.LoadSong(song);
+
+    if (bank_.GetSong().chain.length == 0)
+    {
+        bank_.ChainClear();
+        bank_.ChainAppend(0);
+    }
+
+    bank_.ChainReset();
+    current_pattern_index_ = bank_.ChainCurrentPatternIndex();
+    if (current_pattern_index_ >= kPatternCount)
+    {
+        current_pattern_index_ = 0;
+    }
+
+    current_step_ = 0;
+    repeat_current_ = 0;
+    step_direction_ = 1;
+    elapsed_step_ms_ = 0;
+
+    RecalculateStepIntervalMs();
+    ApplyCurrentStepBehavior();
+    step_changed_ = true;
+    status_changed_ = true;
+}
+
 bool SequencerDevice::GetStepChordUiParams(uint8_t step_index,
                                            uint8_t* root_key,
                                            uint8_t* chord_type,
@@ -631,6 +665,15 @@ void SequencerDevice::GateOff()
     gate_active_     = false;
     gate_elapsed_ms_ = 0;
     gate_changed_    = true;
+}
+
+bool SequencerDevice::ConsumeCvEvent(uint8_t* note, bool* gate)
+{
+    bool dirty = step_changed_ || arp_note_changed_ || gate_changed_;
+    if (!dirty) return false;
+    *note = arp_.HasNotes() ? arp_.CurrentNote() : 0u;
+    *gate = gate_active_;
+    return true;
 }
 
 /* ── Step engine ─────────────────────────────────────────────────────────── */

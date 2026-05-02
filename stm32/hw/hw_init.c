@@ -175,9 +175,8 @@ static void MX_SPI1_Init(void)
      hspi1.Init.CLKPolarity       = SPI_POLARITY_HIGH;
      hspi1.Init.CLKPhase          = SPI_PHASE_2EDGE;
     hspi1.Init.NSS               = SPI_NSS_SOFT;
-    /* 10.5 MHz (168/16): confirmed clean pixel output on this panel. */
-    /* 10.5 MHz (168/16): confirmed clean pixel output on this panel. */
-    hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
+    /* 42 MHz (168/4): within ST7789 spec (max ~62 MHz). */
+    hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
     hspi1.Init.FirstBit          = SPI_FIRSTBIT_MSB;
     hspi1.Init.TIMode            = SPI_TIMODE_DISABLE;
     hspi1.Init.CRCCalculation    = SPI_CRCCALCULATION_DISABLE;
@@ -216,7 +215,7 @@ static void MX_SPI2_Init(void)
     hspi2.Init.Direction         = SPI_DIRECTION_2LINES;
     hspi2.Init.DataSize          = SPI_DATASIZE_8BIT;
     hspi2.Init.CLKPolarity       = SPI_POLARITY_LOW;
-    hspi2.Init.CLKPhase          = SPI_PHASE_1EDGE;
+    hspi2.Init.CLKPhase          = SPI_PHASE_2EDGE;
     hspi2.Init.NSS               = SPI_NSS_SOFT;
     hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
     hspi2.Init.FirstBit          = SPI_FIRSTBIT_MSB;
@@ -257,8 +256,8 @@ static void MX_I2C3_Init(void)
     __HAL_RCC_I2C3_CLK_ENABLE();
 
     hi2c3.Instance             = I2C3;
-    hi2c3.Init.ClockSpeed      = 100000;
-    hi2c3.Init.DutyCycle       = I2C_DUTYCYCLE_2;
+    hi2c3.Init.ClockSpeed      = 400000;
+    hi2c3.Init.DutyCycle       = I2C_DUTYCYCLE_16_9;
     hi2c3.Init.OwnAddress1     = 0;
     hi2c3.Init.AddressingMode  = I2C_ADDRESSINGMODE_7BIT;
     hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;

@@ -7,10 +7,13 @@
 #include "calibration.h"
 #include "sequencer_bridge.h"
 #include "user_chord_bridge.h"
+#include "ui/ui_display.h"
 #include "ui/ui_sequencer.h"
 #include "ui/ui_input.h"
+#include <stdio.h>
 
 #define DISPLAY_BRINGUP_TEST 0
+#define DEBUG_FORMAT_FRAM 0  // Set to 1 to erase entire FRAM on boot (disabled after format)
 
 int main(void)
 {
@@ -28,6 +31,16 @@ int main(void)
     /* Init display */
     ST7789_Init();
 
+    /* Keep reset asserted during early panel settle to prevent transient white screen. */
+    for (uint8_t i = 0; i < 12; i++)
+    {
+        GPIOA->BSRR = (1U << 9);
+        HAL_Delay(5);
+    }
+
+    ST7789_DisplayOn();
+    ST7789_Fill_Color(BLACK);
+
 #if DISPLAY_BRINGUP_TEST
     ST7789_Fill_Color(BLACK);
     HAL_Delay(40);
@@ -43,17 +56,42 @@ int main(void)
     /* Init FRAM on dedicated I2C3 bus (PA8=SCL / PC9=SDA) */
     MB85RC256_Init(&hi2c3);
 
+#if DEBUG_FORMAT_FRAM
+    /* Erase entire FRAM and wait (takes ~30 seconds) */
+    ST7789_Fill_Color(BLACK);
+    ST7789_DrawStringScaled(12, 100, "Formatting", &Font16x24, 2, YELLOW, BLACK);
+    ST7789_DrawStringScaled(12, 150, "FRAM...", &Font16x24, 2, YELLOW, BLACK);
+    MB85RC256_Format();
+    ST7789_Fill_Color(BLACK);
+    ST7789_DrawStringScaled(12, 100, "Done!", &Font16x24, 2, GREEN, BLACK);
+    HAL_Delay(2000);
+#endif
+
     /* Init DAC8564 */
     DAC8564_Init(&hspi2);
 
-    /* Encoder-held at power-up enters CV calibration wizard */
     if (Calibration_ShouldEnterOnBoot())
     {
+        GPIOA->BSRR = (1U << 9);
+
+        ST7789_Fill_Color(BLACK);
+        ST7789_DrawStringScaled(10, 48, "DAC CAL", &Font16x24, 1, CYAN, BLACK);
+        ST7789_DrawStringScaled(10, 86, "RELEASE ENCODER", &Font16x24, 1, WHITE, BLACK);
+        ST7789_DrawStringScaled(10, 116, "TO START", &Font16x24, 1, WHITE, BLACK);
+
+        while (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12) == GPIO_PIN_RESET)
+        {
+            GPIOA->BSRR = (1U << 9);
+            HAL_Delay(5);
+        }
+
         Calibration_RunWizard();
     }
-
-    /* Apply saved calibration (if present) */
-    Calibration_ApplySaved();
+    else
+    {
+        /* Apply saved calibration (if present) */
+        Calibration_ApplySaved();
+    }
 
     /* Init engine */
     Bridge_Init();

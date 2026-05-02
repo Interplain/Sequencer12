@@ -1,7 +1,6 @@
 #include "platform/dac8564/dac8564.h"
 #include "stm32/hw/hw_init.h"
 
-/* DAC control pins from schematic */
 #define DAC_CS_PORT    GPIOB
 #define DAC_CS_PIN     GPIO_PIN_12
 #define DAC_LDAC_PORT  GPIOB
@@ -9,23 +8,26 @@
 #define DAC_CLR_PORT   GPIOC
 #define DAC_CLR_PIN    GPIO_PIN_4
 
-/* Command nibble (upper 4 bits of first byte) */
-#define DAC8564_CMD_WRITE_UPDATE   0x3u
+#define DAC8564_CMD_WRITE_UPDATE_N    0x01u
+
+/* Logical channel -> DAC address map.
+ * Hardware pin mapping target:
+ *   CH_A -> address 0 (VOUTA, pin 1)
+ *   CH_B -> address 1 (VOUTB, pin 2)
+ *   CH_C -> address 2 (VOUTC, pin 7)
+ *   CH_D -> address 3 (VOUTD, pin 8)
+ */
+static const uint8_t k_channel_addr_map[4] = {0u, 1u, 2u, 3u};
 
 static SPI_HandleTypeDef* s_spi = 0;
 static uint16_t s_pitch_code_neg1v[4] = {0u, 0u, 0u, 0u};
-static uint16_t s_pitch_code_pos2v[4] = {26214u, 26214u, 26214u, 26214u}; /* ~2.0V at 5.0V full-scale */
+static uint16_t s_pitch_code_pos2v[4] = {26214u, 26214u, 26214u, 26214u};
+static HAL_StatusTypeDef s_last_spi_status = HAL_OK;
+static uint32_t s_write_count = 0u;
+static uint8_t s_last_tx0 = 0u;
 
-static void DacSelect(void)
-{
-    HAL_GPIO_WritePin(DAC_CS_PORT, DAC_CS_PIN, GPIO_PIN_RESET);
-}
-
-static void DacDeselect(void)
-{
-    HAL_GPIO_WritePin(DAC_CS_PORT, DAC_CS_PIN, GPIO_PIN_SET);
-}
-
+static void DacSelect(void)    { HAL_GPIO_WritePin(DAC_CS_PORT, DAC_CS_PIN, GPIO_PIN_RESET); }
+static void DacDeselect(void)  { HAL_GPIO_WritePin(DAC_CS_PORT, DAC_CS_PIN, GPIO_PIN_SET); }
 static void DacPulseLdac(void)
 {
     HAL_GPIO_WritePin(DAC_LDAC_PORT, DAC_LDAC_PIN, GPIO_PIN_RESET);
@@ -35,36 +37,42 @@ static void DacPulseLdac(void)
 static void DacWriteFrame(uint8_t cmd, uint8_t addr, uint16_t value)
 {
     if (s_spi == 0) return;
-
     uint8_t tx[3];
-    tx[0] = (uint8_t)((cmd << 4) | (addr & 0x0Fu));
+    /* DAC8564 DB23..DB16 = [A1 A0 LD1 LD0 0 DAC1 DAC0 PD0].
+     * For write-and-update-selected-DAC with A1=A0=0 and PD0=0:
+     * control byte = 0x10 | (channel << 1), yielding 0x10/0x12/0x14/0x16. */
+    tx[0] = (uint8_t)(((cmd & 0x0Fu) << 4) | ((addr & 0x03u) << 1));
+    s_last_tx0 = tx[0];
     tx[1] = (uint8_t)(value >> 8);
     tx[2] = (uint8_t)(value & 0xFFu);
 
     DacSelect();
-    (void)HAL_SPI_Transmit(s_spi, tx, 3, 10);
+    s_last_spi_status = HAL_SPI_Transmit(s_spi, tx, 3, 10);
     DacDeselect();
+
+    if (s_last_spi_status == HAL_OK)
+    {
+        s_write_count++;
+    }
 }
+
+void DAC8564_ClearOutputs(void) { DAC8564_SetAllRaw(0, 0, 0, 0); }
 
 void DAC8564_Init(SPI_HandleTypeDef* hspi)
 {
     s_spi = hspi;
-
-    /* Keep CLR inactive, keep LDAC high for explicit update edges. */
+    /* CLR inactive (high). LDAC starts high; pulsed explicitly after each write. */
     HAL_GPIO_WritePin(DAC_CLR_PORT, DAC_CLR_PIN, GPIO_PIN_SET);
     HAL_GPIO_WritePin(DAC_LDAC_PORT, DAC_LDAC_PIN, GPIO_PIN_SET);
 
     DAC8564_ClearOutputs();
 }
 
-void DAC8564_ClearOutputs(void)
-{
-    DAC8564_SetAllRaw(0, 0, 0, 0);
-}
-
 void DAC8564_SetChannelRaw(Dac8564Channel channel, uint16_t value)
 {
-    DacWriteFrame(DAC8564_CMD_WRITE_UPDATE, (uint8_t)channel, value);
+    uint8_t ch = (uint8_t)channel;
+    if (ch > 3u) return;
+    DacWriteFrame(DAC8564_CMD_WRITE_UPDATE_N, k_channel_addr_map[ch], value);
     DacPulseLdac();
 }
 
@@ -143,11 +151,23 @@ uint16_t DAC8564_PitchVoltsToCodeForChannel(Dac8564Channel channel, float volts)
     if (volts <= -1.0f) return s_pitch_code_neg1v[ch];
     if (volts >= 2.0f) return s_pitch_code_pos2v[ch];
 
-    float t = (volts + 1.0f) / 3.0f; /* map [-1, +2] -> [0, 1] */
+    float t = (volts + 1.0f) / 3.0f;
     float c = (float)s_pitch_code_neg1v[ch] +
               ((float)((int32_t)s_pitch_code_pos2v[ch] - (int32_t)s_pitch_code_neg1v[ch]) * t);
 
     if (c < 0.0f) c = 0.0f;
     if (c > 65535.0f) c = 65535.0f;
     return (uint16_t)c;
+}
+
+HAL_StatusTypeDef DAC8564_GetLastSpiStatus(void)
+{
+    return s_last_spi_status;
+}
+
+uint8_t DAC8564_GetLastTx0(void) { return s_last_tx0; }
+
+uint32_t DAC8564_GetWriteCount(void)
+{
+    return s_write_count;
 }
