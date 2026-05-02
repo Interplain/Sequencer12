@@ -132,9 +132,7 @@ This README is updated to reflect the latest firmware work since the last upload
 
 --------------------------------------
 
-<img width="420" height="440" alt="image" src="https://github.com/user-attachments/assets/b09b02ee-3b01-46fa-93f2-72d0a6dcf1e9" />
 
---------------------------------------
   
 
 
