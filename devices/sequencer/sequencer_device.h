@@ -71,6 +71,9 @@ public:
     uint32_t GetCurrentStep() const { return current_step_; }
     uint32_t GetElapsedMs()   const { return elapsed_step_ms_; }
     bool     IsPlaying()      const { return playing_; }
+    bool     IsGateActive()   const { return gate_active_; }
+    /* Returns the semitone (0-11) of the current arp note, or 0xFF if no note. */
+    uint8_t  GetCurrentNote() const { return arp_.CurrentNote(); }
     /* Consume a pending CV/gate event. Returns true if note+gate state changed.
      * note is 0-11 (semitone within octave). gate is true when gate is active.
      * Clears the dirty flag atomically — call once per Process() cycle. */

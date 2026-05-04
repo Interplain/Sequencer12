@@ -131,15 +131,28 @@ void SequencerDevice::Init()
     p0.tempo_multiplier = 1.0f;
     p0.arp_mode         = ArpMode::Off;
 
-    /* All steps — Chord type, full probability, duration 1 */
+    /* C major scale across 8 steps (C D E F G A B C), steps 9-12 rest.
+     * Gives audible CV movement and distinct gate pulses for modular testing. */
+    static const uint16_t kCMajorScale[8] = {
+        NOTE_C, NOTE_D, NOTE_E, NOTE_F,
+        NOTE_G, NOTE_A, NOTE_B, NOTE_C
+    };
     for (uint32_t i = 0; i < kStepCount; ++i)
     {
-        p0.steps[i].type                = StepType::Chord;
         p0.steps[i].duration_multiplier = 1;
         p0.steps[i].repeat_count        = 1;
         p0.steps[i].velocity            = 100;
         p0.steps[i].probability         = 100;
-        p0.steps[i].note_mask           = 0;
+        if (i < 8u)
+        {
+            p0.steps[i].type      = StepType::Chord;
+            p0.steps[i].note_mask = kCMajorScale[i];
+        }
+        else
+        {
+            p0.steps[i].type      = StepType::Rest;
+            p0.steps[i].note_mask = 0;
+        }
     }
 
     /* No chaining — single pattern loops forever */
@@ -696,6 +709,10 @@ void SequencerDevice::RecalculateStepIntervalMs()
     current_step_interval_ms_ =
         base_step_interval_ms_ *
         CurrentPattern().steps[current_step_].duration_multiplier;
+
+    /* Gate length = 50% of step interval, minimum 5ms */
+    gate_length_ms_ = current_step_interval_ms_ / 2u;
+    if (gate_length_ms_ < 5u) gate_length_ms_ = 5u;
 }
 
 /*.......................................................... */

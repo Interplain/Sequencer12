@@ -69,15 +69,15 @@
 #define COLOR_TEXT_MAIN    WHITE
 #define COLOR_TEXT_SECONDARY LIGHTBLUE
 #define COLOR_TEXT_MUTED   LGRAY
-#define COLOR_ACCENT       RGB565(40, 60, 63)
+#define COLOR_ACCENT       COLOR8(40, 60, 63)
 #define COLOR_ACTIVE       RGB565(16, 40, 63)
 #define COLOR_SELECTED     RGB565(12, 50, 22)
 #define COLOR_CHORD        RGB565(30, 12, 52)
 #define COLOR_STATUS       RGB565(10, 16, 24)
 
-#define COL_PLAY     RGB565(20, 48, 12)   /* grass green */
+#define COL_PLAY     COLOR8(12, 235, 5)   /* grass green */
 #define COL_STOP     COLOR_TEXT_MAIN
-#define COL_REC_ARM  RGB565(63, 0, 0)     /* red */
+#define COL_REC_ARM  COLOR8(235, 20, 5)     /* red */
 #define COL_REC_OFF  COLOR_TEXT_MUTED
 #define COL_SHIFT    YELLOW
 #define COL_ACTIVE   COLOR_ACTIVE

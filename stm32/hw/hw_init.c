@@ -10,6 +10,10 @@ I2C_HandleTypeDef hi2c3;
 TIM_HandleTypeDef htim2;
 DMA_HandleTypeDef hdma_spi1_tx;
 
+#ifndef ST7789_SPI1_PRESCALER
+#define ST7789_SPI1_PRESCALER SPI_BAUDRATEPRESCALER_16
+#endif
+
 // ─────────────────────────────────────────────
 // Forward declarations
 // ─────────────────────────────────────────────
@@ -175,8 +179,8 @@ static void MX_SPI1_Init(void)
      hspi1.Init.CLKPolarity       = SPI_POLARITY_HIGH;
      hspi1.Init.CLKPhase          = SPI_PHASE_2EDGE;
     hspi1.Init.NSS               = SPI_NSS_SOFT;
-    /* 42 MHz (168/4): within ST7789 spec (max ~62 MHz). */
-    hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
+    /* Stage this via ST7789_SPI1_PRESCALER: /16 -> /8 -> /4 as stability allows. */
+    hspi1.Init.BaudRatePrescaler = ST7789_SPI1_PRESCALER;
     hspi1.Init.FirstBit          = SPI_FIRSTBIT_MSB;
     hspi1.Init.TIMode            = SPI_TIMODE_DISABLE;
     hspi1.Init.CRCCalculation    = SPI_CRCCALCULATION_DISABLE;

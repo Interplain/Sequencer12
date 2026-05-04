@@ -15,6 +15,7 @@ namespace {
 
 static constexpr uint8_t kSongMagic[4] = { 0x53, 0x31, 0x32, 0x53 }; // "S12S"
 static constexpr uint32_t kSongBlobVersion = 1u;
+static constexpr bool kMirrorCvToAllDacChannels = false;
 
 typedef struct
 {
@@ -111,23 +112,18 @@ extern "C"
         g_sequencer.Init();
         /* Keep runtime step state volatile: do not restore song step data on boot. */
     }
-    void     Bridge_Tick1ms(void)           { g_sequencer.Tick1ms(); }
-    void     Bridge_Process(void)
+    void     Bridge_Tick1ms(void)
     {
-        uint8_t note = 0;
-        bool    gate = false;
-        if (g_sequencer.ConsumeCvEvent(&note, &gate))
+        g_sequencer.Tick1ms();
+
+        if (g_sequencer.IsGateActive())
         {
-            /* 1V/oct: semitone 0 = 0V, each semitone = 1/12 V.
-             * All 4 channels output the same CV for now (monophonic). */
-            float volts = gate ? (note / 12.0f) : 0.0f;
-            uint16_t code_a = DAC8564_PitchVoltsToCodeForChannel(DAC8564_CH_A, volts);
-            uint16_t code_b = DAC8564_PitchVoltsToCodeForChannel(DAC8564_CH_B, volts);
-            uint16_t code_c = DAC8564_PitchVoltsToCodeForChannel(DAC8564_CH_C, volts);
-            uint16_t code_d = DAC8564_PitchVoltsToCodeForChannel(DAC8564_CH_D, volts);
-            DAC8564_SetAllRaw(code_a, code_b, code_c, code_d);
+            GPIOC->BSRR = GPIO_PIN_5;
         }
-        g_sequencer.Process();
+        else
+        {
+            GPIOC->BSRR = (uint32_t)GPIO_PIN_5 << 16;
+        }
     }
     void     Bridge_Start(void)             { g_sequencer.Start(); }
     void     Bridge_Stop(void)              { g_sequencer.Stop(); }
@@ -221,6 +217,34 @@ extern "C"
         return g_sequencer.GetStepNoteMask(step_index);
     }
 
+    void Bridge_Process(void)
+    {
+        g_sequencer.Process();
+
+        const uint8_t note = g_sequencer.GetCurrentNote();
+        if (note <= 11u)
+        {
+            /* Full-range test mapping: C (note 0) → -1V, B (note 11) → +2V.
+             * Spans the entire calibrated range so each semitone step is ~0.27V —
+             * clearly visible on a multimeter and audible on any VCO.
+             * Each step: volts = -1.0 + note * (3.0 / 11.0) */
+            const float volts = -1.0f + (float)note * (3.0f / 11.0f);
+            if (kMirrorCvToAllDacChannels)
+            {
+                const uint16_t code_a = DAC8564_PitchVoltsToCodeForChannel(DAC8564_CH_A, volts);
+                const uint16_t code_b = DAC8564_PitchVoltsToCodeForChannel(DAC8564_CH_B, volts);
+                const uint16_t code_c = DAC8564_PitchVoltsToCodeForChannel(DAC8564_CH_C, volts);
+                const uint16_t code_d = DAC8564_PitchVoltsToCodeForChannel(DAC8564_CH_D, volts);
+                DAC8564_SetAllRaw(code_a, code_b, code_c, code_d);
+            }
+            else
+            {
+                const uint16_t code_a = DAC8564_PitchVoltsToCodeForChannel(DAC8564_CH_A, volts);
+                DAC8564_SetChannelRaw(DAC8564_CH_A, code_a);
+            }
+        }
+    }
+
     const char* Bridge_GetStepChordDisplayName(uint8_t step_index, char* buf, uint8_t buf_len)
     {
         if (!buf || buf_len == 0) return "";
@@ -281,6 +305,4 @@ uint32_t Bridge_GetCompletedLoops(void)
 {
     return g_sequencer.GetCompletedLoops();
 }
-
-
 }

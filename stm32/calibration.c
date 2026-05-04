@@ -14,10 +14,12 @@
 #define CAL_BOOT_HOLD_START_MS   70u
 #define CAL_BOOT_HOLD_SAMPLES    5u
 #define CAL_BOOT_HOLD_STEP_MS    12u
-#define CAL_CODE_STEP            16u
+#define CAL_CODE_STEP_FINE       1u
+#define CAL_CODE_STEP_COARSE     64u
 #define CAL_MIRROR_ALL_CHANNELS  0u
 #define CAL_DEFAULT_NEG1_CODE    32768u
 #define CAL_DEFAULT_POS2_CODE    52428u
+#define CAL_DEBOUNCE_MS          80u
 
 static inline void KeepDisplayAlive(void)
 {
@@ -41,7 +43,6 @@ static uint32_t CalChecksum(const CalBlob* b)
     return b->magic ^ b->version ^ b->ch_a ^ b->ch_b ^ b->ch_c ^ b->ch_d ^ 0xA5A55A5Au;
 }
 
-// Read calibration blob from FRAM and unpack
 static uint8_t CalRead(uint16_t neg1[4], uint16_t pos2[4])
 {
     CalBlob b;
@@ -67,7 +68,6 @@ static uint8_t CalRead(uint16_t neg1[4], uint16_t pos2[4])
     return 1;
 }
 
-// Write calibration blob to FRAM with verification
 static uint8_t CalWrite(const uint16_t neg1[4], const uint16_t pos2[4])
 {
     CalBlob b;
@@ -85,13 +85,11 @@ static uint8_t CalWrite(const uint16_t neg1[4], const uint16_t pos2[4])
     return MB85RC256_WriteAndVerify(FRAM_CALIBRATION_ADDR, (const uint8_t*)&b, sizeof(CalBlob));
 }
 
-static uint8_t EncPressedEdge(uint8_t* prev)
+static uint8_t EncButtonRaw(void)
 {
-    uint8_t now = (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12) == GPIO_PIN_RESET) ? 1u : 0u;
-    uint8_t edge = (uint8_t)((*prev == 0u && now == 1u) ? 1u : 0u);
-    *prev = now;
-    return edge;
+    return (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12) == GPIO_PIN_RESET) ? 1u : 0u;
 }
+
 
 static int8_t EncStep(int16_t* last)
 {
@@ -104,7 +102,6 @@ static int8_t EncStep(int16_t* last)
         return 0;
     }
 
-    /* Track every observed movement so reverse ticks are not lost by thresholding. */
     *last = (int16_t)now_u;
     return (delta > 0) ? 1 : -1;
 }
@@ -117,20 +114,21 @@ static void DrawCalStatic(const char* title, const char* hint)
     ST7789_DrawString(8, 48, title, &Font12x20, CYAN, BLACK);
     ST7789_DrawString(8, 80, hint, &Font8x12, LIGHTBLUE, BLACK);
 
-    ST7789_DrawString(8, 150, "Turn encoder", &Font8x12, WHITE, BLACK);
-    ST7789_DrawString(8, 164, "Press to confirm", &Font8x12, WHITE, BLACK);
+    ST7789_DrawString(8, 150, "Turn = fine adjust", &Font8x12, WHITE, BLACK);
+    ST7789_DrawString(8, 164, "Hold+Turn = coarse", &Font8x12, WHITE, BLACK);
+    ST7789_DrawString(8, 178, "Double-click = confirm", &Font8x12, WHITE, BLACK);
 }
 
-static void DrawCalCode(uint16_t code, uint8_t force_clear)
+static void DrawCalCode(uint16_t code, uint16_t step, uint8_t force_clear)
 {
-    char line[32];
+    char line[40];
 
     if (force_clear)
     {
         ST7789_FillRect(8, 110, 220, 20, BLACK);
     }
 
-    snprintf(line, sizeof(line), "DAC code: %u", (unsigned)code);
+    snprintf(line, sizeof(line), "DAC:%u  step:%u", (unsigned)code, (unsigned)step);
     ST7789_DrawString(8, 110, line, &Font12x20, YELLOW, BLACK);
 }
 
@@ -179,11 +177,15 @@ static uint16_t AdjustCodeStep(const char* title,
 {
     uint16_t code = start_code;
     int16_t last_enc = (int16_t)TIM2->CNT;
-    uint8_t prev_btn = (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12) == GPIO_PIN_RESET) ? 1u : 0u;
     uint16_t shown_code = (uint16_t)(code ^ 0xFFFFu);
+    uint16_t current_step = CAL_CODE_STEP_FINE;
+    uint8_t prev_btn = 0;
+    uint8_t click_count = 0;
+    uint32_t first_click_time = 0;
+    uint8_t encoder_moved_during_press = 0;
 
     DrawCalStatic(title, hint);
-    DrawCalCode(code, 1u);
+    DrawCalCode(code, current_step, 1u);
     DrawCalEncoderState((uint16_t)TIM2->CNT, 0, 1u);
     DrawCalDacDebug(1u);
     shown_code = code;
@@ -194,42 +196,80 @@ static uint16_t AdjustCodeStep(const char* title,
     {
         KeepDisplayAlive();
 
+        uint8_t btn_now = EncButtonRaw();
+
+        /* Choose step size: hold button + turn = coarse, turn alone = fine */
+        current_step = btn_now ? CAL_CODE_STEP_COARSE : CAL_CODE_STEP_FINE;
+
         int8_t step = EncStep(&last_enc);
         if (step != 0)
         {
-            int32_t v = (int32_t)code + (int32_t)step * (int32_t)CAL_CODE_STEP;
+            int32_t v = (int32_t)code + (int32_t)step * (int32_t)current_step;
             if (v < 0) v = 0;
             if (v > 65535) v = 65535;
             code = (uint16_t)v;
             CalWriteOutput(channel, code);
             DrawCalEncoderState((uint16_t)TIM2->CNT, step, 1u);
             DrawCalDacDebug(1u);
+            encoder_moved_during_press = 1;
         }
 
         if (code != shown_code)
         {
-            DrawCalCode(code, 1u);
+            DrawCalCode(code, current_step, 1u);
             shown_code = code;
         }
 
-        if (EncPressedEdge(&prev_btn))
+        /* Track button press for encoder movement detection */
+        if (btn_now && !prev_btn)
         {
-            while (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12) == GPIO_PIN_RESET)
-            {
-                KeepDisplayAlive();
-                HAL_Delay(5);
-            }
-            return code;
+            /* Button just pressed — reset movement flag */
+            encoder_moved_during_press = 0;
         }
 
+        /* Detect rising edge (button released) for double-click */
+        if (!btn_now && prev_btn)
+        {
+            /* Button just released — only count if encoder didn't move */
+            if (!encoder_moved_during_press)
+            {
+                if (click_count == 0)
+                {
+                    click_count = 1;
+                    first_click_time = HAL_GetTick();
+                }
+                else if (click_count == 1)
+                {
+                    /* Second click within window — confirm */
+                    if ((HAL_GetTick() - first_click_time) < 500u)
+                    {
+                        HAL_Delay(CAL_DEBOUNCE_MS);
+                        prev_btn = btn_now;
+                        return code;
+                    }
+                    else
+                    {
+                        /* Too slow — treat as first click of new pair */
+                        click_count = 1;
+                        first_click_time = HAL_GetTick();
+                    }
+                }
+            }
+        }
+
+        /* Reset click count if window expired */
+        if (click_count == 1 && (HAL_GetTick() - first_click_time) >= 500u)
+        {
+            click_count = 0;
+        }
+
+        prev_btn = btn_now;
         HAL_Delay(5);
     }
 }
 
 uint8_t Calibration_ShouldEnterOnBoot(void)
 {
-    /* Encoder held at boot enters calibration mode.
-     * Require a stable hold window to avoid false triggers during power ramp. */
     if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12) != GPIO_PIN_RESET) return 0u;
 
     HAL_Delay(CAL_BOOT_HOLD_START_MS);
@@ -252,8 +292,6 @@ uint8_t Calibration_EnterIfHeldOnBoot(void)
         return 0u;
     }
 
-    /* Diagnostic mode: show only a static screen so boot-entry rendering
-     * can be validated in isolation before enabling wizard flow. */
     ST7789_Fill_Color(BLACK);
     ST7789_DrawStringScaled(12, 56, "CALIBRATION", &Font16x24, 1, WHITE, BLACK);
     ST7789_DrawStringScaled(12, 98, "ENTRY TEST", &Font16x24, 1, CYAN, BLACK);
@@ -285,7 +323,6 @@ void Calibration_RunWizard(void)
     char title[24];
     char hint[44];
 
-    /* Ensure encoder counter is alive in calibration path even if prior mode touched TIM2. */
     HAL_TIM_Encoder_Stop(&htim2, TIM_CHANNEL_ALL);
     __HAL_TIM_SET_COUNTER(&htim2, 0);
     HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
@@ -318,15 +355,29 @@ void Calibration_RunWizard(void)
     ST7789_DrawString(8, 88, "Press encoder to continue", &Font8x12, WHITE, BLACK);
 
     {
-        uint8_t prev_btn = 0;
-        while (!EncPressedEdge(&prev_btn))
+        uint8_t wait_btn = 0;
+        uint32_t wait_start = 0;
+
+        while (1)
         {
             KeepDisplayAlive();
-            HAL_Delay(5);
-        }
-        while (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12) == GPIO_PIN_RESET)
-        {
-            KeepDisplayAlive();
+            uint8_t pressed = EncButtonRaw();
+
+            if (pressed && !wait_btn)
+            {
+                wait_start = HAL_GetTick();
+                wait_btn = 1;
+            }
+            else if (!pressed && wait_btn)
+            {
+                if ((HAL_GetTick() - wait_start) >= CAL_DEBOUNCE_MS)
+                {
+                    HAL_Delay(CAL_DEBOUNCE_MS);
+                    break;
+                }
+                wait_btn = 0;
+            }
+
             HAL_Delay(5);
         }
     }
