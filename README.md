@@ -2,6 +2,13 @@
 
 Structured modular composition system for Eurorack.
 
-Built on STM32F405RGT6 with a 240x320 ST7789 SPI display, calibrated multi-channel CV output, planned interpreted ADC/CV input architecture, MIDI integration, persistent FRAM storage, and a deterministic embedded runtime architecture.
+Built on STM32F405RGT6 with:
+- calibrated multi-channel CV output
+- interpreted ADC/CV input architecture
+- clock input/output
+- MIDI integration
+- persistent FRAM storage
+- deterministic scheduler-driven firmware
+- and a 240x320 ST7789 SPI display UI.
 
-S12 is designed not only to generate musical output, but to interpret external modular signals, timing, harmonic input, and transport state into structured musical composition.
+S12 is designed to transform modular signals, timing, harmonic input, and performance gestures into structured musical composition.
