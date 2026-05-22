@@ -28,7 +28,7 @@ typedef struct {
     /* Called once when the screen is entered */
     void (*on_enter)(void);
 
-    /* Called periodically (e.g., every 10ms for UI updates) */
+    /* Called from the UI scheduler/update loop while active */
     void (*on_update)(void);
 
     /* Called when user input is received (e.g., encoder/button press) */
