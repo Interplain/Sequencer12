@@ -1,32 +1,26 @@
 /*
- * ui_screens/ui_chord_menu_state.h
- * Chord Menu screen state container.
- *
- * This file defines the state ownership model for the CHORD_MENU screen.
- * No functional integration yet; this is purely structural scaffolding.
- *
- * CHORD_MENU responsibilities:
- * - Allow user to select a chord type (0=clear, 1-16=predefined, 17=user chords)
- * - Display current step and selected chord
- * - Support toggle between predefined and user chord sources (Shift+Encoder Press)
- * - Transition to CHORD_PARAMS or USER_CHORD_MENU on selection
+ * ui_chord_menu_state.h
+ * 
+ * State container for CHORD_MENU screen.
+ * 
+ * This header defines the state owned by the CHORD_MENU screen.
+ * It is intentionally renderer-agnostic and does not depend on display
+ * or rendering infrastructure. This allows state ownership to remain
+ * independent from rendering implementation.
+ * 
+ * Rendering is handled by the caller (ui_sequencer.c) via ui_display.h.
  */
 
 #ifndef UI_CHORD_MENU_STATE_H
 #define UI_CHORD_MENU_STATE_H
 
 #include <stdint.h>
-#include "ui_display.h"  /* For ChordParams struct */
 
+/* State owned by CHORD_MENU screen */
 typedef struct {
-    /* The step being edited (1-12) */
-    uint8_t step;
-
-    /* Currently selected chord index (0-17) */
-    uint8_t selected_chord_idx;
-
-    /* Last predefined chord index, for Shift+Press toggle between sources */
-    uint8_t last_predefined_chord;
+    uint8_t step;                    /* which step (1-12) we're editing */
+    uint8_t selected_chord_idx;      /* current selection (0-17) */
+    uint8_t last_predefined_chord;   /* for Shift+Press toggle user/predefined */
 } ChordMenuState;
 
 /*
@@ -48,6 +42,7 @@ typedef struct {
  * on_draw():
  *   - Render chord menu in owned region (MENU_LIST region)
  *   - Display step header, chord buttons, footer
+ *   - Rendering handled by display module (ui_display.c)
  *
  * on_exit(reason):
  *   - If SAVE/SELECT: apply selected chord to step (state already applied)
