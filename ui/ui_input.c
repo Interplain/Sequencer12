@@ -13,6 +13,9 @@ static uint16_t s_step_pressed_mask = 0;
 static uint16_t s_shift_step_pressed_mask = 0;
 static uint16_t s_prev_raw        = 0xFFFF;
 static uint16_t s_prev_matrix_pressed = 0;
+static uint16_t s_matrix_candidate = 0;
+static uint16_t s_matrix_debounced_pressed = 0;
+static uint32_t s_matrix_candidate_ms = 0;
 static uint8_t  s_enc_btn_prev    = 1;
 static uint8_t  s_play_pressed    = 0;
 static uint8_t  s_shift_play_pressed = 0;
@@ -21,6 +24,8 @@ static uint8_t  s_shift_rec_pressed  = 0;
 static uint8_t  s_shift_tap       = 0;
 static uint8_t  s_shift_consumed  = 0;
 static uint32_t s_last_mcp_check_ms = 0;
+
+#define MATRIX_DEBOUNCE_MS 12u
 
 static const uint8_t s_col_bits[4] = {
     MCP_MATRIX_COL1_BIT,
@@ -102,6 +107,9 @@ void UI_Input_Init(void)
     s_step_pressed_mask = 0;
     s_shift_step_pressed_mask = 0;
      s_prev_matrix_pressed = 0;
+    s_matrix_candidate = 0;
+    s_matrix_debounced_pressed = 0;
+    s_matrix_candidate_ms = HAL_GetTick();
     s_enc_btn_prev    = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12);
     s_play_pressed    = 0;
     s_shift_play_pressed = 0;
@@ -141,6 +149,9 @@ void UI_Input_Poll(void)
                 MCP23017_WriteGPIOA(&hi2c1, (uint8_t)MCP_MATRIX_COL_MASK);
                 s_prev_raw = PrimeButtons();
                 s_prev_matrix_pressed = 0;
+                s_matrix_candidate = 0;
+                s_matrix_debounced_pressed = 0;
+                s_matrix_candidate_ms = now;
             }
         }
     }
@@ -201,24 +212,56 @@ void UI_Input_Poll(void)
 
     /* Step matrix scan (active low) */
     {
+        uint32_t matrix_now = HAL_GetTick();
         uint16_t matrix_pressed = ScanStepMatrix();
-        uint16_t step_falling = (uint16_t)(matrix_pressed & (uint16_t)(~s_prev_matrix_pressed));
-        s_prev_matrix_pressed = matrix_pressed;
 
-        if (step_falling != 0u)
+        if (matrix_pressed != s_matrix_candidate)
         {
-            for (uint8_t i = 0; i < 12; i++)
+            s_matrix_candidate = matrix_pressed;
+            s_matrix_candidate_ms = matrix_now;
+        }
+        else if ((uint32_t)(matrix_now - s_matrix_candidate_ms) >= MATRIX_DEBOUNCE_MS)
+        {
+            s_prev_matrix_pressed = s_matrix_debounced_pressed;
+            s_matrix_debounced_pressed = s_matrix_candidate;
+
+            uint16_t step_falling = (uint16_t)(s_matrix_debounced_pressed & (uint16_t)(~s_prev_matrix_pressed));
+
+            if (step_falling != 0u)
             {
-                if (step_falling & (uint16_t)(1u << i))
+                /*
+                 * Hardware transients can briefly report multiple steps in one scan.
+                 * Queue only one press (highest index), which keeps rightmost-column
+                 * keys from walking through lower-numbered steps.
+                 */
+                if ((step_falling & (uint16_t)(step_falling - 1u)) != 0u)
                 {
-                    if (shift_was_held)
+                    uint16_t single = 0;
+                    for (int8_t i = 11; i >= 0; i--)
                     {
-                        s_shift_step_pressed_mask |= (uint16_t)(1u << i);
-                        s_shift_consumed = 1;
+                        uint16_t bit = (uint16_t)(1u << (uint8_t)i);
+                        if (step_falling & bit)
+                        {
+                            single = bit;
+                            break;
+                        }
                     }
-                    else
+                    step_falling = single;
+                }
+
+                for (uint8_t i = 0; i < 12; i++)
+                {
+                    if (step_falling & (uint16_t)(1u << i))
                     {
-                        s_step_pressed_mask |= (uint16_t)(1u << i);
+                        if (shift_was_held)
+                        {
+                            s_shift_step_pressed_mask |= (uint16_t)(1u << i);
+                            s_shift_consumed = 1;
+                        }
+                        else
+                        {
+                            s_step_pressed_mask |= (uint16_t)(1u << i);
+                        }
                     }
                 }
             }

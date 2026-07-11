@@ -78,10 +78,21 @@ void DAC8564_SetChannelRaw(Dac8564Channel channel, uint16_t value)
 
 void DAC8564_SetAllRaw(uint16_t a, uint16_t b, uint16_t c, uint16_t d)
 {
-    DAC8564_SetChannelRaw(DAC8564_CH_A, a);
-    DAC8564_SetChannelRaw(DAC8564_CH_B, b);
-    DAC8564_SetChannelRaw(DAC8564_CH_C, c);
-    DAC8564_SetChannelRaw(DAC8564_CH_D, d);
+    /* Hold LDAC high — writes go to input registers only.
+     * All four channels are written, then LDAC is pulsed LOW
+     * so all four outputs update at exactly the same instant.
+     * This prevents audible glitches during chord transitions
+     * where all voices need to change simultaneously.
+     * Requires LDAC (Pin 16) connected to PB14 via 10k resistor
+     * with 10k pull-up to +3.3V on the PCB. */
+    HAL_GPIO_WritePin(DAC_LDAC_PORT, DAC_LDAC_PIN, GPIO_PIN_SET);
+
+    DacWriteFrame(DAC8564_CMD_WRITE_UPDATE_N, k_channel_addr_map[0], a);
+    DacWriteFrame(DAC8564_CMD_WRITE_UPDATE_N, k_channel_addr_map[1], b);
+    DacWriteFrame(DAC8564_CMD_WRITE_UPDATE_N, k_channel_addr_map[2], c);
+    DacWriteFrame(DAC8564_CMD_WRITE_UPDATE_N, k_channel_addr_map[3], d);
+
+    DacPulseLdac();
 }
 
 uint16_t DAC8564_VoltsToCode(float volts, float full_scale_volts)

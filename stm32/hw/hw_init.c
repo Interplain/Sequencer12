@@ -86,9 +86,8 @@ static void MX_GPIO_Init(void)
     __HAL_RCC_DMA2_CLK_ENABLE();
     __DSB();
 
-    // PA4 unused, PA6=DC HIGH
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);
+    // PA4=LCD CS HIGH (active-low), PA6=DC HIGH
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4 | GPIO_PIN_6, GPIO_PIN_SET);
     g.Pin   = GPIO_PIN_4 | GPIO_PIN_6;
     g.Mode  = GPIO_MODE_OUTPUT_PP;
     g.Pull  = GPIO_NOPULL;
@@ -102,14 +101,6 @@ static void MX_GPIO_Init(void)
     g.Pull  = GPIO_PULLUP;
     g.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOA, &g);
-
-    // PB0 = LCD CS idle HIGH (active-low)
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
-    g.Pin   = GPIO_PIN_0;
-    g.Mode  = GPIO_MODE_OUTPUT_PP;
-    g.Pull  = GPIO_NOPULL;
-    g.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOB, &g);
 
     // DAC control pins: PB12=CS HIGH, PB14=LDAC HIGH, PC4=CLR HIGH
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12 | GPIO_PIN_14, GPIO_PIN_SET);

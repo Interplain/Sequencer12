@@ -50,6 +50,16 @@ void UI_Display_FastReturnToGrid(void);
 void UI_Display_DrawGrid(void);
 void UI_Display_DrawStepBox(uint8_t step, uint8_t selected, uint8_t active, uint8_t has_chord);
 void UI_Display_SetRepeatFlash(uint8_t enabled, uint8_t on_phase);
+void UI_Display_DrawMainGridComposed(uint8_t selected_step,
+                                     uint8_t active_step,
+                                     const uint8_t* has_chord_flags,
+                                     uint16_t bpm,
+                                     TransportState state,
+                                     uint8_t rec_armed,
+                                     uint8_t pattern,
+                                     uint8_t step,
+                                     uint32_t loops,
+                                     uint32_t run_time_ms);
 
 /* ── Header ──────────────────────────────────────────────────────────────── */
 void UI_Display_DrawHeader(uint16_t bpm, TransportState state, uint8_t rec_armed);
@@ -65,16 +75,14 @@ void UI_Display_DrawStatusRow(uint8_t pattern,
 void UI_Display_SetMainMode(UiMainMode mode);
 
 /* ── Chord Menu ───────────────────────────────────────────────────────────── */
-void UI_Display_DrawChordMenu(uint8_t step, const ChordParams* chord);
-void UI_Display_NavigateChordMenu(int8_t delta, uint8_t step, const ChordParams* chord);
-uint8_t UI_Display_GetSelectedChord(void);
-void UI_Display_SetChordSelection(uint8_t selection);
+void UI_Display_DrawChordMenu(uint8_t step, const ChordParams* chord, uint8_t selection);
+void UI_Display_NavigateChordMenu(int8_t delta, uint8_t step, const ChordParams* chord, uint8_t* selection);
 
 /* ── Chord Parameters ─────────────────────────────────────────────────────── */
-void UI_Display_DrawChordParams(uint8_t step, const ChordParams* chord, uint8_t param_cursor);
-void UI_Display_NavigateChordParams(int8_t delta, uint8_t step, ChordParams* chord, uint8_t param_cursor);
+void UI_Display_DrawChordParams(uint8_t step, const ChordParams* chord, uint8_t param_cursor, uint8_t footer_action);
+void UI_Display_NavigateChordParams(int8_t delta, uint8_t step, ChordParams* chord, uint8_t param_cursor, uint8_t footer_action);
 void UI_Display_DrawParamFooterActions(uint8_t selected_action);
-void UI_Display_NavigateParamFooterActions(int8_t delta, uint8_t step, const ChordParams* chord, uint8_t param_cursor);
+void UI_Display_NavigateParamFooterActions(int8_t delta, uint8_t step, const ChordParams* chord, uint8_t param_cursor, uint8_t* footer_action);
 uint8_t UI_Display_GetSelectedParamAction(void);
 void UI_Display_SetSelectedParamAction(uint8_t action);
 

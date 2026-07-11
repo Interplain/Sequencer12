@@ -240,6 +240,12 @@ void ST7789_Init(void)
 /* Rotation / inversion                                                      */
 /* ------------------------------------------------------------------------- */
 
+void ST7789_DisplayOff(void)
+{
+    WriteCommand(ST7789_DISPOFF);
+    HAL_Delay(20);
+}
+
 void ST7789_DisplayOn(void)
 {
     WriteCommand(ST7789_DISPON);
@@ -322,6 +328,119 @@ void ST7789_FillRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t co
     CS_ASSERT(); DC_HIGH();  /* HIGH = data */
     for (uint16_t row = 0; row < h; row++)
         dma_send(lineBuf, (uint16_t)(w * 2U));
+    CS_RELEASE();
+}
+
+void ST7789_FillRectBordered(uint16_t x, uint16_t y,
+                             uint16_t w, uint16_t h,
+                             uint16_t fill_color,
+                             uint16_t border_color,
+                             uint8_t border_t)
+{
+    if (x >= ST7789_WIDTH || y >= ST7789_HEIGHT) return;
+    if (w == 0 || h == 0) return;
+    if ((x + w) > ST7789_WIDTH)  w = ST7789_WIDTH - x;
+    if ((y + h) > ST7789_HEIGHT) h = ST7789_HEIGHT - y;
+
+    if (border_t == 0U || fill_color == border_color)
+    {
+        ST7789_FillRect(x, y, w, h, fill_color);
+        return;
+    }
+
+    uint16_t max_border_t = (uint16_t)(w / 2U);
+    if ((uint16_t)(h / 2U) < max_border_t)
+    {
+        max_border_t = (uint16_t)(h / 2U);
+    }
+    if (border_t > max_border_t)
+    {
+        border_t = (uint8_t)max_border_t;
+    }
+    if (border_t == 0U)
+    {
+        ST7789_FillRect(x, y, w, h, fill_color);
+        return;
+    }
+
+    {
+        uint8_t fill_hi = (uint8_t)(fill_color >> 8);
+        uint8_t fill_lo = (uint8_t)(fill_color & 0xFF);
+        uint8_t border_hi = (uint8_t)(border_color >> 8);
+        uint8_t border_lo = (uint8_t)(border_color & 0xFF);
+        uint16_t row_bytes = (uint16_t)(w * 2U);
+        uint16_t inner_start = border_t;
+        uint16_t inner_end = (uint16_t)(w - border_t);
+
+        SetAddressWindow(x, y, (uint16_t)(x + w - 1U), (uint16_t)(y + h - 1U));
+        CS_ASSERT();
+        DC_HIGH();
+
+        for (uint16_t i = 0; i < w; i++)
+        {
+            lineBuf[i * 2U] = border_hi;
+            lineBuf[i * 2U + 1U] = border_lo;
+        }
+
+        for (uint8_t row = 0; row < border_t; row++)
+        {
+            (void)row;
+            dma_send(lineBuf, row_bytes);
+        }
+
+        for (uint16_t i = 0; i < w; i++)
+        {
+            uint8_t use_border = (i < inner_start || i >= inner_end) ? 1U : 0U;
+            lineBuf[i * 2U] = use_border ? border_hi : fill_hi;
+            lineBuf[i * 2U + 1U] = use_border ? border_lo : fill_lo;
+        }
+
+        for (uint16_t row = border_t; row < (uint16_t)(h - border_t); row++)
+        {
+            (void)row;
+            dma_send(lineBuf, row_bytes);
+        }
+
+        for (uint16_t i = 0; i < w; i++)
+        {
+            lineBuf[i * 2U] = border_hi;
+            lineBuf[i * 2U + 1U] = border_lo;
+        }
+
+        for (uint8_t row = 0; row < border_t; row++)
+        {
+            (void)row;
+            dma_send(lineBuf, row_bytes);
+        }
+
+        CS_RELEASE();
+    }
+}
+
+void ST7789_DrawRGB565Buffer(uint16_t x, uint16_t y,
+                             uint16_t w, uint16_t h,
+                             const uint8_t* buffer,
+                             uint32_t buffer_size)
+{
+    if (buffer == 0) return;
+    if (x >= ST7789_WIDTH || y >= ST7789_HEIGHT) return;
+    if (w == 0 || h == 0) return;
+    if ((x + w) > ST7789_WIDTH)  return;
+    if ((y + h) > ST7789_HEIGHT) return;
+    if (buffer_size < ((uint32_t)w * (uint32_t)h * 2u)) return;
+
+    SetAddressWindow(x, y, (uint16_t)(x + w - 1u), (uint16_t)(y + h - 1u));
+    CS_ASSERT();
+    DC_HIGH();
+
+    while (buffer_size > 0u)
+    {
+        uint16_t chunk = (buffer_size > 65535u) ? 65535u : (uint16_t)buffer_size;
+        dma_send((uint8_t*)buffer, chunk);
+        buffer += chunk;
+        buffer_size -= chunk;
+    }
+
     CS_RELEASE();
 }
 

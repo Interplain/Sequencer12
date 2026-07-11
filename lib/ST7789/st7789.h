@@ -61,10 +61,20 @@ extern SPI_HandleTypeDef hspi1;
 
 /* Display SPI control pin mapping (MCU pin 26 = PB0 on STM32F405RG LQFP64). */
 #ifndef LCD_CS_PORT
-#define LCD_CS_PORT GPIOB
+#define LCD_CS_PORT GPIOA
 #endif
+
 #ifndef LCD_CS_PIN
-#define LCD_CS_PIN  GPIO_PIN_0
+#define LCD_CS_PIN GPIO_PIN_4
+#endif
+
+/* Optional backlight control. Default to PA4 so the pin can be used as a backlight enable if wired. */
+#ifndef ST7789_BACKLIGHT_PORT
+#define ST7789_BACKLIGHT_PORT GPIOA
+#endif
+
+#ifndef ST7789_BACKLIGHT_PIN
+#define ST7789_BACKLIGHT_PIN GPIO_PIN_4
 #endif
 
 /* RGB565 colours */
@@ -146,12 +156,22 @@ extern SPI_HandleTypeDef hspi1;
 #endif
 
 void ST7789_Init(void);
+void ST7789_DisplayOff(void);
 void ST7789_DisplayOn(void);
 void ST7789_SetRotation(uint8_t rotation);
 void ST7789_InvertColors(uint8_t invert);
 
 void ST7789_Fill_Color(uint16_t color);
 void ST7789_FillRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color);
+void ST7789_FillRectBordered(uint16_t x, uint16_t y,
+                             uint16_t w, uint16_t h,
+                             uint16_t fill_color,
+                             uint16_t border_color,
+                             uint8_t border_t);
+void ST7789_DrawRGB565Buffer(uint16_t x, uint16_t y,
+                             uint16_t w, uint16_t h,
+                             const uint8_t* buffer,
+                             uint32_t buffer_size);
 void ST7789_DrawPixel(uint16_t x, uint16_t y, uint16_t color);
 
 void ST7789_DrawChar(uint16_t x, uint16_t y, char c,

@@ -113,6 +113,59 @@ static void DrawSongChainRow(const uint8_t* chain,
 static void DrawUserChordLoadRow(uint8_t row,
                                  uint8_t count,
                                  uint8_t selected_index);
+static void MainGridStripFillRect(uint8_t* buffer,
+                                  uint16_t strip_y,
+                                  uint16_t strip_h,
+                                  uint16_t x,
+                                  uint16_t y,
+                                  uint16_t w,
+                                  uint16_t h,
+                                  uint16_t color);
+static void MainGridStripDrawChar(uint8_t* buffer,
+                                  uint16_t strip_y,
+                                  uint16_t strip_h,
+                                  uint16_t x,
+                                  uint16_t y,
+                                  char c,
+                                  const Font_t* font,
+                                  uint8_t scale,
+                                  uint16_t fg,
+                                  uint16_t bg);
+static void MainGridStripDrawString(uint8_t* buffer,
+                                    uint16_t strip_y,
+                                    uint16_t strip_h,
+                                    uint16_t x,
+                                    uint16_t y,
+                                    const char* str,
+                                    const Font_t* font,
+                                    uint8_t scale,
+                                    uint16_t fg,
+                                    uint16_t bg);
+static void MainGridStripDrawBorderedRect(uint8_t* buffer,
+                                          uint16_t strip_y,
+                                          uint16_t strip_h,
+                                          uint16_t x,
+                                          uint16_t y,
+                                          uint16_t w,
+                                          uint16_t h,
+                                          uint16_t fill,
+                                          uint16_t border,
+                                          uint8_t border_t);
+static void MainGridComposeStrip(uint8_t* buffer,
+                                 uint16_t strip_y,
+                                 uint16_t strip_h,
+                                 uint8_t selected_step,
+                                 uint8_t active_step,
+                                 const uint8_t* has_chord_flags,
+                                 uint16_t bpm,
+                                 TransportState state,
+                                 uint8_t rec_armed,
+                                 uint8_t step,
+                                 uint32_t loops,
+                                 uint32_t run_time_ms);
+
+#define DISPLAY_TRANSITION_SETTLE_MS 5u
+#define STEP_ROLL_TRANSITION_SETTLE_MS 3u
 
 enum {
     MENU_FRAME_NONE = 0,
@@ -182,12 +235,25 @@ static uint8_t s_step_cache_active[12] = {0};
 static uint8_t s_step_cache_has_chord[12] = {0};
 static uint8_t s_step_cache_flash_on[12] = {0};
 static uint8_t s_step_cache_flash_enabled[12] = {0};
+static uint8_t s_main_grid_strip_buffer[SCREEN_W * 16u * 2u];
+
+#define MAIN_GRID_STRIP_H 16u
 
 /* ── Init ────────────────────────────────────────────────────────────────── */
 void UI_Display_Init(void)
 {
-    ST7789_Fill_Color(COLOR_BG);
-    ST7789_DisplayOn();
+    /* Fill GRAM to black BEFORE enabling display output.
+     * The panel's default GRAM state is white; calling DisplayOn first
+     * is what causes the visible white flash on boot.
+     * Order must be: fill GRAM → DisplayOn → draw UI → BacklightSet(1). */
+    ST7789_Fill_Color(BLACK);   /* overwrite GRAM while display output is still off */
+    ST7789_DisplayOn();         /* panel now shows black */
+    ST7789_FillRect(0, 0, SCREEN_W, HEADER_H, BLACK);
+    ST7789_FillRect(0, HEADER_H, MAIN_W, (uint16_t)(SCREEN_H - HEADER_H), COLOR_BG);
+    if (SIDEBAR_W != 0U)
+    {
+        ST7789_FillRect(SIDEBAR_X, HEADER_H, SIDEBAR_W, (uint16_t)(SCREEN_H - HEADER_H), COLOR_BG);
+    }
     s_header_valid = 0;
     memset(s_step_cache_valid, 0, sizeof(s_step_cache_valid));
     UI_Display_DrawHeader(120, TRANSPORT_STOPPED, 0);
@@ -230,10 +296,7 @@ void UI_Display_Init(void)
 
 void UI_Display_FastReturnToGrid(void)
 {
-    /* Restore only main-view regions, not the full frame, to reduce visible wipe. */
-    ST7789_FillRect(0, HEADER_H, SCREEN_W, 20, COLOR_BG); /* status strip y=24..43 */
-    ST7789_FillRect(0, 44, MAIN_W, (uint16_t)(SCREEN_H - 44), COLOR_BG); /* main body only */
-
+    /* Reset caches only. The main grid is now composed and pushed in larger strips. */
     s_header_valid = 0;
     memset(s_step_cache_valid, 0, sizeof(s_step_cache_valid));
     s_force_status_redraw = 1;
@@ -280,6 +343,89 @@ void UI_Display_FastReturnToGrid(void)
     s_sidebar_valid = 0;
     s_prev_sidebar_div = 0xFF;
     s_prev_sidebar_swing = 0xFF;
+}
+
+void UI_Display_DrawMainGridComposed(uint8_t selected_step,
+                                     uint8_t active_step,
+                                     const uint8_t* has_chord_flags,
+                                     uint16_t bpm,
+                                     TransportState state,
+                                     uint8_t rec_armed,
+                                     uint8_t pattern,
+                                     uint8_t step,
+                                     uint32_t loops,
+                                     uint32_t run_time_ms)
+{
+    (void)pattern;
+
+    ST7789_DisplayOff();
+    HAL_Delay(DISPLAY_TRANSITION_SETTLE_MS);
+
+    for (uint16_t strip_y = 0; strip_y < SCREEN_H; strip_y += MAIN_GRID_STRIP_H)
+    {
+        uint16_t strip_h = MAIN_GRID_STRIP_H;
+        if ((uint16_t)(strip_y + strip_h) > SCREEN_H)
+        {
+            strip_h = (uint16_t)(SCREEN_H - strip_y);
+        }
+
+        MainGridComposeStrip(s_main_grid_strip_buffer,
+                             strip_y,
+                             strip_h,
+                             selected_step,
+                             active_step,
+                             has_chord_flags,
+                             bpm,
+                             state,
+                             rec_armed,
+                             step,
+                             loops,
+                             run_time_ms);
+
+        ST7789_DrawRGB565Buffer(0,
+                                strip_y,
+                                SCREEN_W,
+                                strip_h,
+                                s_main_grid_strip_buffer,
+                                (uint32_t)SCREEN_W * (uint32_t)strip_h * 2u);
+    }
+
+    {
+        uint32_t total_sec = run_time_ms / 1000u;
+        uint32_t mins      = total_sec / 60u;
+        uint32_t secs      = total_sec % 60u;
+        uint8_t div        = Bridge_GetPatternStepDivision();
+        uint8_t swing      = Bridge_GetSwing();
+
+        s_prev_header_bpm = bpm;
+        s_prev_header_state = state;
+        s_prev_header_rec = rec_armed;
+        s_header_valid = 1;
+
+        s_prev_pattern = pattern;
+        s_prev_step = step;
+        s_prev_loops = loops;
+        s_prev_mins = mins;
+        s_prev_secs = secs;
+        s_prev_main_mode = s_main_mode;
+        s_force_status_redraw = 0;
+        s_sidebar_valid = 1;
+        s_prev_sidebar_div = div;
+        s_prev_sidebar_swing = swing;
+
+        for (uint8_t i = 0; i < 12; i++)
+        {
+            s_step_cache_selected[i] = ((i + 1u) == selected_step) ? 1u : 0u;
+            s_step_cache_active[i] = ((i + 1u) == active_step) ? 1u : 0u;
+            s_step_cache_has_chord[i] = has_chord_flags ? has_chord_flags[i] : 0u;
+            s_step_cache_flash_on[i] = s_repeat_flash_on;
+            s_step_cache_flash_enabled[i] = s_repeat_flash_enabled;
+            s_step_cache_valid[i] = 1u;
+        }
+    }
+
+    HAL_Delay(DISPLAY_TRANSITION_SETTLE_MS);
+    ST7789_DisplayOn();
 }
 
 /* ── Header ──────────────────────────────────────────────────────────────── */
@@ -379,8 +525,7 @@ void UI_Display_DrawStepBox(uint8_t step, uint8_t selected, uint8_t active, uint
     char s[4];
     snprintf(s, sizeof(s), "%u", step);
 
-    ST7789_FillRect(x, y, BOX_W, BOX_H, COLOR_BOX_BG);
-    DrawRectBorder(x, y, BOX_W, BOX_H, colour);
+    ST7789_FillRectBordered(x, y, BOX_W, BOX_H, COLOR_BOX_BG, colour, BORDER_T);
 
     uint8_t len = 0;
     while (s[len]) len++;
@@ -456,6 +601,265 @@ static void DrawRectBorder(uint16_t x, uint16_t y,
     ST7789_FillRect(x, y + h - BORDER_T, w,     BORDER_T, color);
     ST7789_FillRect(x, y,             BORDER_T, h,        color);
     ST7789_FillRect(x + w - BORDER_T, y, BORDER_T, h,     color);
+}
+
+static void MainGridStripFillRect(uint8_t* buffer,
+                                  uint16_t strip_y,
+                                  uint16_t strip_h,
+                                  uint16_t x,
+                                  uint16_t y,
+                                  uint16_t w,
+                                  uint16_t h,
+                                  uint16_t color)
+{
+    if (buffer == NULL) return;
+    if (x >= SCREEN_W || y >= SCREEN_H || w == 0u || h == 0u) return;
+
+    uint16_t y0 = (y > strip_y) ? y : strip_y;
+    uint16_t y1 = ((uint32_t)y + h < (uint32_t)strip_y + strip_h) ? (uint16_t)(y + h) : (uint16_t)(strip_y + strip_h);
+    if (y0 >= y1) return;
+
+    if ((uint32_t)x + w > SCREEN_W) w = (uint16_t)(SCREEN_W - x);
+
+    uint8_t hi = (uint8_t)(color >> 8);
+    uint8_t lo = (uint8_t)(color & 0xFF);
+
+    for (uint16_t py = y0; py < y1; py++)
+    {
+        uint32_t row_off = (uint32_t)(py - strip_y) * SCREEN_W * 2u;
+        uint32_t px_off = row_off + (uint32_t)x * 2u;
+        for (uint16_t px = 0; px < w; px++)
+        {
+            buffer[px_off + px * 2u] = hi;
+            buffer[px_off + px * 2u + 1u] = lo;
+        }
+    }
+}
+
+static void MainGridStripDrawBorderedRect(uint8_t* buffer,
+                                          uint16_t strip_y,
+                                          uint16_t strip_h,
+                                          uint16_t x,
+                                          uint16_t y,
+                                          uint16_t w,
+                                          uint16_t h,
+                                          uint16_t fill,
+                                          uint16_t border,
+                                          uint8_t border_t)
+{
+    MainGridStripFillRect(buffer, strip_y, strip_h, x, y, w, h, fill);
+
+    for (uint8_t t = 0; t < border_t; t++)
+    {
+        uint16_t ox = (uint16_t)(x + t);
+        uint16_t oy = (uint16_t)(y + t);
+        uint16_t ow = (uint16_t)(w - 2u * t);
+        uint16_t oh = (uint16_t)(h - 2u * t);
+        if (ow == 0u || oh == 0u) break;
+
+        MainGridStripFillRect(buffer, strip_y, strip_h, ox, oy, ow, 1u, border);
+        MainGridStripFillRect(buffer, strip_y, strip_h, ox, (uint16_t)(oy + oh - 1u), ow, 1u, border);
+        MainGridStripFillRect(buffer, strip_y, strip_h, ox, oy, 1u, oh, border);
+        MainGridStripFillRect(buffer, strip_y, strip_h, (uint16_t)(ox + ow - 1u), oy, 1u, oh, border);
+    }
+}
+
+static void MainGridStripDrawChar(uint8_t* buffer,
+                                  uint16_t strip_y,
+                                  uint16_t strip_h,
+                                  uint16_t x,
+                                  uint16_t y,
+                                  char c,
+                                  const Font_t* font,
+                                  uint8_t scale,
+                                  uint16_t fg,
+                                  uint16_t bg)
+{
+    if (buffer == NULL || font == NULL || scale == 0u) return;
+
+    if ((uint8_t)c < font->first || (uint8_t)c > font->last) c = ' ';
+
+    uint16_t srcW = font->width;
+    uint16_t srcH = font->height;
+    uint16_t bytesPerRow = (uint16_t)((srcW + 7u) / 8u);
+    const uint8_t* charData = font->data + (((uint8_t)c - font->first) * srcH * bytesPerRow);
+
+    for (uint16_t srcRow = 0; srcRow < srcH; srcRow++)
+    {
+        for (uint8_t sy = 0; sy < scale; sy++)
+        {
+            uint16_t py = (uint16_t)(y + srcRow * scale + sy);
+            if (py < strip_y || py >= (uint16_t)(strip_y + strip_h)) continue;
+
+            for (uint16_t srcCol = 0; srcCol < srcW; srcCol++)
+            {
+                uint8_t byteIndex = (uint8_t)(srcCol / 8u);
+                uint8_t bitMask = (uint8_t)(0x80u >> (srcCol % 8u));
+                uint16_t colour = (charData[srcRow * bytesPerRow + byteIndex] & bitMask) ? fg : bg;
+                uint8_t hi = (uint8_t)(colour >> 8);
+                uint8_t lo = (uint8_t)(colour & 0xFF);
+
+                for (uint8_t sx = 0; sx < scale; sx++)
+                {
+                    uint16_t px = (uint16_t)(x + srcCol * scale + sx);
+                    if (px >= SCREEN_W) continue;
+                    uint32_t off = (uint32_t)(py - strip_y) * SCREEN_W * 2u + (uint32_t)px * 2u;
+                    buffer[off] = hi;
+                    buffer[off + 1u] = lo;
+                }
+            }
+        }
+    }
+}
+
+static void MainGridStripDrawString(uint8_t* buffer,
+                                    uint16_t strip_y,
+                                    uint16_t strip_h,
+                                    uint16_t x,
+                                    uint16_t y,
+                                    const char* str,
+                                    const Font_t* font,
+                                    uint8_t scale,
+                                    uint16_t fg,
+                                    uint16_t bg)
+{
+    if (buffer == NULL || str == NULL || font == NULL || scale == 0u) return;
+
+    uint16_t stepX = (uint16_t)(font->width * scale);
+    while (*str)
+    {
+        MainGridStripDrawChar(buffer, strip_y, strip_h, x, y, *str, font, scale, fg, bg);
+        x = (uint16_t)(x + stepX);
+        str++;
+    }
+}
+
+static void MainGridComposeStrip(uint8_t* buffer,
+                                 uint16_t strip_y,
+                                 uint16_t strip_h,
+                                 uint8_t selected_step,
+                                 uint8_t active_step,
+                                 const uint8_t* has_chord_flags,
+                                 uint16_t bpm,
+                                 TransportState state,
+                                 uint8_t rec_armed,
+                                 uint8_t step,
+                                 uint32_t loops,
+                                 uint32_t run_time_ms)
+{
+    char text[16];
+    uint32_t total_sec = run_time_ms / 1000u;
+    uint32_t mins = total_sec / 60u;
+    uint32_t secs = total_sec % 60u;
+    uint8_t div = Bridge_GetPatternStepDivision();
+    uint8_t swing = Bridge_GetSwing();
+
+    MainGridStripFillRect(buffer, strip_y, strip_h, 0u, strip_y, SCREEN_W, strip_h, COLOR_BG);
+    MainGridStripFillRect(buffer, strip_y, strip_h, 0u, 0u, SCREEN_W, HEADER_H, BLACK);
+
+    snprintf(text, sizeof(text), "%3u", bpm);
+    MainGridStripDrawString(buffer, strip_y, strip_h, 4u, 2u, text, &Font8x12, 2u, COLOR_TEXT_MAIN, BLACK);
+    MainGridStripDrawString(buffer, strip_y, strip_h, 52u, 2u, "BPM", &Font16x24, 1u, COLOR_TEXT_MAIN, BLACK);
+
+    {
+        char transport_icon[2] = {
+            (state == TRANSPORT_PLAYING || state == TRANSPORT_PLAYING_RECORDING) ? ICON_PLAY : ICON_STOP,
+            0
+        };
+        uint16_t transport_col =
+            (state == TRANSPORT_PLAYING || state == TRANSPORT_PLAYING_RECORDING) ? COL_PLAY : COL_STOP;
+        char rec_icon[2] = {ICON_REC, 0};
+        uint16_t rec_col = rec_armed ? COL_REC_ARM : COL_REC_OFF;
+
+        MainGridStripDrawString(buffer, strip_y, strip_h, HEADER_TRANSPORT_X, 0u, transport_icon, &Font16x24, 1u, transport_col, BLACK);
+        MainGridStripDrawString(buffer, strip_y, strip_h, HEADER_REC_X, 0u, rec_icon, &Font16x24, 1u, rec_col, BLACK);
+    }
+
+    {
+        uint16_t fill = WHITE;
+        uint16_t border = COLOR_BOX_BORDER;
+        uint16_t text_col = BLACK;
+        const char* label = "STEP";
+
+        if (s_main_mode == UI_MAIN_MODE_CHORD)
+        {
+            fill = COLOR8(70, 140, 255);
+            text_col = WHITE;
+            label = "CHRD";
+        }
+        else if (s_main_mode == UI_MAIN_MODE_TIMING)
+        {
+            fill = ORANGE;
+            text_col = WHITE;
+            label = "TIME";
+        }
+        else if (s_main_mode == UI_MAIN_MODE_PATTERN)
+        {
+            fill = COLOR8(0, 135, 0);
+            text_col = WHITE;
+            label = "SONG";
+        }
+
+        MainGridStripDrawBorderedRect(buffer, strip_y, strip_h, 4u, 25u, 44u, 18u, fill, border, BORDER_T);
+        MainGridStripDrawString(buffer, strip_y, strip_h, 8u, 28u, label, &Font8x12, 1u, text_col, fill);
+    }
+
+    snprintf(text, sizeof(text), "ST:%02u", (unsigned)(step + 1u));
+    MainGridStripDrawString(buffer, strip_y, strip_h, 54u, 26u, text, &Font10x16, 1u, COLOR_TEXT_MAIN, COLOR_BG);
+
+    snprintf(text, sizeof(text), "LP:%02lu", (unsigned long)loops);
+    MainGridStripDrawString(buffer, strip_y, strip_h, STATUS_LOOPS_X, 26u, text, &Font10x16, 1u, COLOR_TEXT_MAIN, COLOR_BG);
+
+    snprintf(text, sizeof(text), "%02lu:%02lu", (unsigned long)mins, (unsigned long)secs);
+    MainGridStripDrawString(buffer, strip_y, strip_h, STATUS_TIME_X, 26u, text, &Font10x16, 1u, COLOR_TEXT_MAIN, COLOR_BG);
+
+    if (SIDEBAR_W != 0U)
+    {
+        snprintf(text, sizeof(text), "1/%u", (unsigned)(div * 4u));
+        MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 52u, "QUANT", &Font8x12, 1u, LIGHTBLUE, COLOR_BG);
+        MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 66u, text, &Font10x16, 1u, WHITE, COLOR_BG);
+
+        snprintf(text, sizeof(text), "%u%%", (unsigned)swing);
+        MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 100u, "SWING", &Font8x12, 1u, LIGHTBLUE, COLOR_BG);
+        MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 116u, text, &Font10x16, 1u, WHITE, COLOR_BG);
+    }
+
+    for (uint8_t step_no = 1u; step_no <= 12u; step_no++)
+    {
+        uint8_t index = (uint8_t)(step_no - 1u);
+        uint8_t col = (uint8_t)(index % 4u);
+        uint8_t row = (uint8_t)(index / 4u);
+        uint16_t x = (uint16_t)(GRID_X + col * (BOX_W + GAP_X));
+        uint16_t y = (uint16_t)(GRID_Y + row * (BOX_H + GAP_Y));
+        uint8_t has_chord = has_chord_flags ? has_chord_flags[index] : 0u;
+        uint16_t colour;
+
+        if (active_step == step_no && s_repeat_flash_enabled)
+            colour = s_repeat_flash_on ? WHITE : BLUE;
+        else if (active_step == step_no)
+            colour = COL_ACTIVE;
+        else if (selected_step == step_no && has_chord)
+            colour = COL_CHORD;
+        else if (selected_step == step_no)
+            colour = COL_SELECTED_EMPTY;
+        else if (has_chord)
+            colour = COL_CHORD;
+        else
+            colour = COL_NORMAL;
+
+        MainGridStripDrawBorderedRect(buffer, strip_y, strip_h, x, y, BOX_W, BOX_H, COLOR_BOX_BG, colour, BORDER_T);
+
+        snprintf(text, sizeof(text), "%u", (unsigned)step_no);
+        {
+            uint8_t len = 0u;
+            while (text[len]) len++;
+            uint16_t textW = (uint16_t)(len * Font8x12.width * 2u);
+            uint16_t textH = (uint16_t)(Font8x12.height * 2u);
+            uint16_t tx = (uint16_t)(x + ((BOX_W - textW) / 2u));
+            uint16_t ty = (uint16_t)(y + ((BOX_H - textH) / 2u));
+            MainGridStripDrawString(buffer, strip_y, strip_h, tx, ty, text, &Font8x12, 2u, colour, COLOR_BOX_BG);
+        }
+    }
 }
 
 static void FillRegion(UiRect r, uint16_t color)
@@ -564,8 +968,7 @@ static void DrawMainModeBox(void)
         label = "SONG";
     }
 
-    ST7789_FillRect(box_x, box_y, box_w, box_h, fill);
-    DrawRectBorder(box_x, box_y, box_w, box_h, border);
+    ST7789_FillRectBordered(box_x, box_y, box_w, box_h, fill, border, BORDER_T);
     ST7789_DrawString(8, 28, label, &Font8x12, text, fill);
     s_prev_main_mode = s_main_mode;
 }
@@ -623,7 +1026,6 @@ void UI_Display_DrawStatusRow(uint8_t pattern,
 }
 
 /* ── Chord Menu ───────────────────────────────────────────────────────────── */
-static uint8_t s_chord_selection = 0;  /* currently selected chord */
 static uint8_t s_param_footer_selection = PARAM_ACTION_MAIN;
 static const char* s_root_keys[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 static const char* s_chord_names[] = {
@@ -647,7 +1049,7 @@ static const char* s_chord_names[] = {
 #define FOOTER_BTN_H         38
 #define FOOTER_BTN_GAP_X      4
 
-void UI_Display_DrawChordMenu(uint8_t step, const ChordParams* chord)
+void UI_Display_DrawChordMenu(uint8_t step, const ChordParams* chord, uint8_t selection)
 {
     MenuTemplate_Begin(MENU_FRAME_CHORD);
     s_chord_page_drawn = 0xFF;  /* Reset page cache when entering menu */
@@ -655,7 +1057,7 @@ void UI_Display_DrawChordMenu(uint8_t step, const ChordParams* chord)
     /* Content region redraw only. */
     FillRegion(UI_REGION_MENU_LIST, COLOR_BG);
     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-    DrawCenteredFooterButton("USER CHORDS", (s_chord_selection == 17) ? 1 : 0);
+    DrawCenteredFooterButton("USER CHORDS", (selection == 17) ? 1 : 0);
     s_chord_footer_valid = 1;
 
     /* Title */
@@ -664,23 +1066,23 @@ void UI_Display_DrawChordMenu(uint8_t step, const ChordParams* chord)
     ST7789_DrawString(4, 4, title, &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
 
     char selected_label[24];
-    if (s_chord_selection == 0)
+    if (selection == 0)
     {
         snprintf(selected_label, sizeof(selected_label), "Selected: Clear");
     }
-    else if (s_chord_selection == 17)
+    else if (selection == 17)
     {
         snprintf(selected_label, sizeof(selected_label), "Selected: USER");
     }
     else
     {
         uint8_t root = chord->root_key;
-        snprintf(selected_label, sizeof(selected_label), "Selected: %s %s", s_root_keys[root], s_chord_names[s_chord_selection]);
+        snprintf(selected_label, sizeof(selected_label), "Selected: %s %s", s_root_keys[root], s_chord_names[selection]);
     }
     MenuTemplate_DrawHeader(title, selected_label, YELLOW);
 
     /* 3x2 rounded-button grid (6 buttons per page) */
-    uint8_t menu_selection = (s_chord_selection == 17) ? 0 : s_chord_selection;
+    uint8_t menu_selection = (selection == 17) ? 0 : selection;
     uint8_t start_idx = (menu_selection / CHORD_BTNS_PER_PAGE) * CHORD_BTNS_PER_PAGE;
     uint8_t current_page = (uint8_t)(start_idx / CHORD_BTNS_PER_PAGE);
 
@@ -698,7 +1100,7 @@ void UI_Display_DrawChordMenu(uint8_t step, const ChordParams* chord)
             break;
         }
 
-        DrawChordButtonText(slot, idx, (idx == s_chord_selection), chord);
+        DrawChordButtonText(slot, idx, (idx == selection), chord);
     }
 
 }
@@ -800,31 +1202,29 @@ static void DrawCenteredFooterButton(const char* label, uint8_t selected)
     ST7789_DrawString(x + 18, y + 12, label, &Font10x16, text_col, fill);
 }
 
-void UI_Display_NavigateChordMenu(int8_t delta, uint8_t step, const ChordParams* chord)
+void UI_Display_NavigateChordMenu(int8_t delta, uint8_t step, const ChordParams* chord, uint8_t* selection)
 {
-    uint8_t old = s_chord_selection;
-    int16_t next = (int16_t)s_chord_selection + delta;
+    uint8_t old = *selection;
+    int16_t next = (int16_t)old + delta;
 
-    while (next < 0)  next += 18;  // Now 18 options (0-16 chords + USER at 17)
+    while (next < 0)  next += 18;  /* 18 options: 0-16 chords + USER at 17 */
     while (next > 17) next -= 18;
-    s_chord_selection = (uint8_t)next;
+    *selection = (uint8_t)next;
 
-    if (old == 17 || s_chord_selection == 17)
+    if (old == 17 || *selection == 17)
     {
-        /* Moving to/from USER footer button — just update the footer highlight
-         * and the previously selected chord button; no full redraw needed. */
-        DrawCenteredFooterButton("USER CHORDS", (s_chord_selection == 17) ? 1 : 0);
+        /* Moving to/from USER footer button — update footer highlight and button states. */
+        DrawCenteredFooterButton("USER CHORDS", (*selection == 17) ? 1 : 0);
         s_chord_footer_valid = 1;
 
-        /* Deselect old button if it was a grid chord */
-        uint8_t page_base = (uint8_t)(((old < 17 ? old : s_chord_selection) / CHORD_BTNS_PER_PAGE) * CHORD_BTNS_PER_PAGE);
+        uint8_t page_base = (uint8_t)(((old < 17 ? old : *selection) / CHORD_BTNS_PER_PAGE) * CHORD_BTNS_PER_PAGE);
         if (old < 17)
         {
             DrawChordButtonText((uint8_t)(old - page_base), old, 0, chord);
         }
-        if (s_chord_selection < 17)
+        if (*selection < 17)
         {
-            DrawChordButtonText((uint8_t)(s_chord_selection - page_base), s_chord_selection, 1, chord);
+            DrawChordButtonText((uint8_t)(*selection - page_base), *selection, 1, chord);
         }
 
         char title[20];
@@ -835,66 +1235,52 @@ void UI_Display_NavigateChordMenu(int8_t delta, uint8_t step, const ChordParams*
         return;
     }
 
-    if ((old / CHORD_BTNS_PER_PAGE) != (s_chord_selection / CHORD_BTNS_PER_PAGE))
+    if ((old / CHORD_BTNS_PER_PAGE) != (*selection / CHORD_BTNS_PER_PAGE))
     {
-        /* Page changed: draw new page frames and text without full redraw */
-        uint8_t new_page_base = (s_chord_selection / CHORD_BTNS_PER_PAGE) * CHORD_BTNS_PER_PAGE;
-        
+        /* Page changed: draw new buttons and header only. */
+        uint8_t new_page_base = (*selection / CHORD_BTNS_PER_PAGE) * CHORD_BTNS_PER_PAGE;
         DrawAllChordButtonFrames();
         s_chord_page_drawn = (uint8_t)(new_page_base / CHORD_BTNS_PER_PAGE);
-        
+
         for (uint8_t slot = 0; slot < CHORD_BTNS_PER_PAGE; slot++)
         {
             uint8_t idx = new_page_base + slot;
             if (idx >= 17) break;
-            DrawChordButtonText(slot, idx, (idx == s_chord_selection), chord);
+            DrawChordButtonText(slot, idx, (idx == *selection), chord);
         }
-        
+
         char title[20];
         char selected_label[24];
         snprintf(title, sizeof(title), "Step %u Chord", step);
-        snprintf(selected_label, sizeof(selected_label), "Selected: %s %s", s_root_keys[chord->root_key], s_chord_names[s_chord_selection]);
+        snprintf(selected_label, sizeof(selected_label), "Selected: %s %s", s_root_keys[chord->root_key], s_chord_names[*selection]);
         MenuTemplate_DrawHeader(title, selected_label, YELLOW);
         return;
     }
 
-    /* Same page: redraw only previous and current button */
-    uint8_t page_base = (s_chord_selection / CHORD_BTNS_PER_PAGE) * CHORD_BTNS_PER_PAGE;
-    
+    uint8_t page_base = (*selection / CHORD_BTNS_PER_PAGE) * CHORD_BTNS_PER_PAGE;
     if (old < 17)
     {
         DrawChordButtonText((uint8_t)(old - page_base), old, 0, chord);
     }
-    
-    DrawChordButtonText((uint8_t)(s_chord_selection - page_base), s_chord_selection, 1, chord);
+
+    DrawChordButtonText((uint8_t)(*selection - page_base), *selection, 1, chord);
 
     char title[20];
     char selected_label[24];
     snprintf(title, sizeof(title), "Step %u Chord", step);
-    if (s_chord_selection == 0)
+    if (*selection == 0)
     {
         snprintf(selected_label, sizeof(selected_label), "Selected: Clear");
     }
-    else if (s_chord_selection == 17)
+    else if (*selection == 17)
     {
         snprintf(selected_label, sizeof(selected_label), "Selected: USER");
     }
     else
     {
-        snprintf(selected_label, sizeof(selected_label), "Selected: %s %s", s_root_keys[chord->root_key], s_chord_names[s_chord_selection]);
+        snprintf(selected_label, sizeof(selected_label), "Selected: %s %s", s_root_keys[chord->root_key], s_chord_names[*selection]);
     }
     MenuTemplate_DrawHeader(title, selected_label, YELLOW);
-}
-
-uint8_t UI_Display_GetSelectedChord(void)
-{
-    return s_chord_selection;
-}
-
-void UI_Display_SetChordSelection(uint8_t selection)
-{
-    if (selection <= 17)  /* Valid range 0-17 (17 = USER) */
-        s_chord_selection = selection;
 }
 
 /* ── Chord Parameters ─────────────────────────────────────────────────────── */
@@ -933,7 +1319,7 @@ static void DrawParamRow(uint8_t index, const ChordParams* chord, uint8_t is_sel
     ST7789_DrawString(value_x, y, value, &Font12x20, color, COLOR_BG);
 }
 
-void UI_Display_DrawChordParams(uint8_t step, const ChordParams* chord, uint8_t param_cursor)
+void UI_Display_DrawChordParams(uint8_t step, const ChordParams* chord, uint8_t param_cursor, uint8_t footer_action)
 {
     MenuTemplate_Begin(MENU_FRAME_PARAMS);
 
@@ -969,12 +1355,16 @@ void UI_Display_DrawChordParams(uint8_t step, const ChordParams* chord, uint8_t 
     if (!s_param_footer_valid)
     {
         FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-        UI_Display_DrawParamFooterActions(s_param_footer_selection);
+        UI_Display_DrawParamFooterActions(footer_action);
         s_param_footer_valid = 1;
+    }
+    else
+    {
+        UI_Display_DrawParamFooterActions(footer_action);
     }
 }
 
-void UI_Display_NavigateChordParams(int8_t delta, uint8_t step, ChordParams* chord, uint8_t param_cursor)
+void UI_Display_NavigateChordParams(int8_t delta, uint8_t step, ChordParams* chord, uint8_t param_cursor, uint8_t footer_action)
 {
     /* Adjust the current parameter */
     switch (param_cursor) {
@@ -1023,7 +1413,7 @@ void UI_Display_NavigateChordParams(int8_t delta, uint8_t step, ChordParams* cho
     }
 
     /* Redraw parameters */
-    UI_Display_DrawChordParams(step, chord, param_cursor);
+    UI_Display_DrawChordParams(step, chord, param_cursor, footer_action);
 }
 
 void UI_Display_DrawParamFooterActions(uint8_t selected_action)
@@ -1037,22 +1427,22 @@ void UI_Display_DrawParamFooterActions(uint8_t selected_action)
     }
 }
 
-void UI_Display_NavigateParamFooterActions(int8_t delta, uint8_t step, const ChordParams* chord, uint8_t param_cursor)
+void UI_Display_NavigateParamFooterActions(int8_t delta, uint8_t step, const ChordParams* chord, uint8_t param_cursor, uint8_t* footer_action)
 {
-    uint8_t old = s_param_footer_selection;
-    int16_t next = (int16_t)s_param_footer_selection + delta;
+    uint8_t old = *footer_action;
+    int16_t next = (int16_t)old + delta;
     while (next < 0) next += PARAM_ACTION_COUNT;
     while (next >= PARAM_ACTION_COUNT) next -= PARAM_ACTION_COUNT;
 
-    s_param_footer_selection = (uint8_t)next;
+    *footer_action = (uint8_t)next;
 
     DrawParamFooterButton(old, (old == PARAM_ACTION_MAIN) ? "1 MAIN" :
                                (old == PARAM_ACTION_PREV) ? "2 PREV" :
                                (old == PARAM_ACTION_NEXT) ? "3 NEXT" : "4 SAVE", 0);
-    DrawParamFooterButton(s_param_footer_selection,
-                          (s_param_footer_selection == PARAM_ACTION_MAIN) ? "1 MAIN" :
-                          (s_param_footer_selection == PARAM_ACTION_PREV) ? "2 PREV" :
-                          (s_param_footer_selection == PARAM_ACTION_NEXT) ? "3 NEXT" : "4 SAVE", 1);
+    DrawParamFooterButton(*footer_action,
+                          (*footer_action == PARAM_ACTION_MAIN) ? "1 MAIN" :
+                          (*footer_action == PARAM_ACTION_PREV) ? "2 PREV" :
+                          (*footer_action == PARAM_ACTION_NEXT) ? "3 NEXT" : "4 SAVE", 1);
 }
 
 uint8_t UI_Display_GetSelectedParamAction(void)
@@ -1848,7 +2238,11 @@ void UI_Display_DrawPianoKeyboard(const uint16_t note_mask, uint8_t selected_key
 void UI_Display_DrawStepPianoRoll(uint8_t step, const uint16_t note_mask, uint8_t selected_key)
 {
     s_piano_view_mode = PIANO_VIEW_ROLL;
+    ST7789_DisplayOff();
+    HAL_Delay(STEP_ROLL_TRANSITION_SETTLE_MS);
     DrawStepPianoRollScreen(step, note_mask, selected_key);
+    HAL_Delay(STEP_ROLL_TRANSITION_SETTLE_MS);
+    ST7789_DisplayOn();
 }
 
 void UI_Display_NavigatePianoKeyboard(int8_t delta)
