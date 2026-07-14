@@ -5,6 +5,8 @@
 extern "C" {
 #endif
 
+#include <stdbool.h>
+#include <stdint.h>
 #include "stm32f4xx_hal.h"
 
 // ─────────────────────────────────────────────
@@ -19,6 +21,7 @@ extern "C" {
 #define MCP_IODIRB      0x01   // Direction B
 #define MCP_IPOLA       0x02   // Polarity A
 #define MCP_IPOLB       0x03   // Polarity B
+#define MCP_IOCON       0x0A   // IOCON (BANK=0)
 #define MCP_GPINTENA    0x04   // Interrupt enable A
 #define MCP_GPINTENB    0x05   // Interrupt enable B
 #define MCP_GPPUA       0x0C   // Pull-up A
@@ -48,9 +51,21 @@ extern "C" {
 #define MCP_MATRIX_ROW_MASK  (MCP_MATRIX_ROW1_BIT | MCP_MATRIX_ROW2_BIT | MCP_MATRIX_ROW3_BIT)
 #define MCP_MATRIX_COL_MASK  (MCP_MATRIX_COL1_BIT | MCP_MATRIX_COL2_BIT | MCP_MATRIX_COL3_BIT | MCP_MATRIX_COL4_BIT)
 
+/* New API bit aliases in raw word returned by MCP_ReadGPIO(): b | (a << 8) */
+#define BTN_PLAY        (1u << 0)
+#define BTN_REC         (1u << 1)
+#define BTN_SHIFT       (1u << 15)
+
 // ─────────────────────────────────────────────
 // Functions
 // ─────────────────────────────────────────────
+bool     MCP_Init(I2C_HandleTypeDef *hi2c);
+uint16_t MCP_ReadGPIO(void);
+void     PrimeButtons(void);
+uint16_t MCP_ScanEdges(void);
+bool     MCP_ShiftHeld(void);
+
+/* Backward-compatible API */
 void     MCP23017_Init(I2C_HandleTypeDef *hi2c);
 void     MCP23017_SetDirections(I2C_HandleTypeDef *hi2c, uint8_t iodira, uint8_t iodirb);
 void     MCP23017_SetPullups(I2C_HandleTypeDef *hi2c, uint8_t gppua, uint8_t gppub);
