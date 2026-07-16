@@ -1,5 +1,6 @@
 #include "devices/sequencer/sequencer_device.h"
 #include "devices/sequencer/arp_engine.h"
+#include <cstdlib>
 #include <cstring>
 
 using sequencer::StepSlot;
