@@ -61,7 +61,6 @@ extern "C" {
 // ─────────────────────────────────────────────
 bool     MCP_Init(I2C_HandleTypeDef *hi2c);
 uint16_t MCP_ReadGPIO(void);
-void     PrimeButtons(void);
 uint16_t MCP_ScanEdges(void);
 bool     MCP_ShiftHeld(void);
 

@@ -23,7 +23,6 @@ static uint8_t  s_rec_pressed     = 0;
 static uint8_t  s_shift_rec_pressed  = 0;
 static uint8_t  s_shift_tap       = 0;
 static uint8_t  s_shift_consumed  = 0;
-static uint32_t s_last_mcp_check_ms = 0;
 
 #define MATRIX_DEBOUNCE_MS 12u
 
@@ -117,7 +116,6 @@ void UI_Input_Init(void)
     s_shift_rec_pressed = 0;
     s_shift_tap       = 0;
     s_shift_consumed  = 0;
-    s_last_mcp_check_ms = HAL_GetTick();
 
      /* Configure MCP for matrix scan:
          A: rows+shift inputs, cols outputs
@@ -133,29 +131,6 @@ void UI_Input_Init(void)
 /* ── Poll ────────────────────────────────────────────────────────────────── */
 void UI_Input_Poll(void)
 {
-    /* MCP23017 self-heal: if config is lost at startup/bus glitch, restore it. */
-    {
-        uint32_t now = HAL_GetTick();
-        if ((uint32_t)(now - s_last_mcp_check_ms) >= 200u)
-        {
-            s_last_mcp_check_ms = now;
-            uint8_t iodira = MCP23017_ReadReg(&hi2c1, MCP_IODIRA);
-            uint8_t iodirb = MCP23017_ReadReg(&hi2c1, MCP_IODIRB);
-
-            if (iodira != 0x87u || iodirb != 0xFFu)
-            {
-                MCP23017_SetDirections(&hi2c1, 0x87, 0xFF);
-                MCP23017_SetPullups(&hi2c1, 0x87, 0xFF);
-                MCP23017_WriteGPIOA(&hi2c1, (uint8_t)MCP_MATRIX_COL_MASK);
-                s_prev_raw = PrimeButtons();
-                s_prev_matrix_pressed = 0;
-                s_matrix_candidate = 0;
-                s_matrix_debounced_pressed = 0;
-                s_matrix_candidate_ms = now;
-            }
-        }
-    }
-
     /* ── MCP23017 ─────────────────────────────────────────────────────── */
     uint16_t raw            = MCP23017_ReadGPIO(&hi2c1);
     uint16_t changed        = s_prev_raw ^ raw;
