@@ -70,7 +70,9 @@ extern SPI_HandleTypeDef hspi1;
 
 /* Optional backlight control.
  * Override ST7789_BACKLIGHT_PORT and ST7789_BACKLIGHT_PIN to match the
- * actual BL GPIO for your board before implementing a BacklightSet() call.
+ * actual BL GPIO for your board. These macros are not currently used;
+ * a backlight enable function must be implemented once the correct GPIO
+ * pin is identified.
  * No default is provided here because the backlight pin is board-specific
  * and must not accidentally alias the CS pin (PA4) or any other SPI pin. */
 
