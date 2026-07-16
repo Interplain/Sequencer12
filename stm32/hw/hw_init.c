@@ -72,7 +72,7 @@ void SystemClock_Config(void)
 
 // ─────────────────────────────────────────────
 // GPIO
-// PB0=CS  PA6=DC  PA9=RST
+// PA4=CS  PA6=DC  PA9=RST
 // PA0=ENC_A  PA1=ENC_B  PC12=ENC_SW
 // PB12=DAC_CS PB14=DAC_LDAC PC4=DAC_CLR
 // ─────────────────────────────────────────────
