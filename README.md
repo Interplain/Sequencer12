@@ -111,7 +111,7 @@ The long-term goal is to create a deterministic modular instrument capable of tr
 - Persistence (remaining):
   - FRAM save/load for full song and pattern state is not complete (user chords done)
 - Build hygiene:
-  - Build artifacts under .pio/build should stay out of commits (current repo contains tracked binary build outputs)
+  - Build artifacts under `.pio/build` and `build/` are excluded by `.gitignore` and no longer tracked in the repository
 - Test coverage:
   - No formal regression test harness yet for mode transitions and input maps
 
