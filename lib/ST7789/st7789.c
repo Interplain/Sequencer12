@@ -3,7 +3,7 @@
 #include "fonts_extra.h"
 /* ------------------------------------------------------------------------- */
 /* Pin map                                                                   */
-/* PB0=CS  PA5=SCK  PA6=DC  PA7=MOSI  PA9=RST                                 */
+/* PA4=CS  PA5=SCK  PA6=DC  PA7=MOSI  PA9=RST                                 */
 /* ------------------------------------------------------------------------- */
 #if ST7789_CS_ALWAYS_ACTIVE
 #if ST7789_CS_ACTIVE_LOW

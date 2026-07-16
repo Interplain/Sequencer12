@@ -59,7 +59,7 @@ extern SPI_HandleTypeDef hspi1;
 #define Y_SHIFT ST7789_Y_SHIFT_DEFAULT
 #endif
 
-/* Display SPI control pin mapping (MCU pin 26 = PB0 on STM32F405RG LQFP64). */
+/* Display SPI control pin mapping. */
 #ifndef LCD_CS_PORT
 #define LCD_CS_PORT GPIOA
 #endif
@@ -68,14 +68,13 @@ extern SPI_HandleTypeDef hspi1;
 #define LCD_CS_PIN GPIO_PIN_4
 #endif
 
-/* Optional backlight control. Default to PA4 so the pin can be used as a backlight enable if wired. */
-#ifndef ST7789_BACKLIGHT_PORT
-#define ST7789_BACKLIGHT_PORT GPIOA
-#endif
-
-#ifndef ST7789_BACKLIGHT_PIN
-#define ST7789_BACKLIGHT_PIN GPIO_PIN_4
-#endif
+/* Optional backlight control.
+ * Override ST7789_BACKLIGHT_PORT and ST7789_BACKLIGHT_PIN to match the
+ * actual BL GPIO for your board. These macros are not currently used;
+ * a backlight enable function must be implemented once the correct GPIO
+ * pin is identified.
+ * No default is provided here because the backlight pin is board-specific
+ * and must not accidentally alias the CS pin (PA4) or any other SPI pin. */
 
 /* RGB565 colours */
 #define WHITE       0xFFFFU

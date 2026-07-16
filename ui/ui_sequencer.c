@@ -552,13 +552,6 @@ static void UI_Sequencer_HydrateStepChordFromEngine(uint8_t step)
 
 static void UI_Sequencer_ExitToGrid(void)
 {
-    if (s_active_screen && s_active_screen != UI_MainGridScreen_Get())
-    {
-        if (s_active_screen->on_exit)
-            s_active_screen->on_exit(SCREEN_EXIT_NONE);
-        s_active_screen->is_active = 0;
-    }
-
     s_ui_mode = UI_MODE_GRID;
     UI_MainGridScreen_SetContext(s_selected_step,
                                  s_active_step,

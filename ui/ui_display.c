@@ -164,9 +164,6 @@ static void MainGridComposeStrip(uint8_t* buffer,
                                  uint32_t loops,
                                  uint32_t run_time_ms);
 
-#define DISPLAY_TRANSITION_SETTLE_MS 5u
-#define STEP_ROLL_TRANSITION_SETTLE_MS 3u
-
 enum {
     MENU_FRAME_NONE = 0,
     MENU_FRAME_CHORD,
@@ -358,9 +355,6 @@ void UI_Display_DrawMainGridComposed(uint8_t selected_step,
 {
     (void)pattern;
 
-    ST7789_DisplayOff();
-    HAL_Delay(DISPLAY_TRANSITION_SETTLE_MS);
-
     for (uint16_t strip_y = 0; strip_y < SCREEN_H; strip_y += MAIN_GRID_STRIP_H)
     {
         uint16_t strip_h = MAIN_GRID_STRIP_H;
@@ -424,8 +418,6 @@ void UI_Display_DrawMainGridComposed(uint8_t selected_step,
         }
     }
 
-    HAL_Delay(DISPLAY_TRANSITION_SETTLE_MS);
-    ST7789_DisplayOn();
 }
 
 /* ── Header ──────────────────────────────────────────────────────────────── */
@@ -2238,11 +2230,7 @@ void UI_Display_DrawPianoKeyboard(const uint16_t note_mask, uint8_t selected_key
 void UI_Display_DrawStepPianoRoll(uint8_t step, const uint16_t note_mask, uint8_t selected_key)
 {
     s_piano_view_mode = PIANO_VIEW_ROLL;
-    ST7789_DisplayOff();
-    HAL_Delay(STEP_ROLL_TRANSITION_SETTLE_MS);
     DrawStepPianoRollScreen(step, note_mask, selected_key);
-    HAL_Delay(STEP_ROLL_TRANSITION_SETTLE_MS);
-    ST7789_DisplayOn();
 }
 
 void UI_Display_NavigatePianoKeyboard(int8_t delta)
