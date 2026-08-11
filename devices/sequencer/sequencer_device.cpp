@@ -737,6 +737,8 @@ void SequencerDevice::Tick1ms()
 
 void SequencerDevice::TickMusical()
 {
+    ++tick_musical_count_;
+
     if (!playing_)
     {
         return;
@@ -748,7 +750,14 @@ void SequencerDevice::TickMusical()
     {
         musical_ticks_accum_ -= musical_step_ticks_;
         ++pending_step_events_;
+        ++pending_step_enqueue_count_;
     }
+}
+
+void SequencerDevice::NotifyUClockMusicalCallback()
+{
+    ++uclock_musical_callback_count_;
+    TickMusical();
 }
 
 bool SequencerDevice::ServiceOnePendingStep()
@@ -777,6 +786,7 @@ bool SequencerDevice::ServiceOnePendingStep()
     pending_step_events_ = count - 1u;
     __set_PRIMASK(primask);
 
+    ++service_one_step_count_;
     AdvanceStep();
     return true;
 }
@@ -968,19 +978,8 @@ void SequencerDevice::RecalculateStepIntervalMs()
         base_step_interval_ms_ *
         CurrentPattern().steps[current_step_].duration_multiplier;
 
-    /* Ledger slots are sub-steps inside the same step. Divide the step
-     * interval by slot count so adding slots increases rhythmic density
-     * rather than slowing pattern traversal. */
-    {
-        uint8_t slot_count = CurrentPattern().steps[current_step_].repeat_count;
-        if (slot_count < 1u) slot_count = 1u;
-        if (slot_count > kStepLedgerMax) slot_count = kStepLedgerMax;
-        if (slot_count > 1u)
-        {
-            current_step_interval_ms_ /= slot_count;
-            if (current_step_interval_ms_ == 0u) current_step_interval_ms_ = 1u;
-        }
-    }
+    /* Ledger slots remain internal note selections within the same step.
+     * They do not reduce the full step interval. */
 
     /* Gate length = 25% of step interval, minimum 5ms. Keep the gate
      * well inside the step so the next step does not inherit the attack. */
@@ -1025,6 +1024,26 @@ uint32_t SequencerDevice::GetMaxPendingStepEvents() const
 uint32_t SequencerDevice::GetPendingStepBacklogCount() const
 {
     return pending_step_backlog_count_;
+}
+
+uint32_t SequencerDevice::GetUClockMusicalCallbackCount() const
+{
+    return uclock_musical_callback_count_;
+}
+
+uint32_t SequencerDevice::GetTickMusicalCount() const
+{
+    return tick_musical_count_;
+}
+
+uint32_t SequencerDevice::GetPendingStepEnqueueCount() const
+{
+    return pending_step_enqueue_count_;
+}
+
+uint32_t SequencerDevice::GetServiceOneStepCount() const
+{
+    return service_one_step_count_;
 }
 
 uint32_t SequencerDevice::GetRunTimeMs() const
