@@ -22,6 +22,10 @@
 #define FRAM_SETTINGS_ADDR          (FRAM_TOTAL_SIZE - FRAM_SETTINGS_SIZE - FRAM_FUTURE_SIZE)
 #define FRAM_FUTURE_ADDR            (FRAM_TOTAL_SIZE - FRAM_FUTURE_SIZE)
 
+/* Calibration metadata stored in reserved future partition. */
+#define FRAM_CALIB_SAVECOUNT_ADDR   (FRAM_FUTURE_ADDR)
+#define FRAM_CALIB_SAVECOUNT_SIZE   4u
+
 /* Settings partition blob header for future parameters. */
 #define FRAM_SETTINGS_MAGIC         0x53313253u /* "S12S" */
 #define FRAM_SETTINGS_VERSION       1u
@@ -62,6 +66,10 @@ typedef struct
 
 #if ((FRAM_FUTURE_ADDR + FRAM_FUTURE_SIZE) != FRAM_TOTAL_SIZE)
 #error "FRAM layout invalid: end of FRAM not fully accounted for"
+#endif
+
+#if ((FRAM_CALIB_SAVECOUNT_ADDR + FRAM_CALIB_SAVECOUNT_SIZE) > (FRAM_FUTURE_ADDR + FRAM_FUTURE_SIZE))
+#error "FRAM layout invalid: calibration save counter exceeds future partition"
 #endif
 
 #ifdef __cplusplus

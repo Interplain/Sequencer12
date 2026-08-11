@@ -50,6 +50,10 @@ public:
                                 uint8_t repeat_count);
     void     SetStepCustomNoteMask(uint8_t step_index, uint16_t note_mask);
     void     SetStepCustomUserChord(uint8_t step_index, uint16_t note_mask, const char* name);
+    void     SetStepLedgerLength(uint8_t step_index, uint8_t length);
+    void     SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, uint16_t note_mask);
+    uint8_t  GetStepLedgerLength(uint8_t step_index) const;
+    uint16_t GetStepLedgerSlot(uint8_t step_index, uint8_t slot_index) const;
     void     SetPatternRepeatCount(uint8_t repeat_count);
     uint8_t  GetPatternRepeatCount() const;
     void     SetCurrentPatternIndex(uint8_t pattern_index);
@@ -59,7 +63,10 @@ public:
     uint8_t  GetChainPatternAt(uint8_t pos) const;
     uint8_t  GetChainCurrentPosition() const;
     uint8_t  GetCurrentPatternRepeatProgress() const;
+    uint8_t  GetCurrentStepSubIndex() const;
     uint16_t GetStepNoteMask(uint8_t step_index) const;
+    uint16_t GetStepNoteMaskForPlayback(uint8_t step_index) const;
+    uint16_t GetCurrentStepNoteMaskForPlayback() const;
     void     ExportSong(sequencer::Song* out_song) const;
     void     ImportSong(const sequencer::Song& song);
     bool     GetStepChordUiParams(uint8_t step_index,
@@ -72,6 +79,7 @@ public:
     uint32_t GetElapsedMs()   const { return elapsed_step_ms_; }
     bool     IsPlaying()      const { return playing_; }
     bool     IsGateActive()   const { return gate_active_; }
+    sequencer::ArpMode GetCurrentArpMode() const;
     /* Returns the semitone (0-11) of the current arp note, or 0xFF if no note. */
     uint8_t  GetCurrentNote() const { return arp_.CurrentNote(); }
     /* Consume a pending CV/gate event. Returns true if note+gate state changed.
@@ -83,6 +91,7 @@ private:
     void AdvanceStep();
     void GateOn();
     void GateOff();
+    void RetriggerGate(uint32_t low_gap_ms = 1u);
     void ApplyCurrentStepBehavior();
 
     const char* StepTypeName(sequencer::StepType type) const;
@@ -125,6 +134,8 @@ private:
     /* ── Gate ────────────────────────────────────────────────────────── */
     uint32_t    gate_elapsed_ms_          = 0;
     uint32_t    gate_length_ms_           = 100;
+    bool        gate_retrigger_pending_   = false;
+    uint32_t    gate_retrigger_delay_ms_  = 0;
 
     /* ── Arp ─────────────────────────────────────────────────────────── */
     uint32_t    arp_elapsed_ms_           = 0;

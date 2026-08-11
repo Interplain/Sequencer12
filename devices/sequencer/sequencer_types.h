@@ -12,6 +12,7 @@ namespace sequencer
 constexpr uint32_t kStepCount    = 12;
 constexpr uint32_t kPatternCount = 32;
 constexpr uint32_t kChainLength  = 32;
+constexpr uint8_t  kStepLedgerMax = 16;
 
 // ─────────────────────────────────────────────
 // Note mask helpers
@@ -166,8 +167,9 @@ struct StepSlot
 {
     StepType type                = StepType::Empty;
     uint32_t duration_multiplier = 1;
-    uint8_t  repeat_count        = 1;     // times to play this step before advancing
+    uint8_t  repeat_count        = 1;     // ledger length / note count inside the step
     uint16_t note_mask           = 0;
+    std::array<uint16_t, kStepLedgerMax> note_ledger{}; // one mask per sub-note slot
     char     custom_chord_name[17] = {0};
     uint8_t  velocity            = 100;   // 0-127 MIDI standard
     uint8_t  probability         = 100;   // 0-100 percent chance of firing

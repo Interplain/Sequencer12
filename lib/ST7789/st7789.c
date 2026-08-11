@@ -140,7 +140,7 @@ void ST7789_Init(void)
     HAL_Delay(120);
 
     /* Pixel format: 16-bit RGB565 over SPI */
-#if LCD_USE_18BIT_COLOR
+    #if LCD_USE_18BIT_COLOR
     {
         uint8_t d[] = {ST7789_COLOR_MODE_18BIT};
         WriteCommandData(ST7789_COLMOD, d, sizeof(d));

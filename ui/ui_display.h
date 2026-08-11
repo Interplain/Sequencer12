@@ -3,6 +3,11 @@
 
 #include <stdint.h>
 
+/* Temporary MCP overlay diagnostics toggle. Keep code path available but disabled by default. */
+#ifndef UI_MCP_DEBUG_OVERLAY
+#define UI_MCP_DEBUG_OVERLAY 0
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -39,7 +44,8 @@ typedef enum
     UI_MAIN_MODE_STEP = 0,
     UI_MAIN_MODE_CHORD,
     UI_MAIN_MODE_TIMING,
-    UI_MAIN_MODE_PATTERN
+    UI_MAIN_MODE_PATTERN,
+    UI_MAIN_MODE_QUAN
 } UiMainMode;
 
 /* ── Init ────────────────────────────────────────────────────────────────── */
@@ -73,6 +79,7 @@ void UI_Display_DrawStatusRow(uint8_t pattern,
                               uint32_t loops,
                               uint32_t run_time_ms);
 void UI_Display_SetMainMode(UiMainMode mode);
+void UI_Display_DrawMcpDebug(uint8_t online, uint8_t read_ok, uint8_t gpio_a, uint8_t gpio_b, uint8_t addr7, uint8_t scan_mask);
 
 /* ── Chord Menu ───────────────────────────────────────────────────────────── */
 void UI_Display_DrawChordMenu(uint8_t step, const ChordParams* chord, uint8_t selection);
@@ -95,6 +102,20 @@ void UI_Display_DrawTimingMenu(uint8_t step_count,
                                uint8_t cursor,
                                uint8_t footer_action,
                                uint8_t has_unsaved_changes);
+void UI_Display_DrawQuantiserTimingMenu(uint8_t enabled,
+                                        uint8_t grid_division,
+                                        uint8_t strength,
+                                        uint8_t humanize_ms,
+                                        uint8_t lag_ms,
+                                        uint8_t cursor,
+                                        uint8_t footer_action,
+                                        uint8_t has_unsaved_changes);
+void UI_Display_DrawQuanRouterMenu(const uint8_t* sources,
+                                   const uint8_t* targets,
+                                   uint8_t cursor,
+                                   uint8_t edit_field,
+                                   uint8_t footer_action,
+                                   uint8_t has_unsaved_changes);
 void UI_Display_NavigateTimingFooter(int8_t delta);
 uint8_t UI_Display_GetTimingFooterAction(void);
 void UI_Display_SetTimingFooterAction(uint8_t action);

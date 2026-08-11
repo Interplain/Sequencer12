@@ -1,98 +1,90 @@
 #include "platform/dac8564/dac8564.h"
 #include "stm32/hw/hw_init.h"
 
-#define DAC_CS_PORT    GPIOB
-#define DAC_CS_PIN     GPIO_PIN_12
-#define DAC_LDAC_PORT  GPIOB
-#define DAC_LDAC_PIN   GPIO_PIN_14
-#define DAC_CLR_PORT   GPIOC
-#define DAC_CLR_PIN    GPIO_PIN_4
+/* ── Hardware ────────────────────────────────────────────────────────────
+ * PB12 = SYNC (active-low frame sync)
+ * PB13 = SCLK, PB15 = MOSI (SPI2, configured in hw_init)
+ * PB14 = LDAC — tied LOW in hardware (C20 ground wire); firmware ignores it.
+ * A0/A1 grounded on the chip → DB23=DB22=0 in every frame.
+ * ──────────────────────────────────────────────────────────────────────── */
+#define DAC_SYNC_PORT   GPIOB
+#define DAC_SYNC_PIN    GPIO_PIN_12
+#define DAC_LDAC_PORT   GPIOB
+#define DAC_LDAC_PIN    GPIO_PIN_14
 
-#define DAC8564_CMD_WRITE_UPDATE_N    0x01u
+#ifndef DAC_FORCE_LDAC_LOW
+#define DAC_FORCE_LDAC_LOW 1u
+#endif
 
-/* Logical channel -> DAC address map.
- * Hardware pin mapping target:
- *   CH_A -> address 0 (VOUTA, pin 1)
- *   CH_B -> address 1 (VOUTB, pin 2)
- *   CH_C -> address 2 (VOUTC, pin 7)
- *   CH_D -> address 3 (VOUTD, pin 8)
- */
-static const uint8_t k_channel_addr_map[4] = {0u, 1u, 2u, 3u};
+/* Single-channel update: DB=[A1 A0 LD1 LD0 0 DACsel1 DACsel0 PD0]
+ *   A1=0 A0=0 LD1=0 LD0=1 (single-channel update) PD0=0
+ *   → 0x10 | (channel << 1)  →  0x10/0x12/0x14/0x16 for A/B/C/D          */
+#define DAC_CMD_UPDATE_CH(ch)  ((uint8_t)(0x10u | (((ch) & 0x03u) << 1)))
+
+/* Calibration interpolation window */
+/* Calibration points — MUST match the voltages the wizard asks for in
+ * calibration.c. Wizard currently calibrates at 0.00V and +6.00V. */
+#define DAC_CAL_VLOW    ( 0.0f)
+#define DAC_CAL_VHIGH   ( 6.0f)
+#define DAC_CAL_SPAN    (DAC_CAL_VHIGH - DAC_CAL_VLOW)
 
 static SPI_HandleTypeDef* s_spi = 0;
 static uint16_t s_pitch_code_neg1v[4] = {0u, 0u, 0u, 0u};
 static uint16_t s_pitch_code_pos2v[4] = {26214u, 26214u, 26214u, 26214u};
+
+/* diagnostics kept for the debug UI */
 static HAL_StatusTypeDef s_last_spi_status = HAL_OK;
 static uint32_t s_write_count = 0u;
-static uint8_t s_last_tx0 = 0u;
+static uint8_t  s_last_tx0    = 0u;
 
-static void DacSelect(void)    { HAL_GPIO_WritePin(DAC_CS_PORT, DAC_CS_PIN, GPIO_PIN_RESET); }
-static void DacDeselect(void)  { HAL_GPIO_WritePin(DAC_CS_PORT, DAC_CS_PIN, GPIO_PIN_SET); }
-static void DacPulseLdac(void)
+/* ── One 24-bit write to a single channel ──────────────────────────────── */
+static void Dac_WriteChannel(uint8_t ch, uint16_t value)
 {
-    HAL_GPIO_WritePin(DAC_LDAC_PORT, DAC_LDAC_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(DAC_LDAC_PORT, DAC_LDAC_PIN, GPIO_PIN_SET);
-}
-
-static void DacWriteFrame(uint8_t cmd, uint8_t addr, uint16_t value)
-{
-    if (s_spi == 0) return;
     uint8_t tx[3];
-    /* DAC8564 DB23..DB16 = [A1 A0 LD1 LD0 0 DAC1 DAC0 PD0].
-     * For write-and-update-selected-DAC with A1=A0=0 and PD0=0:
-     * control byte = 0x10 | (channel << 1), yielding 0x10/0x12/0x14/0x16. */
-    tx[0] = (uint8_t)(((cmd & 0x0Fu) << 4) | ((addr & 0x03u) << 1));
-    s_last_tx0 = tx[0];
+
+    if (s_spi == 0 || ch > 3u) return;
+
+    tx[0] = DAC_CMD_UPDATE_CH(ch);
     tx[1] = (uint8_t)(value >> 8);
     tx[2] = (uint8_t)(value & 0xFFu);
+    s_last_tx0 = tx[0];
 
-    DacSelect();
+    /* SYNC low, clock 24 bits, SYNC high. Update occurs on 24th falling
+     * clock per datasheet — LDAC (hardwired low) needs no action. */
+    HAL_GPIO_WritePin(DAC_SYNC_PORT, DAC_SYNC_PIN, GPIO_PIN_RESET);
     s_last_spi_status = HAL_SPI_Transmit(s_spi, tx, 3, 10);
-    DacDeselect();
+    HAL_GPIO_WritePin(DAC_SYNC_PORT, DAC_SYNC_PIN, GPIO_PIN_SET);
 
-    if (s_last_spi_status == HAL_OK)
-    {
-        s_write_count++;
-    }
+    if (s_last_spi_status == HAL_OK) s_write_count++;
 }
 
-void DAC8564_ClearOutputs(void) { DAC8564_SetAllRaw(0, 0, 0, 0); }
-
+/* ── Public API ────────────────────────────────────────────────────────── */
 void DAC8564_Init(SPI_HandleTypeDef* hspi)
 {
     s_spi = hspi;
-    /* CLR inactive (high). LDAC starts high; pulsed explicitly after each write. */
-    HAL_GPIO_WritePin(DAC_CLR_PORT, DAC_CLR_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(DAC_LDAC_PORT, DAC_LDAC_PIN, GPIO_PIN_SET);
-
+    HAL_GPIO_WritePin(DAC_SYNC_PORT, DAC_SYNC_PIN, GPIO_PIN_SET); /* SYNC idle high */
+#if DAC_FORCE_LDAC_LOW
+    HAL_GPIO_WritePin(DAC_LDAC_PORT, DAC_LDAC_PIN, GPIO_PIN_RESET);
+#endif
     DAC8564_ClearOutputs();
+}
+
+void DAC8564_ClearOutputs(void)
+{
+    DAC8564_SetAllRaw(0, 0, 0, 0);
 }
 
 void DAC8564_SetChannelRaw(Dac8564Channel channel, uint16_t value)
 {
-    uint8_t ch = (uint8_t)channel;
-    if (ch > 3u) return;
-    DacWriteFrame(DAC8564_CMD_WRITE_UPDATE_N, k_channel_addr_map[ch], value);
-    DacPulseLdac();
+    Dac_WriteChannel((uint8_t)channel, value);
 }
 
 void DAC8564_SetAllRaw(uint16_t a, uint16_t b, uint16_t c, uint16_t d)
 {
-    /* Hold LDAC high — writes go to input registers only.
-     * All four channels are written, then LDAC is pulsed LOW
-     * so all four outputs update at exactly the same instant.
-     * This prevents audible glitches during chord transitions
-     * where all voices need to change simultaneously.
-     * Requires LDAC (Pin 16) connected to PB14 via 10k resistor
-     * with 10k pull-up to +3.3V on the PCB. */
-    HAL_GPIO_WritePin(DAC_LDAC_PORT, DAC_LDAC_PIN, GPIO_PIN_SET);
-
-    DacWriteFrame(DAC8564_CMD_WRITE_UPDATE_N, k_channel_addr_map[0], a);
-    DacWriteFrame(DAC8564_CMD_WRITE_UPDATE_N, k_channel_addr_map[1], b);
-    DacWriteFrame(DAC8564_CMD_WRITE_UPDATE_N, k_channel_addr_map[2], c);
-    DacWriteFrame(DAC8564_CMD_WRITE_UPDATE_N, k_channel_addr_map[3], d);
-
-    DacPulseLdac();
+    Dac_WriteChannel(0u, a);
+    Dac_WriteChannel(1u, b);
+    Dac_WriteChannel(2u, c);
+    Dac_WriteChannel(3u, d);
 }
 
 uint16_t DAC8564_VoltsToCode(float volts, float full_scale_volts)
@@ -100,9 +92,7 @@ uint16_t DAC8564_VoltsToCode(float volts, float full_scale_volts)
     if (full_scale_volts <= 0.0f) return 0;
     if (volts <= 0.0f) return 0;
     if (volts >= full_scale_volts) return 65535u;
-
-    float ratio = volts / full_scale_volts;
-    float codef = ratio * 65535.0f;
+    float codef = (volts / full_scale_volts) * 65535.0f;
     if (codef < 0.0f) codef = 0.0f;
     if (codef > 65535.0f) codef = 65535.0f;
     return (uint16_t)codef;
@@ -113,12 +103,41 @@ void DAC8564_SetChannelVolts(Dac8564Channel channel, float volts, float full_sca
     DAC8564_SetChannelRaw(channel, DAC8564_VoltsToCode(volts, full_scale_volts));
 }
 
+void DAC8564_SetPitchCalibrationForChannel(Dac8564Channel channel, uint16_t code_neg1v, uint16_t code_pos2v)
+{
+    uint8_t ch = (uint8_t)channel;
+    if (ch > 3) return;
+    if (code_pos2v == code_neg1v) code_pos2v = (uint16_t)(code_neg1v + 1u);
+    s_pitch_code_neg1v[ch] = code_neg1v;
+    s_pitch_code_pos2v[ch] = code_pos2v;
+}
+
+void DAC8564_GetPitchCalibrationForChannel(Dac8564Channel channel, uint16_t* code_neg1v, uint16_t* code_pos2v)
+{
+    uint8_t ch = (uint8_t)channel;
+    if (ch > 3) return;
+    if (code_neg1v) *code_neg1v = s_pitch_code_neg1v[ch];
+    if (code_pos2v) *code_pos2v = s_pitch_code_pos2v[ch];
+}
+
+uint16_t DAC8564_PitchVoltsToCodeForChannel(Dac8564Channel channel, float volts)
+{
+    uint8_t ch = (uint8_t)channel;
+    if (ch > 3) ch = 0;
+    if (volts <= DAC_CAL_VLOW)  return s_pitch_code_neg1v[ch];
+    if (volts >= DAC_CAL_VHIGH) return s_pitch_code_pos2v[ch];
+    float t = (volts - DAC_CAL_VLOW) / DAC_CAL_SPAN;
+    float c = (float)s_pitch_code_neg1v[ch] +
+              ((float)((int32_t)s_pitch_code_pos2v[ch] - (int32_t)s_pitch_code_neg1v[ch]) * t);
+    if (c < 0.0f) c = 0.0f;
+    if (c > 65535.0f) c = 65535.0f;
+    return (uint16_t)c;
+}
+
 void DAC8564_SetPitchCalibration(uint16_t code_neg1v, uint16_t code_pos2v)
 {
-    DAC8564_SetPitchCalibrationForChannel(DAC8564_CH_A, code_neg1v, code_pos2v);
-    DAC8564_SetPitchCalibrationForChannel(DAC8564_CH_B, code_neg1v, code_pos2v);
-    DAC8564_SetPitchCalibrationForChannel(DAC8564_CH_C, code_neg1v, code_pos2v);
-    DAC8564_SetPitchCalibrationForChannel(DAC8564_CH_D, code_neg1v, code_pos2v);
+    for (uint8_t ch = 0; ch < 4; ch++)
+        DAC8564_SetPitchCalibrationForChannel((Dac8564Channel)ch, code_neg1v, code_pos2v);
 }
 
 void DAC8564_GetPitchCalibration(uint16_t* code_neg1v, uint16_t* code_pos2v)
@@ -131,54 +150,6 @@ uint16_t DAC8564_PitchVoltsToCode(float volts)
     return DAC8564_PitchVoltsToCodeForChannel(DAC8564_CH_A, volts);
 }
 
-void DAC8564_SetPitchCalibrationForChannel(Dac8564Channel channel, uint16_t code_neg1v, uint16_t code_pos2v)
-{
-    uint8_t ch = (uint8_t)channel;
-    if (ch > 3) return;
-
-    if (code_pos2v <= code_neg1v)
-    {
-        code_pos2v = (uint16_t)(code_neg1v + 1u);
-    }
-
-    s_pitch_code_neg1v[ch] = code_neg1v;
-    s_pitch_code_pos2v[ch] = code_pos2v;
-}
-
-void DAC8564_GetPitchCalibrationForChannel(Dac8564Channel channel, uint16_t* code_neg1v, uint16_t* code_pos2v)
-{
-    uint8_t ch = (uint8_t)channel;
-    if (ch > 3) return;
-
-    if (code_neg1v != 0) *code_neg1v = s_pitch_code_neg1v[ch];
-    if (code_pos2v != 0) *code_pos2v = s_pitch_code_pos2v[ch];
-}
-
-uint16_t DAC8564_PitchVoltsToCodeForChannel(Dac8564Channel channel, float volts)
-{
-    uint8_t ch = (uint8_t)channel;
-    if (ch > 3) ch = 0;
-
-    if (volts <= -1.0f) return s_pitch_code_neg1v[ch];
-    if (volts >= 2.0f) return s_pitch_code_pos2v[ch];
-
-    float t = (volts + 1.0f) / 3.0f;
-    float c = (float)s_pitch_code_neg1v[ch] +
-              ((float)((int32_t)s_pitch_code_pos2v[ch] - (int32_t)s_pitch_code_neg1v[ch]) * t);
-
-    if (c < 0.0f) c = 0.0f;
-    if (c > 65535.0f) c = 65535.0f;
-    return (uint16_t)c;
-}
-
-HAL_StatusTypeDef DAC8564_GetLastSpiStatus(void)
-{
-    return s_last_spi_status;
-}
-
-uint8_t DAC8564_GetLastTx0(void) { return s_last_tx0; }
-
-uint32_t DAC8564_GetWriteCount(void)
-{
-    return s_write_count;
-}
+HAL_StatusTypeDef DAC8564_GetLastSpiStatus(void) { return s_last_spi_status; }
+uint8_t  DAC8564_GetLastTx0(void)   { return s_last_tx0; }
+uint32_t DAC8564_GetWriteCount(void){ return s_write_count; }

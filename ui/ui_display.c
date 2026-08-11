@@ -6,6 +6,7 @@
 #include <string.h>
 #include "fonts_extra.h"
 #include "sequencer_bridge.h"
+#include "screens/ui_screen_piano_roll.h"
 /* ── Layout constants ────────────────────────────────────────────────────── */
 #define SCREEN_W    ST7789_WIDTH
 #define SCREEN_H    ST7789_HEIGHT
@@ -85,13 +86,14 @@
 #define COL_CHORD    COLOR_CHORD
 #define COL_NORMAL   WHITE
 #define COL_SELECTED_EMPTY COLOR_TEXT_MUTED
+#define COL_MODE_QUAN COLOR8(220, 55, 95)
 
 /* ── Forward declarations ────────────────────────────────────────────────── */
 static void DrawRectBorder(uint16_t x, uint16_t y,
                            uint16_t w, uint16_t h, uint16_t color);
-static void FillRegion(UiRect r, uint16_t color);
-static void MenuTemplate_Begin(uint8_t frame_id);
-static void MenuTemplate_DrawHeader(const char* title, const char* indicator, uint16_t indicator_color);
+void FillRegion(UiRect r, uint16_t color);
+void MenuTemplate_Begin(uint8_t frame_id);
+void MenuTemplate_DrawHeader(const char* title, const char* indicator, uint16_t indicator_color);
 static void GetChordButtonXY(uint8_t slot, uint16_t* x, uint16_t* y);
 static void DrawAllChordButtonFrames(void);
 static void DrawChordButtonFrame(uint8_t slot);
@@ -170,6 +172,8 @@ enum {
     MENU_FRAME_USER_CHORD,
     MENU_FRAME_PARAMS,
     MENU_FRAME_TIMING,
+    MENU_FRAME_QUANT_TIMING,
+    MENU_FRAME_QUAN_ROUTER,
     MENU_FRAME_SONG
 };
 
@@ -205,6 +209,11 @@ static uint8_t  s_timing_prev_ts_num = 0xFF;
 static uint8_t  s_timing_prev_ts_den = 0xFF;
 static uint8_t  s_timing_prev_swing = 0xFF;
 static uint8_t  s_timing_prev_unsaved = 0xFF;
+static uint8_t  s_quan_router_prev_cursor = 0xFF;
+static uint8_t  s_quan_router_prev_edit_field = 0xFF;
+static uint8_t  s_quan_router_prev_unsaved = 0xFF;
+static uint8_t  s_quan_router_prev_source[8] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static uint8_t  s_quan_router_prev_target[8] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static uint8_t  s_song_footer_valid = 0;
 static uint8_t  s_song_page_valid = 0;
 static uint8_t  s_song_prev_page_base = 0xFF;
@@ -233,6 +242,13 @@ static uint8_t s_step_cache_has_chord[12] = {0};
 static uint8_t s_step_cache_flash_on[12] = {0};
 static uint8_t s_step_cache_flash_enabled[12] = {0};
 static uint8_t s_main_grid_strip_buffer[SCREEN_W * 16u * 2u];
+static uint8_t s_mcp_dbg_valid = 0;
+static uint8_t s_mcp_dbg_online = 0xFF;
+static uint8_t s_mcp_dbg_read_ok = 0xFF;
+static uint8_t s_mcp_dbg_a = 0xFF;
+static uint8_t s_mcp_dbg_b = 0xFF;
+static uint8_t s_mcp_dbg_addr7 = 0xFF;
+static uint8_t s_mcp_dbg_scan_mask = 0xFF;
 
 #define MAIN_GRID_STRIP_H 16u
 
@@ -288,6 +304,7 @@ void UI_Display_Init(void)
     s_sidebar_valid = 0;
     s_prev_sidebar_div = 0xFF;
     s_prev_sidebar_swing = 0xFF;
+    s_mcp_dbg_valid = 0;
     /* Don't draw grid here - caller will draw with chord info */
 }
 
@@ -340,6 +357,7 @@ void UI_Display_FastReturnToGrid(void)
     s_sidebar_valid = 0;
     s_prev_sidebar_div = 0xFF;
     s_prev_sidebar_swing = 0xFF;
+    s_mcp_dbg_valid = 0;
 }
 
 void UI_Display_DrawMainGridComposed(uint8_t selected_step,
@@ -440,7 +458,7 @@ void UI_Display_DrawHeader(uint16_t bpm, TransportState state, uint8_t rec_armed
         char bpm_str[8];
         ST7789_FillRect(0, 0, 120, HEADER_H, BLACK);
         snprintf(bpm_str, sizeof(bpm_str), "%3u", bpm);
-        ST7789_DrawStringScaled(4, 2, bpm_str, &Font8x12, 2, COLOR_TEXT_MAIN, BLACK);
+        ST7789_DrawString(4, 2, bpm_str, &Font_Sans16, COLOR_TEXT_MAIN, BLACK);
         ST7789_DrawString(52, 2, "BPM", &Font16x24, COLOR_TEXT_MAIN, BLACK);
     }
 
@@ -522,12 +540,13 @@ void UI_Display_DrawStepBox(uint8_t step, uint8_t selected, uint8_t active, uint
     uint8_t len = 0;
     while (s[len]) len++;
 
-    uint16_t textW = (uint16_t)(len * Font8x12.width * 2);
-    uint16_t textH = (uint16_t)(Font8x12.height * 2);
+    /* Match composed-grid typography size so incremental redraws look consistent. */
+    uint16_t textW = (uint16_t)(len * Font16x24.width);
+    uint16_t textH = (uint16_t)(Font16x24.height);
     uint16_t tx    = x + ((BOX_W - textW) / 2);
     uint16_t ty    = y + ((BOX_H - textH) / 2);
 
-    ST7789_DrawStringScaled(tx, ty, s, &Font8x12, 2, colour, COLOR_BOX_BG);
+    ST7789_DrawString(tx, ty, s, &Font16x24, colour, COLOR_BOX_BG);
 
     if (index < 12U) {
         s_step_cache_selected[index] = selected;
@@ -571,7 +590,18 @@ static void DrawSidebarInfo(void)
 
     {
         char q[12];
-        snprintf(q, sizeof(q), "1/%u", (unsigned)(div * 4U));
+        const char* div_text = "1/16";
+        switch (div)
+        {
+            case 1: div_text = "1/4"; break;
+            case 2: div_text = "1/8"; break;
+            case 3: div_text = "1/8T"; break;
+            case 4: div_text = "1/16"; break;
+            case 6: div_text = "1/16T"; break;
+            case 8: div_text = "1/32"; break;
+            default: break;
+        }
+        snprintf(q, sizeof(q), "%s", div_text);
         ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 52, "QUANT", &Font8x12, LIGHTBLUE, panel_bg);
         ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 66, q, &Font10x16, WHITE, panel_bg);
 
@@ -791,13 +821,19 @@ static void MainGridComposeStrip(uint8_t* buffer,
             text_col = WHITE;
             label = "SONG";
         }
+        else if (s_main_mode == UI_MAIN_MODE_QUAN)
+        {
+            fill = COL_MODE_QUAN;
+            text_col = WHITE;
+            label = "QUAN";
+        }
 
         MainGridStripDrawBorderedRect(buffer, strip_y, strip_h, 4u, 25u, 44u, 18u, fill, border, BORDER_T);
         MainGridStripDrawString(buffer, strip_y, strip_h, 8u, 28u, label, &Font8x12, 1u, text_col, fill);
     }
 
     snprintf(text, sizeof(text), "ST:%02u", (unsigned)(step + 1u));
-    MainGridStripDrawString(buffer, strip_y, strip_h, 54u, 26u, text, &Font10x16, 1u, COLOR_TEXT_MAIN, COLOR_BG);
+    MainGridStripDrawString(buffer, strip_y, strip_h, 54u, 26u, text, &Font_Mono14, 1u, COLOR_TEXT_MAIN, COLOR_BG);
 
     snprintf(text, sizeof(text), "LP:%02lu", (unsigned long)loops);
     MainGridStripDrawString(buffer, strip_y, strip_h, STATUS_LOOPS_X, 26u, text, &Font10x16, 1u, COLOR_TEXT_MAIN, COLOR_BG);
@@ -854,7 +890,7 @@ static void MainGridComposeStrip(uint8_t* buffer,
     }
 }
 
-static void FillRegion(UiRect r, uint16_t color)
+void FillRegion(UiRect r, uint16_t color)
 {
     ST7789_FillRect(r.x, r.y, r.w, r.h, color);
 }
@@ -875,7 +911,7 @@ static void StrCopy(char* dst, uint16_t size, const char* src)
     snprintf(dst, size, "%s", src);
 }
 
-static void MenuTemplate_Begin(uint8_t frame_id)
+void MenuTemplate_Begin(uint8_t frame_id)
 {
     if (s_menu_frame == frame_id) return;
 
@@ -892,6 +928,25 @@ static void MenuTemplate_Begin(uint8_t frame_id)
     s_timing_footer_drawn = 0xFF;
     s_param_row_cursor = 0xFF;
     s_timing_row_cursor = 0xFF;
+    s_quan_router_prev_cursor = 0xFF;
+    s_quan_router_prev_edit_field = 0xFF;
+    s_quan_router_prev_unsaved = 0xFF;
+    s_quan_router_prev_source[0] = 0xFF;
+    s_quan_router_prev_source[1] = 0xFF;
+    s_quan_router_prev_source[2] = 0xFF;
+    s_quan_router_prev_source[3] = 0xFF;
+    s_quan_router_prev_source[4] = 0xFF;
+    s_quan_router_prev_source[5] = 0xFF;
+    s_quan_router_prev_source[6] = 0xFF;
+    s_quan_router_prev_source[7] = 0xFF;
+    s_quan_router_prev_target[0] = 0xFF;
+    s_quan_router_prev_target[1] = 0xFF;
+    s_quan_router_prev_target[2] = 0xFF;
+    s_quan_router_prev_target[3] = 0xFF;
+    s_quan_router_prev_target[4] = 0xFF;
+    s_quan_router_prev_target[5] = 0xFF;
+    s_quan_router_prev_target[6] = 0xFF;
+    s_quan_router_prev_target[7] = 0xFF;
     s_song_page_valid = 0;
     s_song_prev_page_base = 0xFF;
     s_song_prev_cursor = 0xFF;
@@ -908,7 +963,7 @@ static void MenuTemplate_Begin(uint8_t frame_id)
     s_user_chord_load_footer_valid = 0;
 }
 
-static void MenuTemplate_DrawHeader(const char* title, const char* indicator, uint16_t indicator_color)
+void MenuTemplate_DrawHeader(const char* title, const char* indicator, uint16_t indicator_color)
 {
     uint8_t need_redraw = !s_menu_header_valid;
 
@@ -959,6 +1014,12 @@ static void DrawMainModeBox(void)
         text = WHITE;
         label = "SONG";
     }
+    else if (s_main_mode == UI_MAIN_MODE_QUAN)
+    {
+        fill = COL_MODE_QUAN;
+        text = WHITE;
+        label = "QUAN";
+    }
 
     ST7789_FillRectBordered(box_x, box_y, box_w, box_h, fill, border, BORDER_T);
     ST7789_DrawString(8, 28, label, &Font8x12, text, fill);
@@ -967,7 +1028,7 @@ static void DrawMainModeBox(void)
 
 void UI_Display_SetMainMode(UiMainMode mode)
 {
-    if (mode > UI_MAIN_MODE_PATTERN)
+    if (mode > UI_MAIN_MODE_QUAN)
     {
         mode = UI_MAIN_MODE_STEP;
     }
@@ -997,7 +1058,7 @@ void UI_Display_DrawStatusRow(uint8_t pattern,
     if (s_force_status_redraw || step != s_prev_step) {
         char st[8];
         snprintf(st, sizeof(st), "ST:%02u", step + 1);
-        ST7789_DrawString(54, 26, st, &Font10x16, COLOR_TEXT_MAIN, COLOR_BG);
+        ST7789_DrawString(54, 26, st, &Font_Mono14, COLOR_TEXT_MAIN, COLOR_BG);
         s_prev_step = step;
     }
     if (s_force_status_redraw || loops != s_prev_loops) {
@@ -1015,6 +1076,48 @@ void UI_Display_DrawStatusRow(uint8_t pattern,
     }
 
     s_force_status_redraw = 0;
+}
+
+void UI_Display_DrawMcpDebug(uint8_t online, uint8_t read_ok, uint8_t gpio_a, uint8_t gpio_b, uint8_t addr7, uint8_t scan_mask)
+{
+    if (s_menu_frame != MENU_FRAME_NONE)
+    {
+        return;
+    }
+
+    if (s_mcp_dbg_valid &&
+        online == s_mcp_dbg_online &&
+        read_ok == s_mcp_dbg_read_ok &&
+        gpio_a == s_mcp_dbg_a &&
+        gpio_b == s_mcp_dbg_b &&
+        addr7 == s_mcp_dbg_addr7 &&
+        scan_mask == s_mcp_dbg_scan_mask)
+    {
+        return;
+    }
+
+    {
+        char l1[20];
+        char l2[20];
+        uint16_t state_col = online ? (read_ok ? COL_PLAY : YELLOW) : COL_REC_ARM;
+
+        snprintf(l1, sizeof(l1), "MCP:%s R:%u %02X", online ? "ON" : "OFF", (unsigned)read_ok, (unsigned)addr7);
+        snprintf(l2, sizeof(l2), "A:%02X B:%02X M:%02X", (unsigned)gpio_a, (unsigned)gpio_b, (unsigned)scan_mask);
+
+        ST7789_FillRect(56, 44, 148, 12, COLOR_BG);
+        ST7789_DrawString(56, 44, l1, &Font8x12, state_col, COLOR_BG);
+
+        ST7789_FillRect(56, 56, 148, 12, COLOR_BG);
+        ST7789_DrawString(56, 56, l2, &Font8x12, COLOR_TEXT_SECONDARY, COLOR_BG);
+    }
+
+    s_mcp_dbg_valid = 1;
+    s_mcp_dbg_online = online;
+    s_mcp_dbg_read_ok = read_ok;
+    s_mcp_dbg_a = gpio_a;
+    s_mcp_dbg_b = gpio_b;
+    s_mcp_dbg_addr7 = addr7;
+    s_mcp_dbg_scan_mask = scan_mask;
 }
 
 /* ── Chord Menu ───────────────────────────────────────────────────────────── */
@@ -1410,7 +1513,7 @@ void UI_Display_NavigateChordParams(int8_t delta, uint8_t step, ChordParams* cho
 
 void UI_Display_DrawParamFooterActions(uint8_t selected_action)
 {
-    static const char* labels[PARAM_ACTION_COUNT] = {"MAIN", "PREV", "NEXT", "SAVE"};
+    static const char* labels[PARAM_ACTION_COUNT] = {"BACK", "PREV", "NEXT", "SAVE"};
     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
 
     for (uint8_t i = 0; i < PARAM_ACTION_COUNT; i++)
@@ -1428,11 +1531,13 @@ void UI_Display_NavigateParamFooterActions(int8_t delta, uint8_t step, const Cho
 
     *footer_action = (uint8_t)next;
 
-    DrawParamFooterButton(old, (old == PARAM_ACTION_MAIN) ? "1 MAIN" :
-                               (old == PARAM_ACTION_PREV) ? "2 PREV" :
-                               (old == PARAM_ACTION_NEXT) ? "3 NEXT" : "4 SAVE", 0);
+        DrawParamFooterButton(old,
+                                                    (old == PARAM_ACTION_MAIN) ? "1 BACK" :
+                                                    (old == PARAM_ACTION_PREV) ? "2 PREV" :
+                                                    (old == PARAM_ACTION_NEXT) ? "3 NEXT" : "4 SAVE",
+                                                    0);
     DrawParamFooterButton(*footer_action,
-                          (*footer_action == PARAM_ACTION_MAIN) ? "1 MAIN" :
+                                                    (*footer_action == PARAM_ACTION_MAIN) ? "1 BACK" :
                           (*footer_action == PARAM_ACTION_PREV) ? "2 PREV" :
                           (*footer_action == PARAM_ACTION_NEXT) ? "3 NEXT" : "4 SAVE", 1);
 }
@@ -1594,6 +1699,245 @@ void UI_Display_DrawTimingMenu(uint8_t step_count,
     s_timing_prev_ts_den = ts_den;
     s_timing_prev_swing = swing;
     s_timing_prev_unsaved = has_unsaved_changes;
+}
+
+static void DrawQuantiserTimingRow(uint8_t index,
+                                   uint8_t enabled,
+                                   uint8_t grid_division,
+                                   uint8_t strength,
+                                   uint8_t humanize_ms,
+                                   uint8_t lag_ms,
+                                   uint8_t is_selected,
+                                   uint8_t draw_label)
+{
+    const uint16_t y_positions[] = {
+        PARAM_ROW_Y0,
+        PARAM_ROW_Y0 + PARAM_ROW_STEP,
+        PARAM_ROW_Y0 + (PARAM_ROW_STEP * 2),
+        PARAM_ROW_Y0 + (PARAM_ROW_STEP * 3),
+        PARAM_ROW_Y0 + (PARAM_ROW_STEP * 4)
+    };
+    const uint16_t value_x = (uint16_t)(SCREEN_W - 80);
+    const char* grid_text[] = {"1/4", "1/8", "1/16", "1/32"};
+    uint16_t y = y_positions[index];
+    uint16_t color = is_selected ? COLOR_ACTIVE : COLOR_TEXT_MAIN;
+
+    ST7789_FillRect(0, y, 3, 22, is_selected ? COLOR_ACTIVE : COLOR_BG);
+    ST7789_FillRect(value_x, y, (uint16_t)(SCREEN_W - value_x), 22, COLOR_BG);
+
+    if (index == 0)
+    {
+        if (draw_label) ST7789_DrawString(8, y, "Quantize", &Font12x20, COLOR_TEXT_MAIN, COLOR_BG);
+        ST7789_DrawString(value_x, y, enabled ? "ON" : "OFF", &Font12x20, color, COLOR_BG);
+    }
+    else if (index == 1)
+    {
+        uint8_t grid_idx = (grid_division > 3) ? 3 : grid_division;
+        if (draw_label) ST7789_DrawString(8, y, "Grid", &Font12x20, COLOR_TEXT_MAIN, COLOR_BG);
+        ST7789_DrawString(value_x, y, grid_text[grid_idx], &Font12x20, color, COLOR_BG);
+    }
+    else if (index == 2)
+    {
+        char b[12];
+        snprintf(b, sizeof(b), "%u%%", strength);
+        if (draw_label) ST7789_DrawString(8, y, "Amount", &Font12x20, COLOR_TEXT_MAIN, COLOR_BG);
+        ST7789_DrawString(value_x, y, b, &Font12x20, color, COLOR_BG);
+    }
+    else if (index == 3)
+    {
+        char b[12];
+        snprintf(b, sizeof(b), "%ums", humanize_ms);
+        if (draw_label) ST7789_DrawString(8, y, "Humanize", &Font12x20, COLOR_TEXT_MAIN, COLOR_BG);
+        ST7789_DrawString(value_x, y, b, &Font12x20, color, COLOR_BG);
+    }
+    else if (index == 4)
+    {
+        char b[12];
+        snprintf(b, sizeof(b), "%ums", lag_ms);
+        if (draw_label) ST7789_DrawString(8, y, "Lag", &Font12x20, COLOR_TEXT_MAIN, COLOR_BG);
+        ST7789_DrawString(value_x, y, b, &Font12x20, color, COLOR_BG);
+    }
+}
+
+void UI_Display_DrawQuantiserTimingMenu(uint8_t enabled,
+                                        uint8_t grid_division,
+                                        uint8_t strength,
+                                        uint8_t humanize_ms,
+                                        uint8_t lag_ms,
+                                        uint8_t cursor,
+                                        uint8_t footer_action,
+                                        uint8_t has_unsaved_changes)
+{
+    MenuTemplate_Begin(MENU_FRAME_QUANT_TIMING);
+
+    uint8_t first_draw = (s_timing_row_cursor == 0xFF) ? 1u : 0u;
+    uint8_t value_changed = 0u;
+
+    if (s_timing_prev_step_count != enabled) value_changed = 1u;
+    if (s_timing_prev_step_division != grid_division) value_changed = 1u;
+    if (s_timing_prev_ts_num != strength) value_changed = 1u;
+    if (s_timing_prev_ts_den != humanize_ms) value_changed = 1u;
+    if (s_timing_prev_swing != lag_ms) value_changed = 1u;
+
+    if (first_draw)
+    {
+        FillRegion(UI_REGION_MENU_LIST, COLOR_BG);
+        for (uint8_t i = 0; i < 5; i++)
+        {
+            DrawQuantiserTimingRow(i, enabled, grid_division, strength, humanize_ms, lag_ms, (i == cursor), 1u);
+        }
+    }
+    else if (s_timing_row_cursor != cursor)
+    {
+        DrawQuantiserTimingRow(s_timing_row_cursor, enabled, grid_division, strength, humanize_ms, lag_ms, 0u, 0u);
+        DrawQuantiserTimingRow(cursor, enabled, grid_division, strength, humanize_ms, lag_ms, 1u, 0u);
+    }
+    else if (value_changed)
+    {
+        DrawQuantiserTimingRow(cursor, enabled, grid_division, strength, humanize_ms, lag_ms, 1u, 0u);
+    }
+
+    s_timing_row_cursor = cursor;
+
+    MenuTemplate_DrawHeader("Quantiser Timing", has_unsaved_changes ? "*UNSAVED" : "Timing quantise setup", YELLOW);
+
+    if (!s_timing_footer_valid || (s_timing_footer_drawn != footer_action))
+    {
+        FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
+        DrawTimingFooterButton(0, "MAIN", footer_action == 0);
+        DrawTimingFooterButton(1, "SAVE", footer_action == 1);
+        s_timing_footer_valid = 1;
+        s_timing_footer_drawn = footer_action;
+    }
+
+    s_timing_prev_step_count = enabled;
+    s_timing_prev_step_division = grid_division;
+    s_timing_prev_ts_num = strength;
+    s_timing_prev_ts_den = humanize_ms;
+    s_timing_prev_swing = lag_ms;
+    s_timing_prev_unsaved = has_unsaved_changes;
+}
+
+void UI_Display_DrawQuanRouterMenu(const uint8_t* sources,
+                                   const uint8_t* targets,
+                                   uint8_t cursor,
+                                   uint8_t edit_field,
+                                   uint8_t footer_action,
+                                   uint8_t has_unsaved_changes)
+{
+    static const char* src_names[] = {"OFF", "ADC-IN1", "ADC-IN2", "ADC-IN3", "ADC-IN4"};
+    static const char* tgt_names[] = {"OFF", "CV1", "CV2", "CV3", "CV4", "GATE1", "GATE2", "GATE3", "GATE4"};
+    const uint16_t col_slot_x = 10u;
+    const uint16_t col_src_x = (uint16_t)(SCREEN_W / 3u);
+    const uint16_t col_tgt_x = (uint16_t)((SCREEN_W * 2u) / 3u);
+    const uint16_t row_y0 = UI_REGION_MENU_LIST.y + 1u;
+    const uint16_t row_h = 17u;
+    const uint16_t row_text_y_off = 1u;
+
+    uint8_t first_draw;
+
+    MenuTemplate_Begin(MENU_FRAME_QUAN_ROUTER);
+    first_draw = (s_quan_router_prev_cursor == 0xFF) ? 1u : 0u;
+
+    if (first_draw || (s_quan_router_prev_unsaved != has_unsaved_changes))
+    {
+        MenuTemplate_DrawHeader("Quantizer CV Router",
+                                has_unsaved_changes ? "*UNSAVED step 3..10" : "step 3..10 assignment",
+                                YELLOW);
+    }
+
+    if (first_draw)
+    {
+        FillRegion(UI_REGION_MENU_LIST, COLOR_BG);
+        for (uint8_t i = 0; i < 8; i++)
+        {
+            uint16_t y = (uint16_t)(row_y0 + (i * row_h));
+            uint8_t selected = (i == cursor) ? 1u : 0u;
+            uint16_t text_col = selected ? COLOR_ACTIVE : COLOR_TEXT_MAIN;
+            uint16_t bg_col = COLOR_BG;
+            uint8_t src_idx = sources ? sources[i] : 0u;
+            uint8_t tgt_idx = targets ? targets[i] : 0u;
+            char slot_txt[8];
+            char src_txt[10];
+            char tgt_txt[12];
+
+            if (src_idx >= 5) src_idx = 0;
+            if (tgt_idx >= 9) tgt_idx = 0;
+
+            ST7789_FillRect(0, y, SCREEN_W, row_h, bg_col);
+            ST7789_FillRect(0, y, 4, row_h, selected ? COLOR_ACTIVE : COLOR_BG);
+
+            snprintf(slot_txt, sizeof(slot_txt), "S%02u", (unsigned)(i + 3));
+            snprintf(src_txt, sizeof(src_txt), "%s%s",
+                     (selected && edit_field == 0) ? ">" : " ", src_names[src_idx]);
+            snprintf(tgt_txt, sizeof(tgt_txt), "%s%s",
+                     (selected && edit_field == 1) ? ">" : " ", tgt_names[tgt_idx]);
+
+            ST7789_DrawString(col_slot_x, (uint16_t)(y + row_text_y_off), slot_txt, &Font10x16, text_col, bg_col);
+            ST7789_DrawString(col_src_x, (uint16_t)(y + row_text_y_off), src_txt, &Font10x16, text_col, bg_col);
+            ST7789_DrawString(col_tgt_x, (uint16_t)(y + row_text_y_off), tgt_txt, &Font10x16, text_col, bg_col);
+        }
+    }
+    else
+    {
+        for (uint8_t i = 0; i < 8; i++)
+        {
+            uint8_t needs_row_redraw = 0u;
+            uint8_t src_idx = sources ? sources[i] : 0u;
+            uint8_t tgt_idx = targets ? targets[i] : 0u;
+
+            if (src_idx != s_quan_router_prev_source[i]) needs_row_redraw = 1u;
+            if (tgt_idx != s_quan_router_prev_target[i]) needs_row_redraw = 1u;
+            if (i == cursor && s_quan_router_prev_edit_field != edit_field) needs_row_redraw = 1u;
+            if (i == cursor && s_quan_router_prev_cursor != cursor) needs_row_redraw = 1u;
+            if (i == s_quan_router_prev_cursor && s_quan_router_prev_cursor != cursor) needs_row_redraw = 1u;
+
+            if (needs_row_redraw)
+            {
+                uint16_t y = (uint16_t)(row_y0 + (i * row_h));
+                uint8_t selected = (i == cursor) ? 1u : 0u;
+                uint16_t text_col = selected ? COLOR_ACTIVE : COLOR_TEXT_MAIN;
+                uint16_t bg_col = COLOR_BG;
+                char slot_txt[8];
+                char src_txt[10];
+                char tgt_txt[12];
+
+                if (src_idx >= 5) src_idx = 0;
+                if (tgt_idx >= 9) tgt_idx = 0;
+
+                ST7789_FillRect(0, y, SCREEN_W, row_h, bg_col);
+                ST7789_FillRect(0, y, 4, row_h, selected ? COLOR_ACTIVE : COLOR_BG);
+
+                snprintf(slot_txt, sizeof(slot_txt), "S%02u", (unsigned)(i + 3));
+                snprintf(src_txt, sizeof(src_txt), "%s%s",
+                         (selected && edit_field == 0) ? ">" : " ", src_names[src_idx]);
+                snprintf(tgt_txt, sizeof(tgt_txt), "%s%s",
+                         (selected && edit_field == 1) ? ">" : " ", tgt_names[tgt_idx]);
+
+                ST7789_DrawString(col_slot_x, (uint16_t)(y + row_text_y_off), slot_txt, &Font10x16, text_col, bg_col);
+                ST7789_DrawString(col_src_x, (uint16_t)(y + row_text_y_off), src_txt, &Font10x16, text_col, bg_col);
+                ST7789_DrawString(col_tgt_x, (uint16_t)(y + row_text_y_off), tgt_txt, &Font10x16, text_col, bg_col);
+            }
+        }
+    }
+
+    if (!s_timing_footer_valid || (s_timing_footer_drawn != footer_action))
+    {
+        FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
+        DrawTimingFooterButton(0, "MAIN", footer_action == 0);
+        DrawTimingFooterButton(1, "SAVE", footer_action == 1);
+        s_timing_footer_valid = 1;
+        s_timing_footer_drawn = footer_action;
+    }
+
+    for (uint8_t i = 0; i < 8; i++)
+    {
+        s_quan_router_prev_source[i] = sources ? sources[i] : 0u;
+        s_quan_router_prev_target[i] = targets ? targets[i] : 0u;
+    }
+    s_quan_router_prev_cursor = cursor;
+    s_quan_router_prev_edit_field = edit_field;
+    s_quan_router_prev_unsaved = has_unsaved_changes;
 }
 
 void UI_Display_NavigateTimingFooter(int8_t delta)
@@ -2214,82 +2558,83 @@ static void DrawStepPianoRollScreen(uint8_t step, const uint16_t note_mask, uint
 
 void UI_Display_ResetStepPianoRollCache(void)
 {
-    s_step_roll_layout_valid = 0;
-    s_step_roll_last_step = 0xFF;
-    s_step_roll_last_note_mask = 0;
-    s_step_roll_last_selected_key = 0xFF;
+    UI_PianoRollScreen_ResetCache();
 }
 
 void UI_Display_DrawPianoKeyboard(const uint16_t note_mask, uint8_t selected_key)
 {
-    s_piano_view_mode = PIANO_VIEW_KEYBOARD;
-    UI_Display_ResetStepPianoRollCache();
-    DrawPianoKeyboardScreen("Create Chord", "SAVE/DONE", note_mask, selected_key);
-}
+    PianoRollContext ctx = {
+        .mode = PIANO_ROLL_MODE_KEYBOARD,
+        .step = 1,
+        .note_mask = note_mask,
+        .selected_key = selected_key,
+        .slot_index = 0,
+        .slot_count = 1,
+        .title = "Create Chord",
+        .footer_label = "SAVE/DONE"
+    };
 
-void UI_Display_DrawStepPianoRoll(uint8_t step, const uint16_t note_mask, uint8_t selected_key)
-{
-    s_piano_view_mode = PIANO_VIEW_ROLL;
-    DrawStepPianoRollScreen(step, note_mask, selected_key);
-}
+    UI_PianoRollScreen_SetContext(&ctx);
+    UI_PianoRollScreen_ForceRedraw();
 
-void UI_Display_NavigatePianoKeyboard(int8_t delta)
-{
-    uint8_t old = s_selected_piano_key;
-    int16_t next = (int16_t)s_selected_piano_key + delta;
-    while (next < 0)   next += 12;
-    while (next >= 12) next -= 12;
-    s_selected_piano_key = (uint8_t)next;
-
-    if (old == s_selected_piano_key) return;
-
-    if (s_piano_view_mode == PIANO_VIEW_ROLL)
     {
-        /* Roll mode: repaint the two affected rows only. No header touch. */
-        RollDrawRow(old);
-        RollDrawRow(s_selected_piano_key);
-    }
-    else
-    {
-        DrawPianoKeyByNote(old);
-        DrawPianoKeyByNote(s_selected_piano_key);
-        MenuTemplate_DrawHeader(s_piano_header_title,
-                                k_note_names[s_selected_piano_key], YELLOW);
-    }
-}
-
-uint8_t UI_Display_GetSelectedPianoKey(void)
-{
-    return s_selected_piano_key;
-}
-
-void UI_Display_TogglePianoKey(uint8_t key)
-{
-    if (key < 12)
-    {
-        s_piano_note_mask ^= (1U << key);
-        if (s_piano_view_mode == PIANO_VIEW_ROLL)
-            RollDrawRow(key);
-        else
-            DrawPianoKeyByNote(key);
-
-        if (s_piano_view_mode == PIANO_VIEW_KEYBOARD)
+        UiScreen* screen = UI_PianoRollScreen_Get();
+        if (screen && screen->on_draw)
         {
-            char chord_name[20];
-            Bridge_FindChordName(s_piano_note_mask, chord_name, sizeof(chord_name));
-            MenuTemplate_DrawHeader(s_piano_header_title, chord_name, YELLOW);
+            screen->on_draw();
         }
     }
 }
 
+void UI_Display_DrawStepPianoRoll(uint8_t step, const uint16_t note_mask, uint8_t selected_key)
+{
+    /* Delegate to new piano roll module */
+    PianoRollContext ctx = {
+        .mode = PIANO_ROLL_MODE_STEP_ROLL,
+        .step = step,
+        .note_mask = note_mask,
+        .selected_key = selected_key,
+        .slot_index = 0,
+        .slot_count = 1,
+        .title = "Piano Roll",
+        .footer_label = "SAVE/DONE"
+    };
+    UI_PianoRollScreen_SetContext(&ctx);
+    
+    /* Force redraw to keep piano roll visible */
+    UI_PianoRollScreen_ForceRedraw();
+    
+    /* Draw the screen */
+    UiScreen* screen = UI_PianoRollScreen_Get();
+    if (screen && screen->on_draw)
+    {
+        screen->on_draw();
+    }
+}
+
+void UI_Display_NavigatePianoKeyboard(int8_t delta)
+{
+    UI_PianoRollScreen_NavigateKey(delta);
+}
+
+uint8_t UI_Display_GetSelectedPianoKey(void)
+{
+    return UI_PianoRollScreen_GetSelectedKey();
+}
+
+void UI_Display_TogglePianoKey(uint8_t key)
+{
+    UI_PianoRollScreen_ToggleKey(key);
+}
+
 uint16_t UI_Display_GetCurrentNoteMask(void)
 {
-    return s_piano_note_mask;
+    return UI_PianoRollScreen_GetNoteMask();
 }
 
 void UI_Display_SetPianoNoteMask(uint16_t mask)
 {
-    s_piano_note_mask = mask;
+    UI_PianoRollScreen_SetNoteMask(mask);
 }
 
 void UI_Display_DrawUserChordNameEditor(const char* name, uint8_t cursor)

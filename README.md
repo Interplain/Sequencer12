@@ -78,7 +78,7 @@ The long-term goal is to create a deterministic modular instrument capable of tr
 - CV / Gate hardware output (new, May 2026):
   - Gate A on PC5 — driven directly from sequencer step engine via BSRR in the 1 ms SysTick ISR
   - Gate is 50% duty cycle (gate_length_ms = step_interval / 2, min 5 ms)
-  - CV on DAC CH:A — mapped from `GetCurrentNote()` using two-point calibration (-1V to +2V across notes C–B)
+  - CV1 on the pitch lane routed from `GetCurrentNote()` using two-point calibration (-1V to +2V across notes C–B)
   - Default pattern (steps 0–7) loads C major scale so CV moves on every step
   - Confirmed working on breadboard: gate fires on all 8 note steps, rest steps silent
   - CV calibration (per-channel two-point, FRAM-persisted) applied at boot
@@ -115,11 +115,29 @@ The long-term goal is to create a deterministic modular instrument capable of tr
 - Test coverage:
   - No formal regression test harness yet for mode transitions and input maps
 
+## STM32 Flash Recovery Procedure (ST-Link)
+
+Use this when upload fails with device protected on STM32F405.
+
+1. Run unlock-only recovery:
+  /home/interplain/.platformio/penv/bin/platformio run -e genericSTM32F405RG_recovery
+2. Fully power-cycle the target board (remove and re-apply board power).
+3. Flash normally:
+  /home/interplain/.platformio/penv/bin/platformio run -e genericSTM32F405RG -t upload
+4. If protection persists, repeat from step 1.
+
+Notes:
+- Recovery environment only unlocks readout protection and does not flash firmware.
+- A real power-cycle between unlock and upload is required for settings to take effect.
+
 ## Control Map (Current Firmware)
+
+Command reference page for manual drafting:
+- See `CONTROL_COMMAND_REFERENCE.md`
 
 ### Global Input Layer
 
-- Shift tap: cycle main mode STEP -> CHORD -> TIME -> SONG
+- Shift tap: cycle main mode STEP -> CHORD -> TIME -> SONG -> QUAN
 - Play: transport play/stop on grid, save/confirm in submenus
 - Rec: rec arm on grid, back/cancel in submenus
 - Shift+Play: transport reset on grid
@@ -138,8 +156,7 @@ The long-term goal is to create a deterministic modular instrument capable of tr
 
 - Matrix 1-12: open per-step piano roll for that step
 - Encoder turn (no Shift): currently ignored in grid
-- Encoder press: open chord menu for selected step
-- Shift+Encoder press: open Pattern Timing menu
+- Encoder press: open per-step piano roll for selected step
 
 ### CHORD Main Mode (Grid)
 
@@ -168,12 +185,20 @@ The long-term goal is to create a deterministic modular instrument capable of tr
 ### TIME Main Mode (Grid)
 
 - Matrix 1: open Pattern Timing menu focused to Step Grid
+- Matrix 2: open Quantizer Timing menu focused to Grid
 - Shift+Matrix 1-12: open that step's params focused on Gate
 
 ### SONG Main Mode (Grid)
 
-- Matrix 1: open Song Chain editor
+- Matrix 1-12: open Song Chain editor focused to pressed slot
 - Shift+Matrix 1-12: set current pattern P01-P12
+
+### QUAN Main Mode (Grid)
+
+- Matrix 1: open Quantizer Timing menu focused to Quantize ON/OFF
+- Matrix 2: open Quantizer Timing menu focused to Grid
+- Matrix 3-10: open Quantizer CV Router focused to S03-S10 slot
+- Encoder press: open Quantizer CV Router
 
 ### Chord Params Mode
 
@@ -359,6 +384,12 @@ This is the heartbeat of S12.
 ## UI / Screen System
 
 The UI architecture is evolving toward modular screen ownership.
+
+Detailed architecture proposal for screen hierarchy, ADC/CV activation, and quantizer mode placement:
+- See `UI_WORKFLOW_HIERARCHY.md` (Issue #35)
+
+UI route freeze checklist for safe modularization:
+- See `UI_ROUTE_REGRESSION_CHECKLIST.md`
 
 Goals:
 - isolated screen state

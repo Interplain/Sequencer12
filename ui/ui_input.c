@@ -17,15 +17,56 @@ static uint16_t s_matrix_candidate = 0;
 static uint16_t s_matrix_debounced_pressed = 0;
 static uint32_t s_matrix_candidate_ms = 0;
 static uint8_t  s_enc_btn_prev    = 1;
+static uint8_t  s_enc_btn_short_pressed = 0;
+static uint8_t  s_enc_btn_long_pressed = 0;
+static uint8_t  s_enc_btn_is_down = 0;
+static uint8_t  s_enc_btn_long_fired = 0;
+static uint32_t s_enc_btn_down_ms = 0;
 static uint8_t  s_play_pressed    = 0;
 static uint8_t  s_shift_play_pressed = 0;
 static uint8_t  s_rec_pressed     = 0;
 static uint8_t  s_shift_rec_pressed  = 0;
 static uint8_t  s_shift_tap       = 0;
 static uint8_t  s_shift_consumed  = 0;
-static uint32_t s_last_mcp_check_ms = 0;
+static uint32_t s_mcp_ignore_events_until_ms = 0;
+static uint8_t  s_mcp_online = 0;
+static uint8_t  s_direct_candidate = 0;
+static uint8_t  s_direct_debounced = 0;
+static uint8_t  s_direct_prev_debounced = 0;
+static uint32_t s_direct_candidate_ms = 0;
+static uint8_t  s_mcp_fail_streak = 0;
+static uint8_t  s_mcp_ok_streak = 0;
+static uint8_t  s_mcp_last_read_ok = 0;
+static uint16_t s_mcp_last_raw = 0xFFFF;
+static uint8_t  s_mcp_last_addr7 = 0x20;
+static uint8_t  s_mcp_last_scan_mask = 0x00;
+static uint32_t s_last_mcp_poll_ms = 0;
+static uint32_t s_last_matrix_scan_ms = 0;
+static uint8_t  s_direct_armed = 0;
+static uint32_t s_direct_all_released_ms = 0;
+static uint32_t s_last_mcp_recovery_ms = 0;
 
 #define MATRIX_DEBOUNCE_MS 12u
+#define MATRIX_SETTLE_US 40u
+#define PRIME_MAX_SAMPLES 80u
+#define MCP_STARTUP_IGNORE_MS 120u
+#define MCP_RECOVER_IGNORE_MS 80u
+#define DIRECT_DEBOUNCE_MS 15u
+#define MCP_FAIL_STREAK_OFFLINE 24u
+#define MCP_OK_STREAK_ONLINE 3u
+#define MCP_POLL_INTERVAL_MS 4u
+#define MATRIX_SCAN_INTERVAL_MS 10u
+#define DIRECT_ARM_RELEASE_MS 60u
+#define ENCODER_LONG_PRESS_MS 350u
+#define ENCODER_COUNTS_PER_STEP 1
+
+static int8_t SaturatingAddInt8(int8_t base, int8_t delta)
+{
+    int16_t sum = (int16_t)base + (int16_t)delta;
+    if (sum > 127) return 127;
+    if (sum < -127) return -127;
+    return (int8_t)sum;
+}
 
 static const uint8_t s_col_bits[4] = {
     MCP_MATRIX_COL1_BIT,
@@ -40,6 +81,42 @@ static const uint8_t s_row_bits[3] = {
     MCP_MATRIX_ROW3_BIT
 };
 
+static void BusyWaitUs(uint32_t us)
+{
+    /* Coarse, non-blocking-enough settle delay to avoid 1ms HAL_Delay stalls in scan loop. */
+    volatile uint32_t cycles = us * 18u;
+    while (cycles--)
+    {
+        __NOP();
+    }
+}
+
+static uint8_t DirectButtonsFromRaw(uint16_t raw)
+{
+    uint8_t bits = 0u;
+
+    if ((raw & BTN_PLAY_BIT) == 0u)  bits |= (1u << 0);
+    if ((raw & BTN_REC_BIT) == 0u)   bits |= (1u << 1);
+    if ((raw & BTN_SHIFT_BIT) == 0u) bits |= (1u << 2);
+
+    return bits;
+}
+
+static void ClearPendingMcpEvents(void)
+{
+    s_play_pressed = 0;
+    s_shift_play_pressed = 0;
+    s_rec_pressed = 0;
+    s_shift_rec_pressed = 0;
+    s_shift_tap = 0;
+    s_shift_consumed = 0;
+    s_step_pressed_mask = 0;
+    s_shift_step_pressed_mask = 0;
+    s_prev_matrix_pressed = 0;
+    s_matrix_candidate = 0;
+    s_matrix_debounced_pressed = 0;
+}
+
 /* ── Matrix scan (3x4, active low) ─────────────────────────────────────── */
 static uint16_t ScanStepMatrix(void)
 {
@@ -51,8 +128,8 @@ static uint16_t ScanStepMatrix(void)
         out_a &= (uint8_t)(~s_col_bits[col]); /* drive selected column low */
         MCP23017_WriteGPIOA(&hi2c1, out_a);
 
-        /* Small settle delay for MCP write/read propagation */
-        HAL_Delay(1);
+        /* Small settle delay for MCP write/read propagation. */
+        BusyWaitUs(MATRIX_SETTLE_US);
 
         uint8_t gpio_a = MCP23017_ReadGPIOA(&hi2c1);
 
@@ -78,10 +155,12 @@ static uint16_t PrimeButtons(void)
     uint16_t last         = 0xFFFF;
     uint16_t now          = 0xFFFF;
     uint8_t  stable_count = 0;
+    uint32_t samples      = 0;
 
-    while (stable_count < 5)
+    while (stable_count < 3u && samples < PRIME_MAX_SAMPLES)
     {
         now = MCP23017_ReadGPIO(&hi2c1);
+        samples++;
 
         if (now == last)
             stable_count++;
@@ -111,13 +190,33 @@ void UI_Input_Init(void)
     s_matrix_debounced_pressed = 0;
     s_matrix_candidate_ms = HAL_GetTick();
     s_enc_btn_prev    = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12);
+    s_enc_btn_short_pressed = 0;
+    s_enc_btn_long_pressed = 0;
+    s_enc_btn_is_down = 0;
+    s_enc_btn_long_fired = 0;
+    s_enc_btn_down_ms = HAL_GetTick();
     s_play_pressed    = 0;
     s_shift_play_pressed = 0;
     s_rec_pressed     = 0;
     s_shift_rec_pressed = 0;
     s_shift_tap       = 0;
     s_shift_consumed  = 0;
-    s_last_mcp_check_ms = HAL_GetTick();
+    s_mcp_ignore_events_until_ms = HAL_GetTick() + MCP_STARTUP_IGNORE_MS;
+    s_mcp_online = 0;
+    s_direct_candidate = 0;
+    s_direct_debounced = 0;
+    s_direct_prev_debounced = 0;
+    s_direct_candidate_ms = HAL_GetTick();
+    s_mcp_fail_streak = 0;
+    s_mcp_ok_streak = 0;
+    s_mcp_last_read_ok = 0;
+    s_mcp_last_raw = 0xFFFF;
+    s_last_mcp_poll_ms = HAL_GetTick();
+    s_last_matrix_scan_ms = HAL_GetTick();
+    s_direct_armed = 0;
+    s_direct_all_released_ms = HAL_GetTick();
+    s_last_mcp_recovery_ms = HAL_GetTick();
+    s_last_mcp_recovery_ms = HAL_GetTick();
 
      /* Configure MCP for matrix scan:
          A: rows+shift inputs, cols outputs
@@ -127,41 +226,109 @@ void UI_Input_Init(void)
      MCP23017_WriteGPIOA(&hi2c1, (uint8_t)MCP_MATRIX_COL_MASK);
 
     /* Prime button state from stable hardware read */
-    s_prev_raw = PrimeButtons();
+    s_prev_raw = 0xFFFF;
+    for (int i = 0; i < 5; i++)
+    {
+        s_prev_raw = MCP23017_ReadGPIO(&hi2c1);
+        HAL_Delay(2);
+    }
+    s_mcp_last_raw = s_prev_raw;
+    s_mcp_last_read_ok = 1;
+    s_direct_candidate = DirectButtonsFromRaw(s_prev_raw);
+    s_direct_debounced = s_direct_candidate;
+    s_direct_prev_debounced = s_direct_candidate;
 }
 
 /* ── Poll ────────────────────────────────────────────────────────────────── */
 void UI_Input_Poll(void)
 {
-    /* MCP23017 self-heal: if config is lost at startup/bus glitch, restore it. */
-    {
-        uint32_t now = HAL_GetTick();
-        if ((uint32_t)(now - s_last_mcp_check_ms) >= 200u)
-        {
-            s_last_mcp_check_ms = now;
-            uint8_t iodira = MCP23017_ReadReg(&hi2c1, MCP_IODIRA);
-            uint8_t iodirb = MCP23017_ReadReg(&hi2c1, MCP_IODIRB);
+    /* ── Encoder first: keep local controls responsive even if MCP bus glitches ── */
+    int16_t enc   = (int16_t)TIM2->CNT;
+    int16_t delta = enc - s_last_enc;
 
-            if (iodira != 0x87u || iodirb != 0xFFu)
+    if (delta >= ENCODER_COUNTS_PER_STEP || delta <= -ENCODER_COUNTS_PER_STEP)
+    {
+        int16_t steps = (int16_t)(delta / ENCODER_COUNTS_PER_STEP);
+
+        if (steps > 127) steps = 127;
+        if (steps < -127) steps = -127;
+
+        s_last_enc = (int16_t)(s_last_enc + (steps * ENCODER_COUNTS_PER_STEP));
+        s_encoder_delta = SaturatingAddInt8(s_encoder_delta, (int8_t)steps);
+        if (s_shift_held) s_shift_consumed = 1;
+    }
+
+    /* ── Encoder button — PC12 ────────────────────────────────────────── */
+    {
+        uint8_t enc_btn = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12);
+        uint32_t now_btn_ms = HAL_GetTick();
+
+        if (s_enc_btn_prev == 1u && enc_btn == 0u)
+        {
+            s_enc_btn_pressed = 1;
+            s_enc_btn_is_down = 1u;
+            s_enc_btn_long_fired = 0u;
+            s_enc_btn_down_ms = now_btn_ms;
+            if (s_shift_held) s_shift_consumed = 1;
+        }
+        else if (s_enc_btn_prev == 0u && enc_btn == 0u)
+        {
+            if (s_enc_btn_is_down && !s_enc_btn_long_fired)
             {
-                MCP23017_SetDirections(&hi2c1, 0x87, 0xFF);
-                MCP23017_SetPullups(&hi2c1, 0x87, 0xFF);
-                MCP23017_WriteGPIOA(&hi2c1, (uint8_t)MCP_MATRIX_COL_MASK);
-                s_prev_raw = PrimeButtons();
-                s_prev_matrix_pressed = 0;
-                s_matrix_candidate = 0;
-                s_matrix_debounced_pressed = 0;
-                s_matrix_candidate_ms = now;
+                if ((uint32_t)(now_btn_ms - s_enc_btn_down_ms) >= ENCODER_LONG_PRESS_MS)
+                {
+                    s_enc_btn_long_pressed = 1u;
+                    s_enc_btn_long_fired = 1u;
+                }
             }
         }
+        else if (s_enc_btn_prev == 0u && enc_btn == 1u)
+        {
+            if (s_enc_btn_is_down && !s_enc_btn_long_fired)
+            {
+                s_enc_btn_short_pressed = 1u;
+            }
+            s_enc_btn_is_down = 0u;
+            s_enc_btn_long_fired = 0u;
+        }
+
+        s_enc_btn_prev = enc_btn;
     }
 
     /* ── MCP23017 ─────────────────────────────────────────────────────── */
-    uint16_t raw            = MCP23017_ReadGPIO(&hi2c1);
-    uint16_t changed        = s_prev_raw ^ raw;
-    uint16_t falling        = changed & s_prev_raw;   /* 1→0 = press */
-    uint8_t  shift_was_held = ((s_prev_raw & BTN_SHIFT_BIT) == 0u) ? 1u : 0u;
-    uint8_t  shift_now_held = ((raw & BTN_SHIFT_BIT) == 0u) ? 1u : 0u;
+    {
+        uint32_t now_ms = HAL_GetTick();
+        if ((uint32_t)(now_ms - s_last_mcp_poll_ms) < MCP_POLL_INTERVAL_MS)
+        {
+            return;
+        }
+        s_last_mcp_poll_ms = now_ms;
+    }
+
+    uint16_t raw = MCP23017_ReadGPIO(&hi2c1);
+    uint32_t now_ms = HAL_GetTick();
+
+    s_mcp_last_read_ok = 1;
+    s_mcp_last_raw = raw;
+    s_mcp_ok_streak = 1;
+    s_mcp_fail_streak = 0;
+    s_mcp_online = 1;
+
+    uint8_t direct_raw = DirectButtonsFromRaw(raw);
+    if (direct_raw != s_direct_candidate)
+    {
+        s_direct_candidate = direct_raw;
+        s_direct_candidate_ms = now_ms;
+    }
+    else if ((uint32_t)(now_ms - s_direct_candidate_ms) >= DIRECT_DEBOUNCE_MS)
+    {
+        s_direct_debounced = s_direct_candidate;
+    }
+
+    uint8_t direct_falling = (uint8_t)(s_direct_debounced & (uint8_t)(~s_direct_prev_debounced));
+    uint8_t shift_was_held = (s_direct_prev_debounced & (1u << 2)) ? 1u : 0u;
+    uint8_t shift_now_held = (s_direct_debounced & (1u << 2)) ? 1u : 0u;
+    uint8_t suppress_mcp_events = ((int32_t)(now_ms - s_mcp_ignore_events_until_ms) < 0) ? 1u : 0u;
 
     /* Shift tap detection: release with no modified input use. */
     if (!shift_was_held && shift_now_held)
@@ -177,15 +344,31 @@ void UI_Input_Poll(void)
     }
 
     s_prev_raw = raw;
+    s_direct_prev_debounced = s_direct_debounced;
+
+    if (!s_direct_armed)
+    {
+        if (s_direct_debounced == 0u)
+        {
+            if ((uint32_t)(now_ms - s_direct_all_released_ms) >= DIRECT_ARM_RELEASE_MS)
+            {
+                s_direct_armed = 1u;
+            }
+        }
+        else
+        {
+            s_direct_all_released_ms = now_ms;
+        }
+    }
 
     /* Shift — level, active LOW */
     s_shift_held = shift_now_held;
     UI_Display_SetShiftIndicator(s_shift_held);
 
     /* Button 1 — Play/Stop or Reset */
-    if (falling & BTN_PLAY_BIT)
+    if (s_direct_armed && !suppress_mcp_events && (direct_falling & (1u << 0)))
     {
-        if (shift_was_held)
+        if (shift_now_held)
         {
             s_shift_play_pressed = 1;
             s_shift_consumed = 1;
@@ -197,9 +380,9 @@ void UI_Input_Poll(void)
     }
 
     /* Button 2 — Rec arm or Rec clear */
-    if (falling & BTN_REC_BIT)
+    if (s_direct_armed && !suppress_mcp_events && (direct_falling & (1u << 1)))
     {
-        if (shift_was_held)
+        if (shift_now_held)
         {
             s_shift_rec_pressed = 1;
             s_shift_consumed = 1;
@@ -212,6 +395,12 @@ void UI_Input_Poll(void)
 
     /* Step matrix scan (active low) */
     {
+        if ((uint32_t)(now_ms - s_last_matrix_scan_ms) < MATRIX_SCAN_INTERVAL_MS)
+        {
+            return;
+        }
+        s_last_matrix_scan_ms = now_ms;
+
         uint32_t matrix_now = HAL_GetTick();
         uint16_t matrix_pressed = ScanStepMatrix();
 
@@ -227,7 +416,7 @@ void UI_Input_Poll(void)
 
             uint16_t step_falling = (uint16_t)(s_matrix_debounced_pressed & (uint16_t)(~s_prev_matrix_pressed));
 
-            if (step_falling != 0u)
+            if (s_direct_armed && !suppress_mcp_events && step_falling != 0u)
             {
                 /*
                  * Hardware transients can briefly report multiple steps in one scan.
@@ -253,7 +442,7 @@ void UI_Input_Poll(void)
                 {
                     if (step_falling & (uint16_t)(1u << i))
                     {
-                        if (shift_was_held)
+                        if (shift_now_held)
                         {
                             s_shift_step_pressed_mask |= (uint16_t)(1u << i);
                             s_shift_consumed = 1;
@@ -268,34 +457,6 @@ void UI_Input_Poll(void)
         }
     }
 
-    
-    /* ── Encoder ──────────────────────────────────────────────────────── */
-    int16_t enc   = (int16_t)TIM2->CNT;
-    int16_t delta = enc - s_last_enc;
-
-    if (delta >= 4)
-    {
-        s_last_enc      = enc;
-        s_encoder_delta = 1;
-        if (s_shift_held) s_shift_consumed = 1;
-    }
-    else if (delta <= -4)
-    {
-        s_last_enc      = enc;
-        s_encoder_delta = -1;
-        if (s_shift_held) s_shift_consumed = 1;
-    }
-
-    /* ── Encoder button — PC15 ────────────────────────────────────────── */
-    uint8_t enc_btn = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_12);
-
-    if (s_enc_btn_prev == 1u && enc_btn == 0u)
-    {
-        s_enc_btn_pressed = 1;
-        if (s_shift_held) s_shift_consumed = 1;
-    }
-
-    s_enc_btn_prev = enc_btn;
 }
 
 /* ── Getters ─────────────────────────────────────────────────────────────── */
@@ -315,6 +476,20 @@ uint8_t UI_Input_IsEncoderPressed(void)
 {
     uint8_t p         = s_enc_btn_pressed;
     s_enc_btn_pressed = 0;
+    return p;
+}
+
+uint8_t UI_Input_IsEncoderShortPressed(void)
+{
+    uint8_t p = s_enc_btn_short_pressed;
+    s_enc_btn_short_pressed = 0;
+    return p;
+}
+
+uint8_t UI_Input_IsEncoderLongPressed(void)
+{
+    uint8_t p = s_enc_btn_long_pressed;
+    s_enc_btn_long_pressed = 0;
     return p;
 }
 
@@ -379,4 +554,47 @@ uint8_t UI_Input_GetShiftStepPressed(void)
         }
     }
     return 0;
+}
+
+void UI_Input_GetMcpDebug(uint8_t* online, uint8_t* read_ok, uint8_t* gpio_a, uint8_t* gpio_b, uint8_t* addr7, uint8_t* scan_mask)
+{
+    if (online)
+    {
+        *online = s_mcp_online;
+    }
+
+    if (read_ok)
+    {
+        *read_ok = s_mcp_last_read_ok;
+    }
+
+    if (gpio_a)
+    {
+        *gpio_a = (uint8_t)(s_mcp_last_raw >> 8);
+    }
+
+    if (gpio_b)
+    {
+        *gpio_b = (uint8_t)(s_mcp_last_raw & 0xFFu);
+    }
+
+    if (addr7)
+    {
+        *addr7 = 0x20;  /* Fixed address */
+    }
+
+    if (scan_mask)
+    {
+        *scan_mask = 0x01;  /* Always found */
+    }
+}
+
+uint8_t UI_Input_GetMcpOkStreak(void)
+{
+    return s_mcp_ok_streak;
+}
+
+uint8_t UI_Input_GetMcpFailStreak(void)
+{
+    return s_mcp_fail_streak;
 }

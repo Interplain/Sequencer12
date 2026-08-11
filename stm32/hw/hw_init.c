@@ -23,6 +23,7 @@ static void MX_SPI2_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_I2C3_Init(void);
 static void MX_TIM2_Init(void);
+static void I2C1_BusRecover(void);
 void Error_Handler(void);
 // ─────────────────────────────────────────────
 // Master hardware init
@@ -37,6 +38,18 @@ void HW_Init(void)
     MX_I2C1_Init();
     MX_I2C3_Init();
     MX_TIM2_Init();
+
+    /* SPI2 MspInit can leave PB14 (DAC LDAC) as floating MISO input.
+     * Reclaim PB14 as GPIO output and hold it low so DAC updates latch. */
+    {
+        GPIO_InitTypeDef g = {0};
+        g.Pin   = GPIO_PIN_14;
+        g.Mode  = GPIO_MODE_OUTPUT_PP;
+        g.Pull  = GPIO_NOPULL;
+        g.Speed = GPIO_SPEED_FREQ_HIGH;
+        HAL_GPIO_Init(GPIOB, &g);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+    }
 }
 
 // ─────────────────────────────────────────────
@@ -74,7 +87,7 @@ void SystemClock_Config(void)
 // GPIO
 // PA4=CS  PA6=DC  PA9=RST
 // PA0=ENC_A  PA1=ENC_B  PC12=ENC_SW
-// PB12=DAC_CS PB14=DAC_LDAC PC4=DAC_CLR
+// PB12=DAC_CS PB14=DAC_LDAC PC2=DAC_CLR
 // ─────────────────────────────────────────────
 static void MX_GPIO_Init(void)
 {
@@ -102,16 +115,17 @@ static void MX_GPIO_Init(void)
     g.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOA, &g);
 
-    // DAC control pins: PB12=CS HIGH, PB14=LDAC HIGH, PC4=CLR HIGH
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12 | GPIO_PIN_14, GPIO_PIN_SET);
+    // DAC control pins: PB12=CS HIGH, PB14=LDAC LOW, PC2=CLR HIGH
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);      // CS high
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);    // LDAC LOW ← the fix
     g.Pin   = GPIO_PIN_12 | GPIO_PIN_14;
     g.Mode  = GPIO_MODE_OUTPUT_PP;
     g.Pull  = GPIO_NOPULL;
     g.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(GPIOB, &g);
 
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_SET);
-    g.Pin   = GPIO_PIN_4;
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
+    g.Pin   = GPIO_PIN_2;
     g.Mode  = GPIO_MODE_OUTPUT_PP;
     g.Pull  = GPIO_NOPULL;
     g.Speed = GPIO_SPEED_FREQ_HIGH;
@@ -139,14 +153,21 @@ static void MX_GPIO_Init(void)
     g.Alternate = GPIO_AF5_SPI1;
     HAL_GPIO_Init(GPIOA, &g);
 
+    // PB13=SCK  PB15=MOSI — SPI2 AF5 (DAC8564)
+    g.Pin       = GPIO_PIN_13 | GPIO_PIN_15;
+    g.Mode      = GPIO_MODE_AF_PP;
+    g.Pull      = GPIO_NOPULL;
+    g.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    g.Alternate = GPIO_AF5_SPI2;
+    HAL_GPIO_Init(GPIOB, &g);
+
     // PC12 = encoder switch — input with pullup
     g.Pin   = GPIO_PIN_12;
     g.Mode  = GPIO_MODE_INPUT;
     g.Pull  = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOC, &g);
 
-    /* I2C1 SDA/SCL — PB8/PB9 */
-    __HAL_RCC_I2C1_CLK_ENABLE();
+    /* I2C1 SDA/SCL — PB8=SCL, PB9=SDA only */
     g.Pin       = GPIO_PIN_8 | GPIO_PIN_9;
     g.Mode      = GPIO_MODE_AF_OD;
     g.Pull      = GPIO_PULLUP;
@@ -212,7 +233,7 @@ static void MX_SPI2_Init(void)
     hspi2.Init.CLKPolarity       = SPI_POLARITY_LOW;
     hspi2.Init.CLKPhase          = SPI_PHASE_2EDGE;
     hspi2.Init.NSS               = SPI_NSS_SOFT;
-    hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
+    hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_128;
     hspi2.Init.FirstBit          = SPI_FIRSTBIT_MSB;
     hspi2.Init.TIMode            = SPI_TIMODE_DISABLE;
     hspi2.Init.CRCCalculation    = SPI_CRCCALCULATION_DISABLE;
@@ -225,19 +246,60 @@ static void MX_SPI2_Init(void)
 // I2C1 — MCP23017
 // PB8=SCL  PB9=SDA
 // ─────────────────────────────────────────────
+static void I2C1_BusRecover(void)
+{
+    GPIO_InitTypeDef g = {0};
+
+    /* Temporarily drive the I2C lines as open-drain GPIO to clear a stuck slave. */
+    g.Pin   = GPIO_PIN_8 | GPIO_PIN_9;
+    g.Mode  = GPIO_MODE_OUTPUT_OD;
+    g.Pull  = GPIO_PULLUP;
+    g.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    HAL_GPIO_Init(GPIOB, &g);
+
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8 | GPIO_PIN_9, GPIO_PIN_SET);
+    HAL_Delay(1);
+
+    if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9) == GPIO_PIN_RESET)
+    {
+        for (uint8_t i = 0; i < 9; i++)
+        {
+            HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET);
+            HAL_Delay(1);
+            HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+            HAL_Delay(1);
+        }
+    }
+
+    /* Emit a STOP condition: SDA low -> SCL high -> SDA high. */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_RESET);
+    HAL_Delay(1);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+    HAL_Delay(1);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_SET);
+    HAL_Delay(1);
+
+    /* Return pins to I2C alternate function. */
+    g.Mode      = GPIO_MODE_AF_OD;
+    g.Alternate = GPIO_AF4_I2C1;
+    HAL_GPIO_Init(GPIOB, &g);
+}
+
 static void MX_I2C1_Init(void)
 {
     __HAL_RCC_I2C1_CLK_ENABLE();
 
+    I2C1_BusRecover();
+
     hi2c1.Instance             = I2C1;
-    hi2c1.Init.ClockSpeed      = 100000;
-    hi2c1.Init.DutyCycle       = I2C_DUTYCYCLE_2;
+    hi2c1.Init.ClockSpeed = 400000;
+    hi2c1.Init.DutyCycle  = I2C_DUTYCYCLE_16_9; 
     hi2c1.Init.OwnAddress1     = 0;
     hi2c1.Init.AddressingMode  = I2C_ADDRESSINGMODE_7BIT;
     hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
     hi2c1.Init.OwnAddress2     = 0;
     hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-    hi2c1.Init.NoStretchMode   = I2C_NOSTRETCH_DISABLE;
+    hi2c1.Init.NoStretchMode   = I2C_NOSTRETCH_DISABLE;  /* Allow clock stretching */
 
     if (HAL_I2C_Init(&hi2c1) != HAL_OK) Error_Handler();
 }

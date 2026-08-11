@@ -146,7 +146,7 @@ extern SPI_HandleTypeDef hspi1;
 
 /* 0 = normal colours, 1 = inverted colours. */
 #ifndef ST7789_INVERT_DEFAULT
-#define ST7789_INVERT_DEFAULT 0
+#define ST7789_INVERT_DEFAULT 1
 #endif
 
 /* Use a minimal init sequence for the active 240x320 panel. */

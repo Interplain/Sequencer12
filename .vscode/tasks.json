@@ -4,7 +4,7 @@
 		{
 			"label": "platformio build",
 			"type": "shell",
-			"command": "./.venv/bin/platformio",
+			"command": "/home/interplain/.platformio/penv/bin/platformio",
 			"args": [
 				"run"
 			],

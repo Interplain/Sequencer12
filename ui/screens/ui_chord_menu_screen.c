@@ -64,11 +64,21 @@ UiScreen* UI_ChordMenuScreen_Get(void)
 
 void UI_ChordMenuScreen_SetContext(uint8_t step, const ChordParams* chord)
 {
+    uint8_t preferred = 1;
+
     s_state.step = step;
     s_state.chord = *chord;
+
+    /* Preselect current chord type; if currently Clear, start at Major. */
+    if (chord->chord_type <= 16)
+    {
+        preferred = (chord->chord_type == 0) ? 1 : chord->chord_type;
+    }
+
+    s_state.selected_chord_idx = preferred;
     if (s_state.selected_chord_idx > 17)
     {
-        s_state.selected_chord_idx = 0;
+        s_state.selected_chord_idx = 1;
     }
 }
 

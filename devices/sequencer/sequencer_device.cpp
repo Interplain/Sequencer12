@@ -31,18 +31,6 @@ static ChordType UiChordTypeToLibraryType(uint8_t chord_type)
     }
 }
 
-static ArpMode UiArpPatternToMode(uint8_t arp_pattern)
-{
-    switch (arp_pattern)
-    {
-        case 1: return ArpMode::Up;
-        case 2: return ArpMode::Down;
-        case 3: return ArpMode::UpDown;
-        case 4: return ArpMode::Random;
-        default: return ArpMode::Off;
-    }
-}
-
 static uint32_t UiDurationToMultiplier(uint8_t duration)
 {
     switch (duration)
@@ -65,6 +53,43 @@ static uint8_t UiMultiplierToDuration(uint32_t multiplier)
         case 3: return 3; /* dotted 8th */
         default: return 0;
     }
+}
+
+static uint8_t ClampLedgerLength(uint8_t length)
+{
+    if (length < 1u) return 1u;
+    if (length > kStepLedgerMax) return kStepLedgerMax;
+    return length;
+}
+
+static void InitLedgerFromMask(sequencer::StepSlot& slot, uint16_t note_mask, uint8_t length)
+{
+    slot.note_ledger.fill(0u);
+    slot.note_ledger[0] = note_mask;
+    slot.repeat_count = ClampLedgerLength(length);
+}
+
+static uint16_t LimitNoteMaskToMaxVoices(uint16_t note_mask, uint8_t max_voices)
+{
+    uint16_t limited = 0u;
+    uint8_t count = 0u;
+
+    for (uint8_t note = 0u; note < 12u; ++note)
+    {
+        const uint16_t bit = (uint16_t)(1u << note);
+        if ((note_mask & bit) == 0u)
+        {
+            continue;
+        }
+
+        if (count < max_voices)
+        {
+            limited |= bit;
+            ++count;
+        }
+    }
+
+    return limited;
 }
 
 /* ── Convenience accessors ──────────────────────────────────────────────── */
@@ -131,28 +156,15 @@ void SequencerDevice::Init()
     p0.tempo_multiplier = 1.0f;
     p0.arp_mode         = ArpMode::Off;
 
-    /* C major scale across 8 steps (C D E F G A B C), steps 9-12 rest.
-     * Gives audible CV movement and distinct gate pulses for modular testing. */
-    static const uint16_t kCMajorScale[8] = {
-        NOTE_C, NOTE_D, NOTE_E, NOTE_F,
-        NOTE_G, NOTE_A, NOTE_B, NOTE_C
-    };
+    /* All steps are Rest (empty) — clean slate for user to build on */
     for (uint32_t i = 0; i < kStepCount; ++i)
     {
         p0.steps[i].duration_multiplier = 1;
         p0.steps[i].repeat_count        = 1;
         p0.steps[i].velocity            = 100;
         p0.steps[i].probability         = 100;
-        if (i < 8u)
-        {
-            p0.steps[i].type      = StepType::Chord;
-            p0.steps[i].note_mask = kCMajorScale[i];
-        }
-        else
-        {
-            p0.steps[i].type      = StepType::Rest;
-            p0.steps[i].note_mask = 0;
-        }
+        p0.steps[i].type                = StepType::Rest;
+        p0.steps[i].note_mask           = 0;
     }
 
     /* No chaining — single pattern loops forever */
@@ -257,25 +269,28 @@ void SequencerDevice::SetStepChordParams(uint8_t step_index,
 
     root_key %= 12;
     slot.duration_multiplier = UiDurationToMultiplier(duration);
-    if (repeat_count < 1) repeat_count = 1;
-    if (repeat_count > 16) repeat_count = 16;
-    slot.repeat_count = repeat_count;
+    slot.repeat_count = ClampLedgerLength(repeat_count);
 
     if (chord_type == 0)
     {
         slot.type = StepType::Empty;
         slot.note_mask = 0;
+        slot.note_ledger.fill(0u);
         slot.custom_chord_name[0] = '\0';
     }
     else
     {
         const ChordType mapped = UiChordTypeToLibraryType(chord_type);
         slot.type = StepType::Chord;
-        slot.note_mask = ChordLibrary::GetNoteMask(static_cast<KeyRoot>(root_key), mapped);
+        slot.note_mask = LimitNoteMaskToMaxVoices(
+            ChordLibrary::GetNoteMask(static_cast<KeyRoot>(root_key), mapped),
+            4u);
+        InitLedgerFromMask(slot, slot.note_mask, slot.repeat_count);
         slot.custom_chord_name[0] = '\0';
     }
 
-    CurrentPattern().arp_mode = UiArpPatternToMode(arp_pattern);
+    (void)arp_pattern;
+    CurrentPattern().arp_mode = ArpMode::Off;
 
     if (step_index == current_step_)
     {
@@ -289,9 +304,12 @@ void SequencerDevice::SetStepCustomNoteMask(uint8_t step_index, uint16_t note_ma
     if (step_index >= kStepCount) return;
 
     StepSlot& slot = CurrentPattern().steps[step_index];
-    slot.type = (note_mask != 0u) ? StepType::Chord : StepType::Empty;
-    slot.note_mask = (uint16_t)(note_mask & 0x0FFFu);
+    const uint16_t clipped = LimitNoteMaskToMaxVoices((uint16_t)(note_mask & 0x0FFFu), 4u);
+    slot.type = (clipped != 0u) ? StepType::Chord : StepType::Empty;
+    slot.note_mask = clipped;
+    InitLedgerFromMask(slot, clipped, slot.repeat_count);
     slot.custom_chord_name[0] = '\0';
+    CurrentPattern().arp_mode = ArpMode::Off;
 
     if (step_index == current_step_)
     {
@@ -305,8 +323,11 @@ void SequencerDevice::SetStepCustomUserChord(uint8_t step_index, uint16_t note_m
     if (step_index >= kStepCount) return;
 
     StepSlot& slot = CurrentPattern().steps[step_index];
-    slot.type = (note_mask != 0u) ? StepType::Chord : StepType::Empty;
-    slot.note_mask = (uint16_t)(note_mask & 0x0FFFu);
+    const uint16_t clipped = LimitNoteMaskToMaxVoices((uint16_t)(note_mask & 0x0FFFu), 4u);
+    slot.type = (clipped != 0u) ? StepType::Chord : StepType::Empty;
+    slot.note_mask = clipped;
+    InitLedgerFromMask(slot, clipped, slot.repeat_count);
+    CurrentPattern().arp_mode = ArpMode::Off;
 
     if (name && name[0] != '\0')
     {
@@ -414,10 +435,128 @@ uint8_t SequencerDevice::GetCurrentPatternRepeatProgress() const
     return repeat_current_;
 }
 
+uint8_t SequencerDevice::GetCurrentStepSubIndex() const
+{
+    return step_repeat_current_;
+}
+
+void SequencerDevice::SetStepLedgerLength(uint8_t step_index, uint8_t length)
+{
+    if (step_index >= kStepCount) return;
+
+    StepSlot& slot = CurrentPattern().steps[step_index];
+    const uint8_t clamped = ClampLedgerLength(length);
+    slot.repeat_count = clamped;
+
+    for (uint8_t i = clamped; i < kStepLedgerMax; ++i)
+    {
+        slot.note_ledger[i] = 0u;
+    }
+
+    uint16_t first_nonzero = 0u;
+    for (uint8_t i = 0u; i < clamped; ++i)
+    {
+        if (slot.note_ledger[i] != 0u)
+        {
+            first_nonzero = slot.note_ledger[i];
+            break;
+        }
+    }
+
+    slot.note_mask = first_nonzero;
+    slot.type = (first_nonzero != 0u) ? StepType::Chord : StepType::Empty;
+
+    if (step_index == current_step_)
+    {
+        ApplyCurrentStepBehavior();
+        step_changed_ = true;
+    }
+}
+
+void SequencerDevice::SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, uint16_t note_mask)
+{
+    if (step_index >= kStepCount || slot_index >= kStepLedgerMax) return;
+
+    StepSlot& slot = CurrentPattern().steps[step_index];
+    const uint16_t clipped = LimitNoteMaskToMaxVoices((uint16_t)(note_mask & 0x0FFFu), 4u);
+    slot.note_ledger[slot_index] = clipped;
+    if (clipped != 0u && slot_index >= slot.repeat_count)
+    {
+        slot.repeat_count = (uint8_t)(slot_index + 1u);
+    }
+
+    const uint8_t active_len = ClampLedgerLength(slot.repeat_count);
+    uint16_t first_nonzero = 0u;
+    for (uint8_t i = 0u; i < active_len; ++i)
+    {
+        if (slot.note_ledger[i] != 0u)
+        {
+            first_nonzero = slot.note_ledger[i];
+            break;
+        }
+    }
+
+    slot.note_mask = first_nonzero;
+    slot.type = (first_nonzero != 0u) ? StepType::Chord : StepType::Empty;
+    slot.custom_chord_name[0] = '\0';
+    CurrentPattern().arp_mode = ArpMode::Off;
+
+    if (step_index == current_step_)
+    {
+        ApplyCurrentStepBehavior();
+        step_changed_ = true;
+    }
+}
+
+uint8_t SequencerDevice::GetStepLedgerLength(uint8_t step_index) const
+{
+    if (step_index >= kStepCount) return 0u;
+    return ClampLedgerLength(CurrentPattern().steps[step_index].repeat_count);
+}
+
+uint16_t SequencerDevice::GetStepLedgerSlot(uint8_t step_index, uint8_t slot_index) const
+{
+    if (step_index >= kStepCount || slot_index >= kStepLedgerMax) return 0u;
+    return CurrentPattern().steps[step_index].note_ledger[slot_index];
+}
+
 uint16_t SequencerDevice::GetStepNoteMask(uint8_t step_index) const
 {
     if (step_index >= kStepCount) return 0;
     return CurrentPattern().steps[step_index].note_mask;
+}
+
+uint16_t SequencerDevice::GetStepNoteMaskForPlayback(uint8_t step_index) const
+{
+    if (step_index >= kStepCount) return 0;
+    const StepSlot& slot = CurrentPattern().steps[step_index];
+    const uint16_t ledger_mask = slot.note_ledger[0];
+    const uint16_t source_mask = (ledger_mask != 0u) ? ledger_mask : slot.note_mask;
+    return ApplyTranspose(source_mask);
+}
+
+static uint16_t ResolveLedgerMaskForIndex(const StepSlot& slot, uint8_t ledger_index)
+{
+    const uint16_t first = slot.note_ledger[0];
+    if (first == 0u)
+    {
+        /* Legacy path: no explicit ledger data, keep single-mask behavior. */
+        return slot.note_mask;
+    }
+
+    /* Ledger is populated: zero means intentional rest for that slot. */
+    return slot.note_ledger[ledger_index];
+}
+
+uint16_t SequencerDevice::GetCurrentStepNoteMaskForPlayback() const
+{
+    if (current_step_ >= kStepCount) return 0;
+
+    const StepSlot& slot = CurrentPattern().steps[current_step_];
+    const uint8_t ledger_len = ClampLedgerLength(slot.repeat_count);
+    const uint8_t ledger_index = (step_repeat_current_ < ledger_len) ? step_repeat_current_ : (uint8_t)(ledger_len - 1u);
+    const uint16_t source_mask = ResolveLedgerMaskForIndex(slot, ledger_index);
+    return ApplyTranspose(source_mask);
 }
 
 void SequencerDevice::ExportSong(sequencer::Song* out_song) const
@@ -517,6 +656,11 @@ bool SequencerDevice::GetStepCustomChordName(uint8_t step_index, char* buf, size
     return true;
 }
 
+ArpMode SequencerDevice::GetCurrentArpMode() const
+{
+    return CurrentPattern().arp_mode;
+}
+
 /* ── Tick1ms — called from SysTick ISR every 1ms ───────────────────────── */
 /*                                                                            */
 /*  Drives gate timing, MIDI clock, arp engine, and step advancement.       */
@@ -537,6 +681,18 @@ void SequencerDevice::Tick1ms()
             GateOff();
     }
 
+    if (gate_retrigger_pending_)
+    {
+        if (gate_retrigger_delay_ms_ > 0u)
+            --gate_retrigger_delay_ms_;
+
+        if (gate_retrigger_delay_ms_ == 0u)
+        {
+            gate_retrigger_pending_ = false;
+            GateOn();
+        }
+    }
+
     /* MIDI clock tick */
     if (midi_clock_enabled_)
         midi_clock_.Tick1ms();
@@ -554,7 +710,7 @@ void SequencerDevice::Tick1ms()
             arp_elapsed_ms_   = 0;
             arp_.Advance();
             arp_note_changed_ = true;
-            GateOn();   /* retrigger gate on each arp note */
+            RetriggerGate(1u);   /* force a real gate edge on each arp note */
         }
     }
 
@@ -619,6 +775,10 @@ void SequencerDevice::Start()
     playing_         = true;
     elapsed_step_ms_ = 0;
     step_repeat_current_ = 0;
+    gate_retrigger_pending_  = false;
+    gate_retrigger_delay_ms_ = 0u;
+    ApplyCurrentStepBehavior();
+    step_changed_   = true;
     status_changed_  = true;
 
     if (midi_clock_enabled_ &&
@@ -633,6 +793,8 @@ void SequencerDevice::Stop()
     if (!playing_) return;
     playing_         = false;
     elapsed_step_ms_ = 0;
+    gate_retrigger_pending_  = false;
+    gate_retrigger_delay_ms_ = 0u;
     GateOff();
     status_changed_  = true;
 
@@ -657,6 +819,8 @@ void SequencerDevice::Reset()
     arp_.Init();
     bank_.ChainReset();
     current_pattern_index_ = bank_.ChainCurrentPatternIndex();
+    gate_retrigger_pending_  = false;
+    gate_retrigger_delay_ms_ = 0u;
     GateOff();
     ApplyCurrentStepBehavior();
     step_changed_   = true;
@@ -678,6 +842,28 @@ void SequencerDevice::GateOff()
     gate_active_     = false;
     gate_elapsed_ms_ = 0;
     gate_changed_    = true;
+}
+
+void SequencerDevice::RetriggerGate(uint32_t low_gap_ms)
+{
+    if (low_gap_ms == 0u)
+    {
+        gate_retrigger_pending_  = false;
+        gate_retrigger_delay_ms_ = 0u;
+        GateOn();
+        return;
+    }
+
+    if (gate_active_)
+    {
+        GateOff();
+        gate_retrigger_pending_  = true;
+        gate_retrigger_delay_ms_ = low_gap_ms;
+    }
+    else
+    {
+        GateOn();
+    }
 }
 
 bool SequencerDevice::ConsumeCvEvent(uint8_t* note, bool* gate)
@@ -710,8 +896,23 @@ void SequencerDevice::RecalculateStepIntervalMs()
         base_step_interval_ms_ *
         CurrentPattern().steps[current_step_].duration_multiplier;
 
-    /* Gate length = 50% of step interval, minimum 5ms */
-    gate_length_ms_ = current_step_interval_ms_ / 2u;
+    /* Ledger slots are sub-steps inside the same step. Divide the step
+     * interval by slot count so adding slots increases rhythmic density
+     * rather than slowing pattern traversal. */
+    {
+        uint8_t slot_count = CurrentPattern().steps[current_step_].repeat_count;
+        if (slot_count < 1u) slot_count = 1u;
+        if (slot_count > kStepLedgerMax) slot_count = kStepLedgerMax;
+        if (slot_count > 1u)
+        {
+            current_step_interval_ms_ /= slot_count;
+            if (current_step_interval_ms_ == 0u) current_step_interval_ms_ = 1u;
+        }
+    }
+
+    /* Gate length = 25% of step interval, minimum 5ms. Keep the gate
+     * well inside the step so the next step does not inherit the attack. */
+    gate_length_ms_ = current_step_interval_ms_ / 4u;
     if (gate_length_ms_ < 5u) gate_length_ms_ = 5u;
 }
 
@@ -748,10 +949,8 @@ void SequencerDevice::AdvanceStep()
         step_count = kStepCount;
 
     {
-        const StepSlot& current = CurrentPattern().steps[current_step_];
-        uint8_t repeats = current.repeat_count;
-        if (repeats < 1) repeats = 1;
-        if (repeats > 16) repeats = 16;
+        const StepSlot& slot = GetStep(current_step_);
+        const uint8_t repeats = ClampLedgerLength(slot.repeat_count);
 
         if ((step_repeat_current_ + 1u) < repeats)
         {
@@ -881,26 +1080,52 @@ void SequencerDevice::ApplyCurrentStepBehavior()
 
     const StepSlot& slot = GetStep(current_step_);
     const Pattern&  pat  = CurrentPattern();
+    const uint8_t ledger_len = ClampLedgerLength(slot.repeat_count);
+    const uint8_t ledger_index = (step_repeat_current_ < ledger_len) ? step_repeat_current_ : (uint8_t)(ledger_len - 1u);
 
     switch (slot.type)
     {
         case StepType::Chord:
         {
+            const uint16_t source_mask = ResolveLedgerMaskForIndex(slot, ledger_index);
+            const uint16_t play_mask = ApplyTranspose(source_mask);
+            if (play_mask == 0u)
+            {
+                GateOff();
+                gate_retrigger_pending_  = false;
+                gate_retrigger_delay_ms_ = 0u;
+                arp_.Init();
+                arp_elapsed_ms_   = 0;
+                arp_interval_ms_  = 0;
+                arp_note_changed_ = false;
+                break;
+            }
+
             uint8_t roll = static_cast<uint8_t>(rand() % 100);
 
             if (roll < slot.probability)
             {
-                GateOn();
-                arp_.LoadChord(ApplyTranspose(slot.note_mask), pat.arp_mode);
-                uint32_t bpm     = bank_.GetEffectiveBpm(current_pattern_index_);
-                arp_interval_ms_ = sequencer::ArpEngine::CalcIntervalMs(
-                    bpm, pat.arp_rate);
+                RetriggerGate(1u);
+                arp_.LoadChord(play_mask, pat.arp_mode);
+                if (pat.arp_mode == ArpMode::Off)
+                {
+                    arp_interval_ms_ = 0;
+                }
+                else
+                {
+                    uint32_t split_count = arp_.NoteCount();
+                    if (split_count == 0u) split_count = 1u;
+                    arp_interval_ms_ = current_step_interval_ms_ / split_count;
+                    if (arp_interval_ms_ < 5u) arp_interval_ms_ = 5u;
+                }
                 arp_elapsed_ms_   = 0;
                 arp_note_changed_ = true;
             }
             else
             {
                 GateOff();
+                gate_retrigger_pending_  = false;
+                gate_retrigger_delay_ms_ = 0u;
                 arp_.Init();
                 arp_elapsed_ms_  = 0;
                 arp_interval_ms_ = 0;
@@ -912,6 +1137,8 @@ void SequencerDevice::ApplyCurrentStepBehavior()
         case StepType::Empty:
         case StepType::Skip:
             GateOff();
+            gate_retrigger_pending_  = false;
+            gate_retrigger_delay_ms_ = 0u;
             arp_.Init();
             arp_elapsed_ms_   = 0;
             arp_interval_ms_  = 0;
@@ -949,6 +1176,10 @@ void SequencerDevice::ToggleStepNote(uint32_t step_index, uint8_t note)
 {
     if (step_index >= kStepCount) return;
     ToggleNote(CurrentPattern().steps[step_index].note_mask, note);
+    CurrentPattern().steps[step_index].note_mask =
+        LimitNoteMaskToMaxVoices(CurrentPattern().steps[step_index].note_mask, 4u);
+    CurrentPattern().steps[step_index].type =
+        (CurrentPattern().steps[step_index].note_mask != 0u) ? StepType::Chord : StepType::Empty;
     if (step_index == current_step_) step_changed_ = true;
 }
 

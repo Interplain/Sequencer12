@@ -77,6 +77,13 @@ void UI_MainGridScreen_SetContext(uint8_t selected_step, uint8_t active_step, co
     {
         memcpy(s_state.has_chord, has_chord_flags, sizeof(s_state.has_chord));
     }
+    else
+    {
+        for (uint8_t i = 0; i < 12; i++)
+        {
+            s_state.has_chord[i] = (Bridge_GetStepNoteMask(i) != 0u) ? 1u : 0u;
+        }
+    }
 }
 
 void UI_MainGridScreen_DrawStep(uint8_t step, uint8_t selected, uint8_t active, uint8_t has_chord)
