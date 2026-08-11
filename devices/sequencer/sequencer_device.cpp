@@ -1,5 +1,6 @@
 #include "devices/sequencer/sequencer_device.h"
 #include "devices/sequencer/arp_engine.h"
+#include "stm32f4xx_hal.h"
 #include <cstring>
 
 using sequencer::StepSlot;
@@ -177,6 +178,7 @@ void SequencerDevice::Init()
     gate_changed_   = false;
 
     RecalculateStepIntervalMs();
+    RecalculateStepTicks();
     ApplyCurrentStepBehavior();
 }
 
@@ -192,6 +194,7 @@ void SequencerDevice::SetBpm(uint32_t bpm)
 
     bank_.SetGlobalBpm(bpm);
     RecalculateStepIntervalMs();
+    RecalculateStepTicks();
 
     if (midi_clock_enabled_ &&
         midi_clock_.GetMode() == midi::ClockMode::Master)
@@ -219,6 +222,7 @@ void SequencerDevice::SetPatternStepDivision(uint8_t step_division)
     if (step_division > 8) step_division = 8;
     CurrentPattern().step_division = step_division;
     RecalculateStepIntervalMs();
+    RecalculateStepTicks();
 }
 
 uint8_t SequencerDevice::GetPatternStepDivision() const
@@ -716,12 +720,50 @@ void SequencerDevice::Tick1ms()
 
     if (!playing_) return;
 
+#if defined(S12_USE_UCLOCK_MUSICAL_STEP_CLOCK) && S12_USE_UCLOCK_MUSICAL_STEP_CLOCK
+    /* uClock musical step clock takes over step advancement.
+     * Legacy millisecond step advancement remains available when disabled. */
+#else
     /* Step advancement */
     ++elapsed_step_ms_;
 
     if (elapsed_step_ms_ >= current_step_interval_ms_)
     {
         elapsed_step_ms_ = 0;
+        AdvanceStep();
+    }
+#endif
+}
+
+void SequencerDevice::TickMusical()
+{
+    if (!playing_)
+    {
+        return;
+    }
+
+    ++musical_ticks_accum_;
+
+    while (musical_ticks_accum_ >= musical_step_ticks_)
+    {
+        musical_ticks_accum_ -= musical_step_ticks_;
+        ++pending_step_events_;
+    }
+}
+
+void SequencerDevice::DrainPendingStepEvents()
+{
+    uint32_t count = 0u;
+
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    count = pending_step_events_;
+    pending_step_events_ = 0u;
+    __set_PRIMASK(primask);
+
+    while (count > 0u)
+    {
+        --count;
         AdvanceStep();
     }
 }
@@ -737,6 +779,8 @@ void SequencerDevice::Tick20ms() {}
 /*                                                                            */
 void SequencerDevice::Process()
 {
+    DrainPendingStepEvents();
+
     /* step_changed_ — fire MIDI notes, update UI step highlight */
     if (step_changed_)
     {
@@ -774,6 +818,8 @@ void SequencerDevice::Start()
     if (playing_) return;
     playing_         = true;
     elapsed_step_ms_ = 0;
+    musical_ticks_accum_ = 0u;
+    pending_step_events_ = 0u;
     step_repeat_current_ = 0;
     gate_retrigger_pending_  = false;
     gate_retrigger_delay_ms_ = 0u;
@@ -809,6 +855,8 @@ void SequencerDevice::Reset()
 {
     current_step_          = 0;
     elapsed_step_ms_       = 0;
+    musical_ticks_accum_   = 0u;
+    pending_step_events_   = 0u;
     repeat_current_        = 0;
     step_repeat_current_   = 0;
     step_direction_        = 1;
@@ -914,6 +962,22 @@ void SequencerDevice::RecalculateStepIntervalMs()
      * well inside the step so the next step does not inherit the attack. */
     gate_length_ms_ = current_step_interval_ms_ / 4u;
     if (gate_length_ms_ < 5u) gate_length_ms_ = 5u;
+}
+
+void SequencerDevice::RecalculateStepTicks()
+{
+    uint8_t division = CurrentPattern().step_division;
+    if (division == 0u) division = 4u;
+
+    uint32_t base_ticks = 96u / division;
+    uint32_t duration_mult = CurrentPattern().steps[current_step_].duration_multiplier;
+    if (duration_mult == 0u) duration_mult = 1u;
+
+    musical_step_ticks_ = base_ticks * duration_mult;
+    if (musical_step_ticks_ == 0u) musical_step_ticks_ = 1u;
+
+    musical_ticks_accum_ = 0u;
+    pending_step_events_ = 0u;
 }
 
 /*.......................................................... */
@@ -1067,6 +1131,7 @@ void SequencerDevice::AdvanceStep()
 
     ApplyCurrentStepBehavior();
     step_changed_ = true;
+    RecalculateStepTicks();
 }
 
 /*                                                                            */
@@ -1077,6 +1142,7 @@ void SequencerDevice::AdvanceStep()
 void SequencerDevice::ApplyCurrentStepBehavior()
 {
     RecalculateStepIntervalMs();
+    RecalculateStepTicks();
 
     const StepSlot& slot = GetStep(current_step_);
     const Pattern&  pat  = CurrentPattern();
@@ -1168,6 +1234,7 @@ void SequencerDevice::SetStepDurationMultiplier(uint32_t step_index,
     if (step_index == current_step_)
     {
         RecalculateStepIntervalMs();
+        RecalculateStepTicks();
         step_changed_ = true;
     }
 }

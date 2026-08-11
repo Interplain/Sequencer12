@@ -313,6 +313,20 @@ extern "C"
         bsrr |= (gate_mask & 0x08u) ? GPIO_PIN_8 : ((uint32_t)GPIO_PIN_8 << 16);
         GPIOC->BSRR = bsrr;
     }
+    void     Bridge_TickMusical(void)
+    {
+        if (!s_tick_enabled)
+        {
+            return;
+        }
+
+        if (!g_sequencer.IsPlaying())
+        {
+            return;
+        }
+
+        g_sequencer.TickMusical();
+    }
     void     Bridge_Start(void)
     {
         s_gate_hold_active = 0u;
@@ -497,6 +511,7 @@ extern "C"
 
     void Bridge_Process(void)
     {
+        g_sequencer.DrainPendingStepEvents();
         g_sequencer.Process();
 
         const bool playing = g_sequencer.IsPlaying();

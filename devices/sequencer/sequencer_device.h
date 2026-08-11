@@ -32,6 +32,8 @@ public:
     void     Start();
     void     Stop();
     void     Reset();
+    void     TickMusical();
+    void     DrainPendingStepEvents();
     void     SetBpm(uint32_t bpm);
     void     SetPatternStepCount(uint8_t step_count);
     uint8_t  GetPatternStepCount() const;
@@ -88,6 +90,7 @@ public:
     bool     ConsumeCvEvent(uint8_t* note, bool* gate);
 private:
     void RecalculateStepIntervalMs();
+    void RecalculateStepTicks();
     void AdvanceStep();
     void GateOn();
     void GateOff();
@@ -130,6 +133,11 @@ private:
     uint32_t    elapsed_step_ms_          = 0;
     uint32_t    base_step_interval_ms_    = 500;
     uint32_t    current_step_interval_ms_ = 500;
+
+    /* ── uClock musical step clock ───────────────────────────────────── */
+    uint32_t    musical_ticks_accum_      = 0;
+    uint32_t    musical_step_ticks_       = 96;
+    uint32_t    pending_step_events_      = 0;
 
     /* ── Gate ────────────────────────────────────────────────────────── */
     uint32_t    gate_elapsed_ms_          = 0;
