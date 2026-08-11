@@ -39,6 +39,11 @@ void HW_Init(void)
     MX_I2C3_Init();
     MX_TIM2_Init();
 
+    /* Initialize uClock hardware timer (TIM1) for 1kHz timing reference.
+     * Compile-only integration; sequencer behavior unchanged. */
+    extern void uClock_HAL_Init(void);
+    uClock_HAL_Init();
+
     /* SPI2 MspInit can leave PB14 (DAC LDAC) as floating MISO input.
      * Reclaim PB14 as GPIO output and hold it low so DAC updates latch. */
     {
