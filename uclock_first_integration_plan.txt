@@ -1,0 +1,305 @@
+Accepted architecture and first safe integration rule
+
+This note captures the corrected musical model and the first safe implementation plan.
+
+A. Corrected musical model
+
+The sequencer should be modeled as:
+
+- horizontal position = time
+- one step = one horizontal time event
+- a step may contain a chord snapshot = 0 to 4 simultaneous pitches
+- that chord snapshot is a single output state for that step
+- ARP is a separate sequential interpretation of the same step chord mask and must not be confused with normal playback
+
+This means:
+
+- a normal step is not a sequence of individual note events
+- a normal step is not a note-by-note FIFO
+- a normal step is a complete snapshot that may drive multiple DAC channels and gate outputs simultaneously
+
+The critical distinction is:
+
+- step = horizontal time slot
+- chord = vertical simultaneous pitches within that step
+
+B. Why the batch drain is wrong
+
+The current issue is not the existence of a pending counter itself; the issue is the batch-drain pattern that collapses several horizontal step deadlines into one final state.
+
+This is unsafe because it can lose intermediate horizontal step snapshots before the DAC/gate stage emits them.
+
+The accepted rule is therefore:
+
+- one main-loop pass -> at most one pending horizontal step -> one complete snapshot -> immediate DAC/gate write
+- do not snapshot-and-clear the entire pending count
+- do not loop through all pending events
+- do not write only once after a backlog batched drain
+
+C. Accepted first implementation architecture
+
+The front-of-loop service model is accepted:
+
+- uClock ISR -> pending_step_events_++
+- main loop starts with Bridge_ServiceMusicalEvents()
+- Bridge_ServiceMusicalEvents() does exactly one pending-step transaction per pass
+
+The sequence per loop iteration must be:
+
+1. atomically check whether at least one pending step exists
+2. remove exactly one pending event
+3. advance exactly one horizontal step
+4. resolve that step's complete snapshot
+5. immediately write that step's 0-4 simultaneous pitches/gates
+6. return
+
+No while loop through backlog in one call.
+
+D. Exact proposed function signatures
+
+In devices/sequencer/sequencer_device.h:
+
+```cpp
+class SequencerDevice : public Device, public midi::MidiClockListener
+{
+public:
+    void TickMusical();
+    bool ServiceOnePendingStep();
+
+    uint32_t GetPendingStepEvents() const;
+    uint32_t GetMaxPendingStepEvents() const;
+    uint32_t GetPendingStepOverflowCount() const;
+
+private:
+    uint32_t pending_step_events_         = 0;
+    uint32_t max_pending_step_events_     = 0;
+    uint32_t pending_step_overflow_count_ = 0;
+};
+```
+
+In stm32/sequencer_bridge.h:
+
+```c
+void Bridge_ServiceMusicalEvents(void);
+void Bridge_WriteCurrentStepSnapshot(void);
+```
+
+E. Exact on-loop service flow
+
+Main loop flow:
+
+```c
+while (1)
+{
+    GPIOA->BSRR = (1U << 9);
+
+    Bridge_ServiceMusicalEvents();
+    UI_Input_Poll();
+    UI_Sequencer_Update();
+    ...
+}
+```
+
+Bridge_ServiceMusicalEvents() should do:
+
+```cpp
+void Bridge_ServiceMusicalEvents(void)
+{
+    if (!g_sequencer.IsPlaying())
+        return;
+
+    if (!g_sequencer.ServiceOnePendingStep())
+        return;
+
+    Bridge_WriteCurrentStepSnapshot();
+}
+```
+
+The ServiceOnePendingStep() logic should be:
+
+```cpp
+bool SequencerDevice::ServiceOnePendingStep()
+{
+    uint32_t count = 0u;
+
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    count = pending_step_events_;
+    if (count == 0u)
+    {
+        __set_PRIMASK(primask);
+        return false;
+    }
+
+    if (count > max_pending_step_events_)
+        max_pending_step_events_ = count;
+
+    if (count > 1u)
+        ++pending_step_overflow_count_;
+
+    pending_step_events_ = count - 1u;
+    __set_PRIMASK(primask);
+
+    AdvanceStep();
+    return true;
+}
+```
+
+This keeps a counter rather than a boolean so no deadline is forgotten.
+
+F. Why this is the correct first fix
+
+This architecture preserves the accepted model:
+
+- one pending step event is serviced once per loop iteration
+- exactly one horizontal step advances per call
+- that step resolves to its full snapshot
+- the snapshot is immediately written to the output stage
+- chord pitches remain a simultaneous set, not a series of sequential note events
+
+This solves the main real problem: the current design lets multiple step deadlines pile up and then emits only the final result after a batch drain.
+
+G. Diagnostics to add
+
+Add the following counters:
+
+- maximum pending step backlog seen
+- number of times backlog exceeded 1
+
+This tells us whether the main loop is ever actually falling behind by more than one horizontal step.
+
+The counters are:
+
+```cpp
+uint32_t max_pending_step_events_      = 0;
+uint32_t pending_step_backlog_count_   = 0;
+```
+
+These are useful because:
+
+- backlog 0 = normal
+- backlog 1 = no lag
+- backlog > 1 = loop lagged by more than one horizontal step
+
+H. Snapshot write factoring
+
+The output writing should be factored out of Bridge_Process() so that Bridge_Process() no longer owns the pending-step drain behavior.
+
+The current large block in sequencer_bridge.cpp that currently does both drain and output should be split into:
+
+- Bridge_ServiceMusicalEvents() = service the queue, one step per pass
+- Bridge_WriteCurrentStepSnapshot() = emit the current step's snapshot to DAC and gates
+
+Bridge_Process() should then be reduced to a minimal output/state pass, not a backlog drain routine.
+
+The new output path should be conceptually:
+
+```cpp
+void Bridge_WriteCurrentStepSnapshot(void)
+{
+    const uint32_t step_index = g_sequencer.GetCurrentStep();
+    const uint16_t note_mask = g_sequencer.GetCurrentStepNoteMaskForPlayback();
+    const sequencer::ArpMode arp_mode = g_sequencer.GetCurrentArpMode();
+
+    if (arp_mode == sequencer::ArpMode::Off)
+    {
+        // resolve 0..4 simultaneous pitches for this step
+        // write DAC channels for all active notes in one snapshot
+        // set gate mask for all active lanes
+        return;
+    }
+
+    // ARP branch remains separate and unchanged
+    // do not modify ARP behavior yet
+}
+```
+
+I. Required unchanged areas
+
+The following must remain unchanged for this first implementation:
+
+- ARP behavior and ARP timing
+- uClock/TIM1/J13 runtime behavior and hardware test
+- DAC calibration and output scaling
+- FRAM persistence
+- UI behavior and redraw strategy
+
+No code edit is made yet. This is the architectural plan only.
+
+J. Tolerance estimate and loop-latency check
+
+At 120 BPM, a normal 16th-note step is:
+
+- beat period = 60 / 120 = 0.5 s
+- 16th-note = 0.5 / 4 = 0.125 s = 125 ms
+
+So a loop would need to be blocked for roughly >125 ms before two horizontal step deadlines could realistically accumulate.
+
+The ST7789 display path uses DMA for larger transfers and the UI layer is designed around dirty-region redraws rather than a full-screen repaint every tick. That makes the practical main-loop stall much smaller than one 16th-note interval in ordinary operation.
+
+That means the correct first fix is still front-of-loop servicing and one-step-per-call execution, not a per-note FIFO and not a batched while-loop drain.
+
+K. Summary of the plan
+
+- Keep the housekeeping 1 ms path fixed.
+- Keep uClock/TIM1/J13 unchanged.
+- Keep ARP separate.
+- Add a dedicated Bridge_ServiceMusicalEvents() function at the top of the main loop.
+- Process only one pending step event per pass.
+- Resolve one step snapshot and immediately write it.
+- Track backlog max and overflow count.
+- Do not yet add a FIFO or drain-all path.
+
+This is the accepted first implementation plan before any code edits.
+- it can reorder state relative to the main loop
+- it is easy to lose or collapse multiple step events if you use a single bool as an “event pending” signal
+
+The safe pattern is:
+
+- ISR only increments a counter
+- non-ISR code snapshots and clears it under PRIMASK protection
+- then it calls AdvanceStep() once per captured event outside the critical section
+
+This is the deterministic handoff that avoids collapsed events.
+
+8) Feature selection / A/B testing
+
+Use one compile-time flag:
+
+```cpp
+#define S12_USE_UCLOCK_MUSICAL_STEP_CLOCK 1
+```
+
+Then:
+
+- flag off: current behavior stays exactly as now
+- flag on:
+  - Tick1ms() disables only the step-advance block
+  - TickMusical() handles musical step accumulation
+  - the old millisecond path remains available for rollback
+
+This gives a clean A/B switch:
+
+- old timing path
+- uClock musical timing path
+- no destructive edit to the working firmware
+
+9) Proposed integration boundaries
+
+The safest first integration is:
+
+- keep stm32/stm32f4xx_it.c untouched for SysTick housekeeping
+- keep ui/ui_sequencer.c unchanged for the 1 ms engine tick
+- add a separate 96-PPQN/output-PPQN callback in platform/uclock/uclock_stm32_hal.cpp that calls Bridge_TickMusical()
+- do not derive sequencer steps from the 24-PPQN J13 callback
+- let Process() or a dedicated drain from the main loop perform DrainPendingStepEvents()
+- do not touch stm32/sequencer_bridge.cpp Bridge_Process() from the TIM1 interrupt
+- do not move gate timing, MIDI clock, DAC output, FRAM, or UI timing out of their current domains
+
+Recommended first patch boundary:
+
+- Tick1ms() gets a compile-time branch around the step-advance block
+- TickMusical() and DrainPendingStepEvents() are added
+- the TIM1/uClock callback only increments the step counter and never calls AdvanceStep() or ApplyCurrentStepBehavior() directly
+
+This satisfies your constraints and preserves the ability to revert immediately while keeping the J13 scope test active.

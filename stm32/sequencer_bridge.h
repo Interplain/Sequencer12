@@ -13,6 +13,8 @@ void     Bridge_SetCvRouterMode(uint8_t mode);
 uint8_t  Bridge_GetCvRouterMode(void);
 void     Bridge_Tick1ms(void);
 void     Bridge_TickMusical(void);
+void     Bridge_ServiceMusicalEvents(void);
+void     Bridge_WriteCurrentStepSnapshot(void);
 void     Bridge_Process(void);
 void     Bridge_ApplyZeroOutputCodes(void);
 void     Bridge_Start(void);

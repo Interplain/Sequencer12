@@ -33,8 +33,12 @@ public:
     void     Stop();
     void     Reset();
     void     TickMusical();
+    bool     ServiceOnePendingStep();
     void     DrainPendingStepEvents();
     void     SetBpm(uint32_t bpm);
+    uint32_t GetPendingStepEvents() const;
+    uint32_t GetMaxPendingStepEvents() const;
+    uint32_t GetPendingStepBacklogCount() const;
     void     SetPatternStepCount(uint8_t step_count);
     uint8_t  GetPatternStepCount() const;
     void     SetPatternStepDivision(uint8_t step_division);
@@ -138,6 +142,8 @@ private:
     uint32_t    musical_ticks_accum_      = 0;
     uint32_t    musical_step_ticks_       = 96;
     uint32_t    pending_step_events_      = 0;
+    uint32_t    max_pending_step_events_  = 0;
+    uint32_t    pending_step_backlog_count_ = 0;
 
     /* ── Gate ────────────────────────────────────────────────────────── */
     uint32_t    gate_elapsed_ms_          = 0;

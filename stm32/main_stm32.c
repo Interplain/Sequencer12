@@ -69,14 +69,6 @@ static uint8_t I2C_CountDevices(I2C_HandleTypeDef *hi2c)
 int main(void)
 {
     HW_Init();
-    
-    /* ── uClock Compile-Only Integration ─────────────────────────────────
-     * Call this to ensure uClock library symbols are linked (for footprint
-     * measurement). The function returns immediately and has no runtime impact.
-     * In compile-only phase, uClock timer is configured but not started.
-     */
-    extern int uClock_linkage_check(void);
-    uClock_linkage_check();
 
     /* Assert display RST low immediately and hold it throughout all early init.
      * The panel controller stays in hardware reset — its backlight may still
@@ -344,6 +336,20 @@ int main(void)
     /* UI_Sequencer_Init performs the first full UI draw. */
     UI_Sequencer_Init();
 
+    /* ── uClock Runtime Test: PC1 Clock Output ────────────────────────────
+     * Initialize and start uClock to generate a 24 Hz square wave on PC1.
+     * 
+     * At 120 BPM with 24 PPQN:
+     *   - TIM1 interrupt rate: 48 Hz (one callback per PPQN tick)
+     *   - PC1 toggle rate: 48 toggles/sec → 24 Hz complete waveform
+     *   - Waveform period: 41.667 ms (HIGH 20.833 ms + LOW 20.833 ms)
+     * 
+     * This is an isolated hardware test only. uClock is NOT integrated with
+     * the sequencer engine, gates A-D, DAC, MIDI, arp, or quantizer.
+     */
+    extern int uClock_StartRuntime(void);
+    uClock_StartRuntime();
+
 #if MCP_DEBUG_RUNTIME
     {
         char line[32];
@@ -392,6 +398,7 @@ int main(void)
         GPIOA->BSRR = (1U << 9);
 
         uint32_t t0 = HAL_GetTick();
+        Bridge_ServiceMusicalEvents();
         UI_Input_Poll();
         UI_Sequencer_Update();
         uint32_t elapsed = HAL_GetTick() - t0;

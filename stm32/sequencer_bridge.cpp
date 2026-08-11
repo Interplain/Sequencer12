@@ -327,6 +327,21 @@ extern "C"
 
         g_sequencer.TickMusical();
     }
+
+    void Bridge_ServiceMusicalEvents(void)
+    {
+        if (!g_sequencer.IsPlaying())
+        {
+            return;
+        }
+
+        if (!g_sequencer.ServiceOnePendingStep())
+        {
+            return;
+        }
+
+        Bridge_WriteCurrentStepSnapshot();
+    }
     void     Bridge_Start(void)
     {
         s_gate_hold_active = 0u;
@@ -509,108 +524,106 @@ extern "C"
         return (int16_t)(1000 + ((int32_t)note * 1000 + 6) / 12);
     }
 
-    void Bridge_Process(void)
+    void Bridge_WriteCurrentStepSnapshot(void)
     {
-        g_sequencer.DrainPendingStepEvents();
-        g_sequencer.Process();
-
         const bool playing = g_sequencer.IsPlaying();
-        
-        /* Keep CV at 0V until sequencer starts playing for the first time */
+
         if (!playing)
         {
             s_gate_channel_mask = 0u;
             return;
         }
-        
-        /* Mark CV as initialized once sequencer starts playing */
+
         s_cv_init_done = true;
-        
+
+        const uint32_t step_index = g_sequencer.GetCurrentStep();
+        const uint16_t note_mask = g_sequencer.GetCurrentStepNoteMaskForPlayback();
+        const sequencer::ArpMode arp_mode = g_sequencer.GetCurrentArpMode();
+
+        if (arp_mode == sequencer::ArpMode::Off)
         {
-            const uint32_t step_index = g_sequencer.GetCurrentStep();
-            const uint16_t note_mask = g_sequencer.GetCurrentStepNoteMaskForPlayback();
-            const sequencer::ArpMode arp_mode = g_sequencer.GetCurrentArpMode();
-
-            if (arp_mode == sequencer::ArpMode::Off)
+            if (step_index == s_last_step_index && note_mask == s_last_step_mask)
             {
-                if (step_index == s_last_step_index && note_mask == s_last_step_mask)
+                return;
+            }
+
+            uint8_t notes[4] = {0u, 0u, 0u, 0u};
+            uint8_t note_count = 0u;
+
+            for (uint8_t note = 0u; note < 12u && note_count < 4u; ++note)
+            {
+                if ((note_mask & (uint16_t)(1u << note)) != 0u)
                 {
-                    return;
+                    notes[note_count++] = note;
                 }
+            }
 
-                uint8_t notes[4] = {0u, 0u, 0u, 0u};
-                uint8_t note_count = 0u;
-
-                for (uint8_t note = 0u; note < 12u && note_count < 4u; ++note)
+            uint16_t out[4] = {s_cv_zero_code[0], s_cv_zero_code[1], s_cv_zero_code[2], s_cv_zero_code[3]};
+            if (s_cv_router_mode == kCvRouterUnison)
+            {
+                if (note_count > 0u)
                 {
-                    if ((note_mask & (uint16_t)(1u << note)) != 0u)
+                    const float volts = NoteToPitchVolts(notes[0]);
+                    for (uint8_t ch = 0u; ch < 4u; ++ch)
                     {
-                        notes[note_count++] = note;
+                        out[ch] = DAC8564_PitchVoltsToCodeForChannel(kLaneToDac[ch], volts);
                     }
+                    Bridge_WriteLogicalLanes(out);
                 }
-
-                uint16_t out[4] = {s_cv_zero_code[0], s_cv_zero_code[1], s_cv_zero_code[2], s_cv_zero_code[3]};
-                if (s_cv_router_mode == kCvRouterUnison)
-                {
-                    if (note_count > 0u)
-                    {
-                        const float volts = NoteToPitchVolts(notes[0]);
-                        for (uint8_t ch = 0u; ch < 4u; ++ch)
-                        {
-                            out[ch] = DAC8564_PitchVoltsToCodeForChannel(kLaneToDac[ch], volts);
-                        }
-                        Bridge_WriteLogicalLanes(out);
-                    }
-                    s_gate_channel_mask = (note_count > 0u) ? 0x0Fu : 0u;
-                }
-                else
-                {
-                    if (note_count > 0u)
-                    {
-                        for (uint8_t ch = 0u; ch < note_count; ++ch)
-                        {
-                            const float volts = NoteToPitchVolts(notes[ch]);
-                            out[ch] = DAC8564_PitchVoltsToCodeForChannel(kLaneToDac[ch], volts);
-                        }
-
-                        Bridge_WriteLogicalLanes(out);
-                    }
-
-                    if (note_count >= 4u) s_gate_channel_mask = 0x0Fu;
-                    else if (note_count == 0u) s_gate_channel_mask = 0u;
-                    else s_gate_channel_mask = (uint8_t)((1u << note_count) - 1u);
-                }
-                s_last_step_index = step_index;
-                s_last_step_mask = note_mask;
-                s_last_arp_note = 0xFFu;
+                s_gate_channel_mask = (note_count > 0u) ? 0x0Fu : 0u;
             }
             else
             {
-                const uint8_t note = g_sequencer.GetCurrentNote();
-                if (step_index == s_last_step_index && note == s_last_arp_note)
+                if (note_count > 0u)
                 {
-                    return;
-                }
+                    for (uint8_t ch = 0u; ch < note_count; ++ch)
+                    {
+                        const float volts = NoteToPitchVolts(notes[ch]);
+                        out[ch] = DAC8564_PitchVoltsToCodeForChannel(kLaneToDac[ch], volts);
+                    }
 
-                if (note <= 11u)
-                {
-                    const float volts = NoteToPitchVolts(note);
-                    uint16_t out[4] = {s_cv_zero_code[0], s_cv_zero_code[1], s_cv_zero_code[2], s_cv_zero_code[3]};
-                    out[0] = DAC8564_PitchVoltsToCodeForChannel(kLaneToDac[0], volts);
                     Bridge_WriteLogicalLanes(out);
-                    s_gate_channel_mask = 0x01u;
-                }
-                else
-                {
-                    Bridge_WriteLogicalLanes(s_cv_zero_code);
-                    s_gate_channel_mask = 0u;
                 }
 
-                s_last_step_index = step_index;
-                s_last_step_mask = note_mask;
-                s_last_arp_note = note;
+                if (note_count >= 4u) s_gate_channel_mask = 0x0Fu;
+                else if (note_count == 0u) s_gate_channel_mask = 0u;
+                else s_gate_channel_mask = (uint8_t)((1u << note_count) - 1u);
             }
+            s_last_step_index = step_index;
+            s_last_step_mask = note_mask;
+            s_last_arp_note = 0xFFu;
         }
+        else
+        {
+            const uint8_t note = g_sequencer.GetCurrentNote();
+            if (step_index == s_last_step_index && note == s_last_arp_note)
+            {
+                return;
+            }
+
+            if (note <= 11u)
+            {
+                const float volts = NoteToPitchVolts(note);
+                uint16_t out[4] = {s_cv_zero_code[0], s_cv_zero_code[1], s_cv_zero_code[2], s_cv_zero_code[3]};
+                out[0] = DAC8564_PitchVoltsToCodeForChannel(kLaneToDac[0], volts);
+                Bridge_WriteLogicalLanes(out);
+                s_gate_channel_mask = 0x01u;
+            }
+            else
+            {
+                Bridge_WriteLogicalLanes(s_cv_zero_code);
+                s_gate_channel_mask = 0u;
+            }
+
+            s_last_step_index = step_index;
+            s_last_step_mask = note_mask;
+            s_last_arp_note = note;
+        }
+    }
+
+    void Bridge_Process(void)
+    {
+        g_sequencer.Process();
     }
 
     const char* Bridge_GetStepChordDisplayName(uint8_t step_index, char* buf, uint8_t buf_len)

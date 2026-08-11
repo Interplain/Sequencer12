@@ -751,21 +751,39 @@ void SequencerDevice::TickMusical()
     }
 }
 
-void SequencerDevice::DrainPendingStepEvents()
+bool SequencerDevice::ServiceOnePendingStep()
 {
     uint32_t count = 0u;
 
     uint32_t primask = __get_PRIMASK();
     __disable_irq();
     count = pending_step_events_;
-    pending_step_events_ = 0u;
+    if (count == 0u)
+    {
+        __set_PRIMASK(primask);
+        return false;
+    }
+
+    if (count > max_pending_step_events_)
+    {
+        max_pending_step_events_ = count;
+    }
+
+    if (count > 1u)
+    {
+        ++pending_step_backlog_count_;
+    }
+
+    pending_step_events_ = count - 1u;
     __set_PRIMASK(primask);
 
-    while (count > 0u)
-    {
-        --count;
-        AdvanceStep();
-    }
+    AdvanceStep();
+    return true;
+}
+
+void SequencerDevice::DrainPendingStepEvents()
+{
+    (void)ServiceOnePendingStep();
 }
 
 void SequencerDevice::Tick5ms()  {}
@@ -779,7 +797,9 @@ void SequencerDevice::Tick20ms() {}
 /*                                                                            */
 void SequencerDevice::Process()
 {
-    DrainPendingStepEvents();
+    /* Musical step events are serviced at the front of the main loop.
+     * This function now handles only the dirty-flag work for the currently
+     * resolved step snapshot and does not drain a backlog of pending events. */
 
     /* step_changed_ — fire MIDI notes, update UI step highlight */
     if (step_changed_)
@@ -820,6 +840,8 @@ void SequencerDevice::Start()
     elapsed_step_ms_ = 0;
     musical_ticks_accum_ = 0u;
     pending_step_events_ = 0u;
+    max_pending_step_events_ = 0u;
+    pending_step_backlog_count_ = 0u;
     step_repeat_current_ = 0;
     gate_retrigger_pending_  = false;
     gate_retrigger_delay_ms_ = 0u;
@@ -857,6 +879,8 @@ void SequencerDevice::Reset()
     elapsed_step_ms_       = 0;
     musical_ticks_accum_   = 0u;
     pending_step_events_   = 0u;
+    max_pending_step_events_ = 0u;
+    pending_step_backlog_count_ = 0u;
     repeat_current_        = 0;
     step_repeat_current_   = 0;
     step_direction_        = 1;
@@ -986,6 +1010,21 @@ void SequencerDevice::RecalculateStepTicks()
 uint8_t SequencerDevice::GetCurrentPatternIndex() const
 {
     return current_pattern_index_;
+}
+
+uint32_t SequencerDevice::GetPendingStepEvents() const
+{
+    return pending_step_events_;
+}
+
+uint32_t SequencerDevice::GetMaxPendingStepEvents() const
+{
+    return max_pending_step_events_;
+}
+
+uint32_t SequencerDevice::GetPendingStepBacklogCount() const
+{
+    return pending_step_backlog_count_;
 }
 
 uint32_t SequencerDevice::GetRunTimeMs() const
