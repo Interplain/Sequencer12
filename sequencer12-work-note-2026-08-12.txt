@@ -1,0 +1,17 @@
+Sequencer12 status update – 2026-08-12
+
+Completed work:
+- Added a uClock integration layer for STM32 HAL compatibility, while keeping the runtime behavior isolated from the existing sequencer path.
+- Audited the step/ledger timing model and clarified the distinction between outer step length and inner ledger slots.
+- Reduced the timing division labels to 1/4, 1/8, 1/16, and 1/32 to match the working model.
+- Fixed timing menu draft/save behavior so edits are only committed once confirmed.
+- Normalized encoder input behavior to one-step-per-turn for the timing and piano-roll menu flow.
+- Improved piano-roll note selection/range handling for higher notes.
+- Corrected empty-step recognition so blank steps are not incorrectly collapsed to a single 16th-length behavior.
+- Added summary documents and audit notes to the repo to preserve the investigation trail.
+
+Current known issue:
+- The remaining runtime problem is in the outer sequencer step-advance / beat-length scheduler, not just the ledger count or UI mapping.
+- The project still needs a deeper fix in the actual playback timing path before the hardware behavior matches the intended beat-length + tempo model.
+
+This note captures the work completed up to the current state and preserves the known remaining timing issue for the next pass.

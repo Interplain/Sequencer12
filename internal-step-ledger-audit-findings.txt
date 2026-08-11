@@ -1,0 +1,205 @@
+## Findings A and B
+
+I did not edit anything.
+
+### A. Initialization problem
+
+The root issue is that the runtime engine’s ledger state is not being fully materialized unless the user opens/edits that step in the UI.
+
+What the engine actually uses:
+- StepSlot::note_ledger[]
+- StepSlot::repeat_count
+- step_repeat_current_
+- GetCurrentStepNoteMaskForPlayback()
+- ResolveLedgerMaskForIndex()
+
+The relevant runtime logic is in:
+- devices/sequencer/sequencer_device.cpp
+- the key functions are:
+
+```cpp
+static void InitLedgerFromMask(sequencer::StepSlot& slot, uint16_t note_mask, uint8_t length)
+{
+    slot.note_ledger.fill(0u);
+    slot.note_ledger[0] = note_mask;
+    slot.repeat_count = ClampLedgerLength(length);
+}
+```
+
+and:
+
+```cpp
+uint16_t SequencerDevice::GetCurrentStepNoteMaskForPlayback() const
+{
+    if (current_step_ >= kStepCount) return 0;
+
+    const StepSlot& slot = CurrentPattern().steps[current_step_];
+    const uint8_t ledger_len = ClampLedgerLength(slot.repeat_count);
+    const uint8_t ledger_index = (step_repeat_current_ < ledger_len) ? step_repeat_current_ : (uint8_t)(ledger_len - 1u);
+    const uint16_t source_mask = ResolveLedgerMaskForIndex(slot, ledger_index);
+    return ApplyTranspose(source_mask);
+}
+```
+
+The fallback path in `ResolveLedgerMaskForIndex()` is:
+
+```cpp
+static uint16_t ResolveLedgerMaskForIndex(const StepSlot& slot, uint8_t ledger_index)
+{
+    const uint16_t first = slot.note_ledger[0];
+    if (first == 0u)
+    {
+        return slot.note_mask;
+    }
+
+    return slot.note_ledger[ledger_index];
+}
+```
+
+This means:
+- if `note_ledger[0]` is never initialized properly, or
+- if `repeat_count` is nonzero but the ledger slots beyond 0 are unset,
+- then only the first/initial internal note is effectively visible.
+
+That matches the symptom:
+- a step that was never opened may only play its first internal note
+- after opening/visiting it, the UI writes ledger runtime data and the internal sequence becomes valid
+
+What the UI does on open:
+- ui/ui_sequencer.c hydrates UI state from engine, but this is not runtime initialization
+- the actual runtime ledger population happens through step-piano setters like:
+  - `Bridge_SetStepLedgerLength()`
+  - `Bridge_SetStepLedgerSlot()`
+
+Those are the setters that fill the live engine arrays.
+
+The important point:
+- regular playback does not initialize the full internal ledger for every step
+- opening a step in the UI causes the ledger to be written through those setters
+- that is why “visit the step once” makes later passes behave correctly
+
+Smallest fix, without touching uClock/TIM1/J13:
+- add one helper invoked when a pattern is loaded and when a step becomes active:
+  - ensure `repeat_count` is clamped
+  - ensure `note_ledger[0..repeat_count-1]` are seeded from the base step `note_mask`
+  - fill any missing ledger slots with zero or the prior valid mask
+  - update the current step’s runtime `step_repeat_current_` to 0
+- do this centrally in the engine, not only via UI setters
+
+This is the minimal stable fix:
+- every step has a valid internal sequence immediately after load/activation
+- no UI visit required
+
+---
+
+### B. Internal note timing problem
+
+This is controlled by the internal ledger logic, not by uClock or TIM1.
+
+The sequence is:
+
+1. `Tick1ms()` runs on the 1 ms SysTick path
+2. when a main step is active and `repeat_count > 1`, the engine does not advance the outer step immediately
+3. instead it stays on the same outer step and advances `step_repeat_current_`
+
+The exact code is in:
+- devices/sequencer/sequencer_device.cpp
+
+```cpp
+if ((step_repeat_current_ + 1u) < repeats)
+{
+    ++step_repeat_current_;
+    ApplyCurrentStepBehavior();
+    step_changed_ = true;
+    return;
+}
+step_repeat_current_ = 0;
+```
+
+This means:
+- the outer step does not advance
+- the internal ledger slot advances within the same step
+- `repeat_count` is effectively the number of horizontal notes inside one main step
+
+The duration formula is in:
+
+```cpp
+void SequencerDevice::RecalculateStepIntervalMs()
+{
+    uint32_t bpm = bank_.GetEffectiveBpm(current_pattern_index_);
+    if (bpm == 0) bpm = 1;
+
+    uint8_t division = CurrentPattern().step_division;
+    if (division == 0) division = 4;
+
+    base_step_interval_ms_ = (60000 / bpm) / division;
+    current_step_interval_ms_ =
+        base_step_interval_ms_ *
+        CurrentPattern().steps[current_step_].duration_multiplier;
+
+    {
+        uint8_t slot_count = CurrentPattern().steps[current_step_].repeat_count;
+        if (slot_count < 1u) slot_count = 1u;
+        if (slot_count > kStepLedgerMax) slot_count = kStepLedgerMax;
+        if (slot_count > 1u)
+        {
+            current_step_interval_ms_ /= slot_count;
+            if (current_step_interval_ms_ == 0u) current_step_interval_ms_ = 1u;
+        }
+    }
+
+    gate_length_ms_ = current_step_interval_ms_ / 4u;
+    if (gate_length_ms_ < 5u) gate_length_ms_ = 5u;
+}
+```
+
+This is the exact timing multiplication/division used for internal horizontal note spacing.
+
+For 120 BPM:
+- outer 16th step = 60,000 / 120 / 4 = 125 ms
+
+If Step 1 has 4 internal horizontal notes:
+- current code does:
+  - `current_step_interval_ms_ /= slot_count`
+  - 125 / 4 = 31.25 ms between internal notes
+
+So the current interval is:
+- 31.25 ms between internal horizontal notes
+
+If the intended design is “one main step remains one main step, and internal horizontal notes are just sub-steps of that same step,” then the more correct interval is the full outer step duration:
+- 125 ms between internal column advances
+
+The current code is therefore dividing the outer step duration too aggressively when `repeat_count > 1`.
+
+Smallest fix, separate from initialization:
+- keep the outer step’s base duration as the master timing source
+- do not divide `current_step_interval_ms_` by the internal ledger slot count for playback timing
+- instead use the same main-step duration for each internal column transition, while the ledger index changes the selected note mask
+- only the note selection changes, not the timing budget
+
+In other words:
+- `repeat_count` should change which note is active within the step
+- it should not shrink the main step’s duration unless the design explicitly wants a denser internal subdivision
+
+---
+
+## Concrete control flow summary
+
+The actual control flow for the internal ledger engine is:
+
+- `AdvanceStep()`
+- if `step_repeat_current_ + 1 < repeats`, do not leave the step
+- increment `step_repeat_current_`
+- call `ApplyCurrentStepBehavior()`
+- `ApplyCurrentStepBehavior()` resolves the current ledger slot:
+  - `GetCurrentStepNoteMaskForPlayback()`
+  - `ResolveLedgerMaskForIndex()`
+  - `ApplyTranspose()`
+- then writes the resulting note mask to the snapshot
+- the actual DAC/gate write is outside this engine, in the bridge layer
+
+So the two root causes are:
+- A: incomplete ledger initialization before runtime playback
+- B: sub-step timing is being derived by dividing the main step duration by the ledger length
+
+Those are separate issues and should be fixed separately, without changing the outer scheduler, uClock, TIM1, J13, or the DAC output path.

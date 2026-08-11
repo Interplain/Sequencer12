@@ -1,0 +1,201 @@
+## Gate1 audit only — current code path and root cause
+
+I did not edit anything.
+
+### 1) Where `s_gate_channel_mask` is set for a single-note step
+
+The actual single-note gate mask is assigned in stm32/sequencer_bridge.cpp, inside Bridge_WriteCurrentStepSnapshot():
+
+```cpp
+else
+{
+    const uint8_t note = g_sequencer.GetCurrentNote();
+    if (step_index == s_last_step_index && note == s_last_arp_note)
+    {
+        return;
+    }
+
+    if (note <= 11u)
+    {
+        const float volts = NoteToPitchVolts(note);
+        uint16_t out[4] = {s_cv_zero_code[0], s_cv_zero_code[1], s_cv_zero_code[2], s_cv_zero_code[3]};
+        out[0] = DAC8564_PitchVoltsToCodeForChannel(kLaneToDac[0], volts);
+        Bridge_WriteLogicalLanes(out);
+        s_gate_channel_mask = 0x01u;
+    }
+    else
+    {
+        Bridge_WriteLogicalLanes(s_cv_zero_code);
+        s_gate_channel_mask = 0u;
+    }
+```
+
+This is the single-note case. For non-ARP multi-note steps, it also sets masks like:
+
+```cpp
+if (note_count >= 4u) s_gate_channel_mask = 0x0Fu;
+else if (note_count == 0u) s_gate_channel_mask = 0u;
+else s_gate_channel_mask = (uint8_t)((1u << note_count) - 1u);
+```
+
+So for a single active gate, the mask is `0x01u`, which maps to Gate1/PC5.
+
+---
+
+### 2) Where that mask is actually written to GPIO PC5–PC8
+
+The physical GPIO write happens in stm32/sequencer_bridge.cpp, inside Bridge_Tick1ms():
+
+```cpp
+const bool gate_window_open = (s_gate_block_ticks == 0u) &&
+                      g_sequencer.IsGateActive();
+uint8_t gate_mask = 0u;
+...
+if (s_gate_hold_active)
+{
+    gate_mask = s_gate_channel_mask;
+}
+else if (!s_gate_step_pulsed)
+{
+    gate_mask = s_gate_channel_mask;
+    s_gate_hold_active = 1u;
+    s_gate_step_pulsed = 1u;
+}
+
+uint32_t bsrr = 0u;
+bsrr |= (gate_mask & 0x01u) ? GPIO_PIN_5 : ((uint32_t)GPIO_PIN_5 << 16);
+bsrr |= (gate_mask & 0x02u) ? GPIO_PIN_6 : ((uint32_t)GPIO_PIN_6 << 16);
+bsrr |= (gate_mask & 0x04u) ? GPIO_PIN_7 : ((uint32_t)GPIO_PIN_7 << 16);
+bsrr |= (gate_mask & 0x08u) ? GPIO_PIN_8 : ((uint32_t)GPIO_PIN_8 << 16);
+GPIOC->BSRR = bsrr;
+```
+
+This is the exact current write to PC5–PC8.
+`GPIO_PIN_5` is Gate1.
+
+The GPIO pins are initialized as outputs in stm32/hw/hw_init.c:
+
+```c
+// Gate outputs (PC5..PC8) + Clock Out (PC1). Initialized LOW (0V).
+HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8, GPIO_PIN_RESET);
+g.Pin   = GPIO_PIN_1 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8;
+g.Mode  = GPIO_MODE_OUTPUT_PP;
+g.Pull  = GPIO_NOPULL;
+g.Speed = GPIO_SPEED_FREQ_HIGH;
+HAL_GPIO_Init(GPIOC, &g);
+```
+
+---
+
+### 3) Does `Bridge_WriteCurrentStepSnapshot()` set the gate mask but never apply it to GPIO?
+
+Yes.
+
+`Bridge_WriteCurrentStepSnapshot()` only computes the current step’s CV and sets `s_gate_channel_mask`; it does not do the GPIO write. That is the key split introduced by the refactor.
+
+The function itself stops at:
+
+```cpp
+s_gate_channel_mask = 0x01u;
+```
+
+and then returns; the actual PC5–PC8 write is not in this function. The write occurs later in `Bridge_Tick1ms()` via `GPIOC->BSRR = bsrr;`.
+
+So the answer is: yes, `Bridge_WriteCurrentStepSnapshot()` sets the internal gate mask, but the physical write to PC5–PC8 is not performed there.
+
+---
+
+### 4) Was the old `Bridge_Tick1ms()` path previously driving PC5 directly, and was that behavior lost in the refactor?
+
+Yes — that is the direct hardware drive path.
+
+The old path is exactly:
+
+```cpp
+GPIOC->BSRR = bsrr;
+```
+
+inside `Bridge_Tick1ms()`.
+
+That code directly applies the mask to PC5–PC8. It is the path that previously made Gate1 physically assert.
+
+In the current refactor, the gate mask is still computed in `Bridge_WriteCurrentStepSnapshot()`, but the actual hardware write is no longer in the same control path for the uClock musical step flow. The result is that the mask exists, but the GPIO update is not guaranteed to happen unless the legacy `Bridge_Tick1ms()` path is still active and executing.
+
+So yes: the old direct PC5 behavior was effectively split out and lost in the refactor.
+
+---
+
+### 5) Do `GateOn()` / `GateOff()` only change internal state/dirty flags?
+
+Yes.
+
+In devices/sequencer/sequencer_device.cpp:
+
+```cpp
+void SequencerDevice::GateOn()
+{
+    gate_active_     = true;
+    gate_elapsed_ms_ = 0;
+    gate_changed_    = true;
+}
+
+void SequencerDevice::GateOff()
+{
+    if (!gate_active_) return;
+    gate_active_     = false;
+    gate_elapsed_ms_ = 0;
+    gate_changed_    = true;
+}
+
+void SequencerDevice::RetriggerGate(uint32_t low_gap_ms)
+{
+    if (low_gap_ms == 0u)
+    {
+        gate_retrigger_pending_  = false;
+        gate_retrigger_delay_ms_ = 0u;
+        GateOn();
+        return;
+    }
+
+    if (gate_active_)
+    {
+        GateOff();
+        gate_retrigger_pending_  = true;
+        gate_retrigger_delay_ms_ = low_gap_ms;
+    }
+    else
+    {
+        GateOn();
+    }
+}
+```
+
+These functions only mutate internal sequencing state (`gate_active_`, `gate_changed_`, retrigger flags). They do not touch GPIO. There is no direct write to PC5 here.
+
+---
+
+## Exact current code responsible for writing Gate1 to PC5
+
+This is the exact current hardware write for Gate1:
+
+```cpp
+uint32_t bsrr = 0u;
+bsrr |= (gate_mask & 0x01u) ? GPIO_PIN_5 : ((uint32_t)GPIO_PIN_5 << 16);
+GPIOC->BSRR = bsrr;
+```
+
+from stm32/sequencer_bridge.cpp.
+
+And the corresponding mask generation for a single-note step is:
+
+```cpp
+s_gate_channel_mask = 0x01u;
+```
+
+from stm32/sequencer_bridge.cpp.
+
+So the Gate1/PC5 path is:
+
+`AdvanceStep()` → `ApplyCurrentStepBehavior()` → internal gate state changes → `Bridge_WriteCurrentStepSnapshot()` sets `s_gate_channel_mask = 0x01u` → `Bridge_Tick1ms()` applies that mask to `GPIOC->BSRR` → PC5 goes high/low
+
+The missing piece in the current uClock branch is that the final GPIO application is no longer being done in the same path that computes the mask.

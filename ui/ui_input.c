@@ -248,13 +248,13 @@ void UI_Input_Poll(void)
 
     if (delta >= ENCODER_COUNTS_PER_STEP || delta <= -ENCODER_COUNTS_PER_STEP)
     {
-        int16_t steps = (int16_t)(delta / ENCODER_COUNTS_PER_STEP);
+        /* A single physical encoder movement should map to one UI step, even if the
+         * raw timer count jumps by a few ticks. This keeps note and parameter entry
+         * consistent and prevents the top-of-range note from being hard to hit. */
+        int8_t step = (delta > 0) ? 1 : -1;
 
-        if (steps > 127) steps = 127;
-        if (steps < -127) steps = -127;
-
-        s_last_enc = (int16_t)(s_last_enc + (steps * ENCODER_COUNTS_PER_STEP));
-        s_encoder_delta = SaturatingAddInt8(s_encoder_delta, (int8_t)steps);
+        s_last_enc = (int16_t)(s_last_enc + (step * ENCODER_COUNTS_PER_STEP));
+        s_encoder_delta = SaturatingAddInt8(s_encoder_delta, step);
         if (s_shift_held) s_shift_consumed = 1;
     }
 

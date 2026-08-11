@@ -5,6 +5,7 @@
 #include "platform/fram/fram_layout.h"
 #include "platform/fram/fram_settings.h"
 #include "platform/dac8564/dac8564.h"
+#include "uClock.h"
 #include <cstdio>
 #include <cstring>
 
@@ -45,6 +46,12 @@ static uint8_t s_gate_block_ticks = 0u;
 static uint32_t s_gate_prev_step = 0xFFFFFFFFu;
 static uint32_t s_gate_prev_loops = 0xFFFFFFFFu;
 static uint8_t s_gate_prev_substep = 0xFFu;
+
+static void Bridge_UClockMusicalCallback(uint32_t tick)
+{
+    (void)tick;
+    g_sequencer.NotifyUClockMusicalCallback();
+}
 
 typedef struct
 {
@@ -213,6 +220,9 @@ extern "C"
             SaveCvRouterModeSetting();
         }
         g_sequencer.Init();
+#if defined(S12_USE_UCLOCK_MUSICAL_STEP_CLOCK) && S12_USE_UCLOCK_MUSICAL_STEP_CLOCK
+        uClock.setOnSync(uClockClass::PPQN_96, Bridge_UClockMusicalCallback);
+#endif
         /* Keep runtime step state volatile: do not restore song step data on boot. */
 
         Bridge_ApplyZeroOutputCodes();
@@ -624,6 +634,12 @@ extern "C"
     void Bridge_Process(void)
     {
         g_sequencer.Process();
+
+#if defined(S12_USE_UCLOCK_MUSICAL_STEP_CLOCK) && S12_USE_UCLOCK_MUSICAL_STEP_CLOCK
+        /* uClock musical step service writes the snapshot at the top of the loop. */
+#else
+        Bridge_WriteCurrentStepSnapshot();
+#endif
     }
 
     const char* Bridge_GetStepChordDisplayName(uint8_t step_index, char* buf, uint8_t buf_len)
@@ -685,5 +701,25 @@ uint32_t Bridge_GetRunTimeMs(void)
 uint32_t Bridge_GetCompletedLoops(void)
 {
     return g_sequencer.GetCompletedLoops();
+}
+
+uint32_t Bridge_GetUClockMusicalCallbackCount(void)
+{
+    return g_sequencer.GetUClockMusicalCallbackCount();
+}
+
+uint32_t Bridge_GetTickMusicalCount(void)
+{
+    return g_sequencer.GetTickMusicalCount();
+}
+
+uint32_t Bridge_GetPendingStepEnqueueCount(void)
+{
+    return g_sequencer.GetPendingStepEnqueueCount();
+}
+
+uint32_t Bridge_GetServiceOneStepCount(void)
+{
+    return g_sequencer.GetServiceOneStepCount();
 }
 }

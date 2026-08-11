@@ -1,0 +1,165 @@
+## Ledger timing audit
+
+### Bug B — timing
+
+The timing bug is in the recalculation of `current_step_interval_ms_` in `SequencerDevice::RecalculateStepIntervalMs()`.
+
+Current code:
+
+```cpp
+base_step_interval_ms_ = (60000 / bpm) / division;
+current_step_interval_ms_ =
+    base_step_interval_ms_ *
+    CurrentPattern().steps[current_step_].duration_multiplier;
+
+{
+    uint8_t slot_count = CurrentPattern().steps[current_step_].repeat_count;
+    if (slot_count < 1u) slot_count = 1u;
+    if (slot_count > kStepLedgerMax) slot_count = kStAepLedgerMax;
+    if (slot_count > 1u)
+    {
+        current_step_interval_ms_ /= slot_count;
+        if (current_step_interval_ms_ == 0u) current_step_interval_ms_ = 1u;
+    }
+}
+```
+
+This divides the entire main-step interval by the number of ledger columns. That is the bug.
+
+The intended rule is:
+- Quant 1/16 means each internal horizontal ledger column lasts one 1/16 note.
+- At 120 BPM, that is 125 ms per internal column.
+- If a main step contains 4 ledger columns, the main step remains active for 4 × 125 ms before moving to the next main step.
+- `step_repeat_current_` advances through the ledger one column per normal step interval.
+
+Therefore the timing patch is:
+
+```diff
+diff --git a/devices/sequencer/sequencer_device.cpp b/devices/sequencer/sequencer_device.cpp
+@@
+     base_step_interval_ms_ = (60000 / bpm) / division;
+     current_step_interval_ms_ =
+         base_step_interval_ms_ *
+         CurrentPattern().steps[current_step_].duration_multiplier;
+-
+-    {
+-        uint8_t slot_count = CurrentPattern().steps[current_step_].repeat_count;
+-        if (slot_count < 1u) slot_count = 1u;
+-        if (slot_count > kStepLedgerMax) slot_count = kStepLedgerMax;
+-        if (slot_count > 1u)
+-        {
+-            current_step_interval_ms_ /= slot_count;
+-            if (current_step_interval_ms_ == 0u) current_step_interval_ms_ = 1u;
+-        }
+-    }
+ 
+     gate_length_ms_ = current_step_interval_ms_ / 4u;
+     if (gate_length_ms_ < 5u) gate_length_ms_ = 5u;
+ }
+```
+
+This preserves the outer scheduler, uClock, TIM1, J13, and overall timing model. The only change is: do not shrink the step interval by ledger length.
+
+---
+
+### Bug A — initialization
+
+The initialization bug is separate. The authoritative source is the actual per-step ledger already stored in the pattern engine, not a synthesized fallback from `note_mask`.
+
+The engine structure is:
+
+```cpp
+struct StepSlot
+{
+    StepType type = StepType::Empty;
+    uint32_t duration_multiplier = 1;
+    uint8_t  repeat_count = 1;
+    uint16_t note_mask = 0;
+    std::array<uint16_t, kStepLedgerMax> note_ledger{};
+    ...
+};
+```
+
+See:
+- devices/sequencer/sequencer_types.h
+- devices/sequencer/sequencer_device.cpp
+
+The UI writes into that runtime ledger through:
+
+```cpp
+void Bridge_SetStepLedgerLength(uint8_t step_index, uint8_t length)
+{
+    g_sequencer.SetStepLedgerLength(step_index, length);
+}
+
+void Bridge_SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, uint16_t note_mask)
+{
+    g_sequencer.SetStepLedgerSlot(step_index, slot_index, note_mask);
+}
+```
+
+in `stm32/sequencer_bridge.cpp`.
+
+Those functions are thin pass-throughs into:
+
+```cpp
+void SequencerDevice::SetStepLedgerLength(uint8_t step_index, uint8_t length)
+void SequencerDevice::SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, uint16_t note_mask)
+```
+
+in `devices/sequencer/sequencer_device.cpp`.
+
+The actual authoritative runtime data is therefore:
+
+```cpp
+CurrentPattern().steps[step_index].repeat_count
+CurrentPattern().steps[step_index].note_ledger[i]
+```
+
+The UI reads those values before writing them back. The read path is:
+
+```cpp
+s_step_piano_slot_count = Bridge_GetStepLedgerLength((uint8_t)(step - 1u));
+...
+s_step_piano_saved_slots[step_index][i] = Bridge_GetStepLedgerSlot(step_index, i);
+```
+
+in `ui/ui_sequencer.c`.
+
+This is the real per-step ledger state. It is already the canonical data to copy.
+
+The fallback path is not authoritative:
+
+```cpp
+static uint16_t ResolveLedgerMaskForIndex(const StepSlot& slot, uint8_t ledger_index)
+{
+    const uint16_t first = slot.note_ledger[0];
+    if (first == 0u)
+    {
+        return slot.note_mask;
+    }
+
+    return slot.note_ledger[ledger_index];
+}
+```
+
+This is only a legacy fallback for a no-ledger case. It should not be used to fabricate missing ledger slots.
+
+The initialization fix must therefore copy the real stored ledger state into runtime playback automatically, preserving intentional empty/rest columns. It must not invent values from `note_mask`.
+
+Minimal correct rule:
+- if the ledger already contains data, use it as-is
+- preserve intentional zero/rest slots
+- sync the runtime ledger from the stored pattern data when a pattern is loaded or a step becomes active
+- do not create synthetic ledger masks from the base note mask
+
+---
+
+### Summary
+
+There are two separate root causes:
+
+1. Bug B: timing is being shrunk by dividing `current_step_interval_ms_` by `repeat_count`.
+2. Bug A: initialization is not copying the actual stored ledger data, and the fallback logic is being treated like a source of truth.
+
+These should be fixed separately, without changing uClock, TIM1, J13, the outer scheduler, or the DAC/gate output path.

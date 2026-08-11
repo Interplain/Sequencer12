@@ -47,12 +47,13 @@ static uint8_t     s_timing_ts_den = 4;
 static uint8_t     s_timing_swing = 0;
 static uint8_t     s_quant_cursor = 0;
 static uint8_t     s_quant_enabled = 1;
-static uint8_t     s_quant_grid_division = 2; /* 0=1/4,1=1/8,2=1/16,3=1/32 */
+/* Quant is the internal ledger-column duration, not the outer step duration. */
+static uint8_t     s_quant_grid_division = 0; /* 0=1/4,1=1/8,2=1/16,3=1/32 */
 static uint8_t     s_quant_strength = 80;
 static uint8_t     s_quant_humanize_ms = 0;
 static uint8_t     s_quant_lag_ms = 0;
 static uint8_t     s_quant_saved_enabled = 1;
-static uint8_t     s_quant_saved_grid_division = 2;
+static uint8_t     s_quant_saved_grid_division = 0;
 static uint8_t     s_quant_saved_strength = 80;
 static uint8_t     s_quant_saved_humanize_ms = 0;
 static uint8_t     s_quant_saved_lag_ms = 0;
@@ -1534,18 +1535,15 @@ static uint8_t UI_Sequencer_GetFirstNoteFromMask(uint16_t note_mask, uint8_t fal
 
 static uint8_t UI_Sequencer_SlotsForStepGridDivision(uint8_t step_division)
 {
-    /* Keep roll sections musically stable: one fixed slot set per grid division. */
+    /* Division sets the number of internal columns inside each step.
+     * 1/4, 1/8, 1/16 and 1/32 map directly to 4, 8, 16 and 32 columns. */
     switch (step_division)
     {
-        case 1u:
-        case 2u:
-        case 3u:
-        case 4u:
-        case 6u:
-        case 8u:
-            return step_division;
-        default:
-            return 4u;
+        case 1u: return 4u;
+        case 2u: return 8u;
+        case 4u: return 16u;
+        case 8u: return 32u;
+        default: return 4u;
     }
 }
 
@@ -2432,30 +2430,42 @@ static void UI_EncoderDelta_GridShiftBpm(int8_t delta)
 
 static void UI_EncoderDelta_TimingMenu(int8_t delta)
 {
-    static const uint8_t divisions[] = {1, 2, 3, 4, 6, 8};
-    int8_t dir = (delta > 0) ? 1 : -1;
+    /* Keep every timing value at one-count-per-turn so the user can select values like 4 reliably. */
+    static const uint8_t divisions[] = {1, 2, 4, 8};
+    const int8_t step = (delta > 0) ? 1 : ((delta < 0) ? -1 : 0);
+    const int8_t dir = step;
+
+    if (step == 0)
+    {
+        UI_Sequencer_DrawTimingMenu();
+        return;
+    }
 
     if (s_timing_cursor == 0)
     {
-        int16_t v = (int16_t)s_timing_step_count + delta;
+        int16_t v = (int16_t)s_timing_step_count + step;
         if (v < 1) v = 1;
         if (v > 12) v = 12;
         s_timing_step_count = (uint8_t)v;
-        Bridge_SetPatternStepCount(s_timing_step_count);
     }
     else if (s_timing_cursor == 1)
     {
         uint8_t idx = 0;
-        for (uint8_t i = 0; i < 6; i++) if (divisions[i] == s_timing_step_division) { idx = i; break; }
+        for (uint8_t i = 0; i < 4; i++) if (divisions[i] == s_timing_step_division) { idx = i; break; }
+
+        if (s_timing_step_division != divisions[idx])
+        {
+            idx = 2u;
+        }
+
         int16_t n = (int16_t)idx + dir;
-        while (n < 0) n += 6;
-        while (n >= 6) n -= 6;
+        while (n < 0) n += 4;
+        while (n >= 4) n -= 4;
         s_timing_step_division = divisions[n];
-        Bridge_SetPatternStepDivision(s_timing_step_division);
     }
     else if (s_timing_cursor == 2)
     {
-        int16_t v = (int16_t)s_timing_ts_num + delta;
+        int16_t v = (int16_t)s_timing_ts_num + step;
         if (v < 1) v = 1;
         if (v > 12) v = 12;
         s_timing_ts_num = (uint8_t)v;
@@ -2471,7 +2481,7 @@ static void UI_EncoderDelta_TimingMenu(int8_t delta)
     }
     else if (s_timing_cursor == 4)
     {
-        int16_t v = (int16_t)s_timing_swing + delta;
+        int16_t v = (int16_t)s_timing_swing + step;
         if (v < 0) v = 0;
         if (v > 75) v = 75;
         s_timing_swing = (uint8_t)v;
@@ -2556,8 +2566,10 @@ static void UI_EncoderDelta_StepPianoShift(int8_t delta)
 {
     if (s_selected_step < 1u || s_selected_step > 12u) return;
     if (s_step_piano_slot_count < 1u) s_step_piano_slot_count = 1u;
+    if (delta == 0) return;
 
-    int16_t next = (int16_t)s_step_piano_slot + delta;
+    const int8_t step = (delta > 0) ? 1 : -1;
+    int16_t next = (int16_t)s_step_piano_slot + step;
     while (next < 0) next += s_step_piano_slot_count;
     while (next >= (int16_t)s_step_piano_slot_count) next -= s_step_piano_slot_count;
     s_step_piano_slot = (uint8_t)next;

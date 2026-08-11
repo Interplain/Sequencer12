@@ -595,9 +595,7 @@ static void DrawSidebarInfo(void)
         {
             case 1: div_text = "1/4"; break;
             case 2: div_text = "1/8"; break;
-            case 3: div_text = "1/8T"; break;
             case 4: div_text = "1/16"; break;
-            case 6: div_text = "1/16T"; break;
             case 8: div_text = "1/32"; break;
             default: break;
         }
@@ -1599,9 +1597,7 @@ static void DrawTimingRow(uint8_t index,
     {
         case 1: div_text = "1/4"; break;
         case 2: div_text = "1/8"; break;
-        case 3: div_text = "1/8T"; break;
         case 4: div_text = "1/16"; break;
-        case 6: div_text = "1/16T"; break;
         case 8: div_text = "1/32"; break;
         default: break;
     }

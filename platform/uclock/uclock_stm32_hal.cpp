@@ -71,14 +71,16 @@ void initTimer(uint32_t us_interval) {
     
     HAL_TIM_Base_Init(&htim1_uclock);
     
-    // Set interrupt priority (8 = low, below critical SPI/I2C at 1-3)
-    HAL_NVIC_SetPriority(TIM1_UP_TIM10_IRQn, 8, 0);
+    // Set interrupt priority (0 = highest, above display DMA at priority 1)
+    // This ensures clock interrupts are processed immediately for timing accuracy
+    HAL_NVIC_SetPriority(TIM1_UP_TIM10_IRQn, 0, 0);
     
-    // Enable interrupt in NVIC (but timer not started)
+    // Enable interrupt in NVIC and START the timer
     HAL_NVIC_EnableIRQ(TIM1_UP_TIM10_IRQn);
     
-    // COMPILE-ONLY: Timer configured but NOT started
-    // In runtime phase, would call: HAL_TIM_Base_Start_IT(&htim1_uclock);
+    // RUNTIME PHASE: Start the timer with interrupts enabled
+    // This begins periodic interrupts at the configured interval
+    HAL_TIM_Base_Start_IT(&htim1_uclock);
 }
 
 /**
@@ -123,34 +125,84 @@ extern "C" void TIM1_UP_TIM10_IRQHandler(void) {
 }
 
 // ============================================================================
-// LINKER REFERENCE: Ensure uClock library is linked
+// PC1 CLOCK OUTPUT CALLBACK (Runtime Test Phase)
 // ============================================================================
 
 /**
- * @brief Dummy function to ensure uClock object is linked
+ * @brief Toggle PC1 (Clock_OUT) on each uClock 24 PPQN sync tick
  * 
- * With function-section garbage collection (-ffunction-sections),
- * unused uClock and its methods could be stripped even if compiled.
- * This function calls a uClock method, forcing the linker to include
- * the entire uClock object and its vtable.
+ * Called at 48 Hz when uClock runs at 120 BPM with 24 PPQN:
+ *   120 BPM = 2 beats/sec × 24 PPQN = 48 ticks/sec
  * 
- * COMPILE-ONLY PHASE: Called once from main() to ensure linking.
- * Calls uClock.init() which configures TIM1 but doesn't start it.
- * Returns immediately; no functional impact at runtime since timer
- * was not started (no interrupt enable, no timer start).
+ * Each callback toggles the pin once (HIGH→LOW or LOW→HIGH).
+ * Complete waveform cycle (HIGH→LOW→HIGH) = 2 callbacks = 41.667 ms
+ * Measured frequency on PC1 = 24 Hz with 50% duty cycle
  * 
- * @return Address of global uClock object (never used)
+ * Uses static toggle state and direct BSRR writes for deterministic timing.
+ * 
+ * @param tick uClock tick counter (unused, called on every sync tick)
  */
-extern "C" int uClock_linkage_check(void) {
-    // Forward declare and reference uClock to force linking
+static void uClock_OnSync_PC1_Toggle(uint32_t tick) {
+    (void)tick;  // Suppress unused parameter warning
+    
+    // Static toggle state: 0 = LOW, 1 = HIGH
+    static uint8_t pc1_state = 0;
+    
+    // Toggle by writing to GPIO BSRR (Bit Set/Reset Register)
+    // This is faster and more deterministic than ReadPin + WritePin
+    if (pc1_state) {
+        // Currently HIGH, set to LOW: write bit to reset
+        GPIOC->BSRR = (GPIO_PIN_1 << 16);  // Reset register (upper 16 bits)
+        pc1_state = 0;
+    } else {
+        // Currently LOW, set to HIGH: write bit to set
+        GPIOC->BSRR = GPIO_PIN_1;  // Set register (lower 16 bits)
+        pc1_state = 1;
+    }
+}
+
+// ============================================================================
+// RUNTIME STARTUP: Initialize uClock with PC1 clock output
+// ============================================================================
+
+/**
+ * @brief Initialize and start uClock for runtime PC1 clock output test
+ * 
+ * Sets up uClock to generate a 24 Hz square wave on PC1 (Clock_OUT)
+ * by toggling the pin on each 24 PPQN sync tick when running at 120 BPM.
+ * 
+ * Sequence:
+ * 1. Register 24 PPQN sync callback (must be before init)
+ * 2. Call init() to configure and START TIM1 with interrupts
+ * 3. Set tempo to 120 BPM
+ * 4. Start clock generation
+ * 
+ * This is an isolated hardware test; uClock is NOT connected to the
+ * sequencer engine, DAC, gates, MIDI, or any other sequencer logic.
+ * 
+ * @return Zero on success
+ */
+extern "C" int uClock_StartRuntime(void) {
     using namespace umodular::clock;
     
-    // Call init() to force uClock methods to be linked.
-    // init() configures TIM1 but does NOT start it or enable interrupts,
-    // so this has zero runtime impact in compile-only phase.
-    // This forces the compiler to keep all uClock symbols during linking.
+    // 1. Register PC1 toggle callback for 24 PPQN sync before init()
+    //    This ensures the callback is installed before TIM1 starts firing
+    uClock.setOnSync(uClockClass::PPQN_24, uClock_OnSync_PC1_Toggle);
+    
+    // 2. Initialize TIM1 backend and START the timer
+    //    This configures TIM1 and calls HAL_TIM_Base_Start_IT()
+    //    (timer will NOT fire until start() is called)
     uClock.init();
     
-    // Return address for measurement/verification (never used)
-    return (int)&uClock;
+    // 3. Set tempo to 120 BPM
+    //    This calculates the TIM1 period: 20833 µs (48 ticks/sec)
+    uClock.setTempo(120.0f);
+    
+    // 4. Start clock generation
+    //    This begins firing TIM1 interrupts at the calculated interval
+    //    Each interrupt calls TIM1_UP_TIM10_IRQHandler → uClockHandler()
+    //    uClockHandler() invokes the 24 PPQN callback for each tick
+    uClock.start();
+    
+    return 0;  // Success
 }

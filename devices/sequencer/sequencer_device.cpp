@@ -63,11 +63,45 @@ static uint8_t ClampLedgerLength(uint8_t length)
     return length;
 }
 
+static uint8_t StepDivisionToLedgerSlots(uint8_t step_division)
+{
+    switch (step_division)
+    {
+        case 1u: return 4u;   /* 1/4 = 4 columns per step */
+        case 2u: return 8u;   /* 1/8 = 8 columns per step */
+        case 4u: return 16u;  /* 1/16 = 16 columns per step */
+        case 8u: return 32u;  /* 1/32 = 32 columns per step */
+        default: return 4u;
+    }
+}
+
 static void InitLedgerFromMask(sequencer::StepSlot& slot, uint16_t note_mask, uint8_t length)
 {
     slot.note_ledger.fill(0u);
     slot.note_ledger[0] = note_mask;
     slot.repeat_count = ClampLedgerLength(length);
+}
+
+static void NormalizePatternDivisionCadence(Pattern& pattern)
+{
+    const uint8_t fixed_len = StepDivisionToLedgerSlots(pattern.step_division);
+    for (uint8_t i = 0u; i < kStepCount; ++i)
+    {
+        StepSlot& slot = pattern.steps[i];
+        slot.repeat_count = ClampLedgerLength(fixed_len);
+        for (uint8_t j = fixed_len; j < kStepLedgerMax; ++j)
+        {
+            slot.note_ledger[j] = 0u;
+        }
+        if (slot.note_mask == 0u)
+        {
+            slot.type = StepType::Empty;
+        }
+        else
+        {
+            slot.type = StepType::Chord;
+        }
+    }
 }
 
 static uint16_t LimitNoteMaskToMaxVoices(uint16_t note_mask, uint8_t max_voices)
@@ -220,7 +254,11 @@ void SequencerDevice::SetPatternStepDivision(uint8_t step_division)
 {
     if (step_division < 1) step_division = 1;
     if (step_division > 8) step_division = 8;
-    CurrentPattern().step_division = step_division;
+
+    Pattern& pattern = CurrentPattern();
+    pattern.step_division = step_division;
+    NormalizePatternDivisionCadence(pattern);
+
     RecalculateStepIntervalMs();
     RecalculateStepTicks();
 }
@@ -273,7 +311,8 @@ void SequencerDevice::SetStepChordParams(uint8_t step_index,
 
     root_key %= 12;
     slot.duration_multiplier = UiDurationToMultiplier(duration);
-    slot.repeat_count = ClampLedgerLength(repeat_count);
+    slot.repeat_count = StepDivisionToLedgerSlots(CurrentPattern().step_division);
+    (void)repeat_count;
 
     if (chord_type == 0)
     {
@@ -311,6 +350,7 @@ void SequencerDevice::SetStepCustomNoteMask(uint8_t step_index, uint16_t note_ma
     const uint16_t clipped = LimitNoteMaskToMaxVoices((uint16_t)(note_mask & 0x0FFFu), 4u);
     slot.type = (clipped != 0u) ? StepType::Chord : StepType::Empty;
     slot.note_mask = clipped;
+    slot.repeat_count = StepDivisionToLedgerSlots(CurrentPattern().step_division);
     InitLedgerFromMask(slot, clipped, slot.repeat_count);
     slot.custom_chord_name[0] = '\0';
     CurrentPattern().arp_mode = ArpMode::Off;
@@ -330,6 +370,7 @@ void SequencerDevice::SetStepCustomUserChord(uint8_t step_index, uint16_t note_m
     const uint16_t clipped = LimitNoteMaskToMaxVoices((uint16_t)(note_mask & 0x0FFFu), 4u);
     slot.type = (clipped != 0u) ? StepType::Chord : StepType::Empty;
     slot.note_mask = clipped;
+    slot.repeat_count = StepDivisionToLedgerSlots(CurrentPattern().step_division);
     InitLedgerFromMask(slot, clipped, slot.repeat_count);
     CurrentPattern().arp_mode = ArpMode::Off;
 
@@ -372,6 +413,7 @@ void SequencerDevice::SetCurrentPatternIndex(uint8_t pattern_index)
     bank_.ChainReset();
 
     current_pattern_index_ = pattern_index;
+    NormalizePatternDivisionCadence(CurrentPattern());
     current_step_ = 0;
     repeat_current_ = 0;
     step_direction_ = 1;
@@ -449,16 +491,20 @@ void SequencerDevice::SetStepLedgerLength(uint8_t step_index, uint8_t length)
     if (step_index >= kStepCount) return;
 
     StepSlot& slot = CurrentPattern().steps[step_index];
+    const uint8_t fixed_len = StepDivisionToLedgerSlots(CurrentPattern().step_division);
     const uint8_t clamped = ClampLedgerLength(length);
-    slot.repeat_count = clamped;
 
-    for (uint8_t i = clamped; i < kStepLedgerMax; ++i)
+    /* The current grid division defines the runtime cadence for the whole step.
+     * Do not let the active note count shorten or lengthen an otherwise identical step. */
+    slot.repeat_count = fixed_len;
+
+    for (uint8_t i = fixed_len; i < kStepLedgerMax; ++i)
     {
         slot.note_ledger[i] = 0u;
     }
 
     uint16_t first_nonzero = 0u;
-    for (uint8_t i = 0u; i < clamped; ++i)
+    for (uint8_t i = 0u; i < fixed_len; ++i)
     {
         if (slot.note_ledger[i] != 0u)
         {
@@ -469,6 +515,7 @@ void SequencerDevice::SetStepLedgerLength(uint8_t step_index, uint8_t length)
 
     slot.note_mask = first_nonzero;
     slot.type = (first_nonzero != 0u) ? StepType::Chord : StepType::Empty;
+    (void)clamped;
 
     if (step_index == current_step_)
     {
@@ -482,16 +529,18 @@ void SequencerDevice::SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, 
     if (step_index >= kStepCount || slot_index >= kStepLedgerMax) return;
 
     StepSlot& slot = CurrentPattern().steps[step_index];
-    const uint16_t clipped = LimitNoteMaskToMaxVoices((uint16_t)(note_mask & 0x0FFFu), 4u);
-    slot.note_ledger[slot_index] = clipped;
-    if (clipped != 0u && slot_index >= slot.repeat_count)
+    const uint8_t fixed_len = StepDivisionToLedgerSlots(CurrentPattern().step_division);
+    if (slot_index >= fixed_len)
     {
-        slot.repeat_count = (uint8_t)(slot_index + 1u);
+        return;
     }
 
-    const uint8_t active_len = ClampLedgerLength(slot.repeat_count);
+    const uint16_t clipped = LimitNoteMaskToMaxVoices((uint16_t)(note_mask & 0x0FFFu), 4u);
+    slot.note_ledger[slot_index] = clipped;
+    slot.repeat_count = fixed_len;
+
     uint16_t first_nonzero = 0u;
-    for (uint8_t i = 0u; i < active_len; ++i)
+    for (uint8_t i = 0u; i < fixed_len; ++i)
     {
         if (slot.note_ledger[i] != 0u)
         {
@@ -515,7 +564,7 @@ void SequencerDevice::SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, 
 uint8_t SequencerDevice::GetStepLedgerLength(uint8_t step_index) const
 {
     if (step_index >= kStepCount) return 0u;
-    return ClampLedgerLength(CurrentPattern().steps[step_index].repeat_count);
+    return ClampLedgerLength(StepDivisionToLedgerSlots(CurrentPattern().step_division));
 }
 
 uint16_t SequencerDevice::GetStepLedgerSlot(uint8_t step_index, uint8_t slot_index) const
@@ -586,6 +635,7 @@ void SequencerDevice::ImportSong(const sequencer::Song& song)
         current_pattern_index_ = 0;
     }
 
+    NormalizePatternDivisionCadence(CurrentPattern());
     current_step_ = 0;
     repeat_current_ = 0;
     step_direction_ = 1;

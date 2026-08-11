@@ -69,6 +69,10 @@ uint32_t Bridge_GetElapsedMs(void);
 uint8_t  Bridge_GetCurrentPattern(void);
 uint32_t Bridge_GetRunTimeMs(void);
 uint32_t Bridge_GetCompletedLoops(void);
+uint32_t Bridge_GetUClockMusicalCallbackCount(void);
+uint32_t Bridge_GetTickMusicalCount(void);
+uint32_t Bridge_GetPendingStepEnqueueCount(void);
+uint32_t Bridge_GetServiceOneStepCount(void);
 
 #ifdef __cplusplus
 }

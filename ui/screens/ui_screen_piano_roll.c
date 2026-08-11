@@ -632,8 +632,11 @@ void UI_PianoRollScreen_SetNoteMask(uint16_t mask)
 
 void UI_PianoRollScreen_NavigateKey(int8_t delta)
 {
+    if (delta == 0) return;
+
+    const int8_t step = (delta > 0) ? 1 : -1;
     uint8_t old = s_piano_roll.selected_key;
-    int16_t next = (int16_t)s_piano_roll.selected_key + delta;
+    int16_t next = (int16_t)s_piano_roll.selected_key + step;
     while (next < 0)   next += 12;
     while (next >= 12) next -= 12;
     s_piano_roll.selected_key = (uint8_t)next;
