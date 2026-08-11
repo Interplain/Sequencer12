@@ -1,0 +1,190 @@
+Processing genericSTM32F405RG (platform: ststm32; board: genericSTM32F405RG; framework: stm32cube)
+--------------------------------------------------------------------------------
+Verbose mode can be enabled via `-v, --verbose` option
+CONFIGURATION: https://docs.platformio.org/page/boards/ststm32/genericSTM32F405RG.html
+PLATFORM: ST STM32 (19.5.0) > STM32F405RG (128k RAM. 1024k Flash)
+HARDWARE: STM32F405RGT6 168MHz, 128KB RAM, 1MB Flash
+DEBUG: Current (stlink) External (blackmagic, jlink, stlink)
+PACKAGES: 
+ - framework-stm32cubef4 @ 1.28.1 
+ - tool-ldscripts-ststm32 @ 0.2.0 
+ - toolchain-gccarmnoneeabi @ 1.70201.0 (7.2.1)
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 60 compatible libraries
+Scanning dependencies...
+Dependency Graph
+|-- ST7789 @ 1.0.0
+Building in release mode
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_adc.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_adc_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_can.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_cec.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_cortex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_crc.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_cryp.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_cryp_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_dac.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_dac_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_dcmi.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_dcmi_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_dfsdm.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_dma.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_dma2d.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_dma_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_dsi.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_eth.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_exti.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_flash.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_flash_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_flash_ramfunc.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_fmpi2c.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_fmpi2c_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_fmpsmbus.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_fmpsmbus_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_gpio.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_hash.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_hash_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_hcd.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_i2c.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_i2c_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_i2s.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_i2s_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_irda.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_iwdg.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_lptim.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_ltdc.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_ltdc_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_mmc.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_nand.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_nor.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_pccard.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_pcd.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_pcd_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_pwr.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_pwr_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_qspi.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_rcc.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_rcc_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_rng.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_rtc.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_rtc_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_sai.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_sai_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_sd.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_sdram.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_smartcard.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_smbus.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_spdifrx.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_spi.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_sram.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_tim.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_tim_ex.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_uart.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_usart.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_hal_wwdg.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_adc.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_crc.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_dac.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_dma.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_dma2d.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_exti.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_fmc.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_fmpi2c.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_fsmc.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_gpio.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_i2c.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_lptim.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_pwr.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_rcc.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_rng.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_rtc.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_sdmmc.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_spi.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_tim.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_usart.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_usb.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkHALDriver/Src/stm32f4xx_ll_utils.o
+Compiling .pio/build/genericSTM32F405RG/core/scheduler.o
+Compiling .pio/build/genericSTM32F405RG/devices/sequencer/arp_engine.o
+Compiling .pio/build/genericSTM32F405RG/devices/sequencer/chords/chord_library.o
+Compiling .pio/build/genericSTM32F405RG/devices/sequencer/chords/user_chords.o
+Compiling .pio/build/genericSTM32F405RG/devices/sequencer/pattern_bank.o
+Compiling .pio/build/genericSTM32F405RG/devices/sequencer/sequencer_device.o
+Compiling .pio/build/genericSTM32F405RG/platform/dac8564/dac8564.o
+Compiling .pio/build/genericSTM32F405RG/platform/fram/fram_settings.o
+Compiling .pio/build/genericSTM32F405RG/platform/fram/mb85rc256.o
+Compiling .pio/build/genericSTM32F405RG/platform/mcp23017/mcp23017.o
+Compiling .pio/build/genericSTM32F405RG/platform/midi/midi_clock.o
+Compiling .pio/build/genericSTM32F405RG/platform/midi/midi_parser.o
+Compiling .pio/build/genericSTM32F405RG/stm32/calibration.o
+Compiling .pio/build/genericSTM32F405RG/stm32/hw/hw_init.o
+Compiling .pio/build/genericSTM32F405RG/stm32/main_stm32.o
+Compiling .pio/build/genericSTM32F405RG/stm32/sequencer_bridge.o
+Compiling .pio/build/genericSTM32F405RG/stm32/stm32f4xx_hal_msp.o
+Compiling .pio/build/genericSTM32F405RG/stm32/stm32f4xx_it.o
+Compiling .pio/build/genericSTM32F405RG/stm32/user_chord_bridge.o
+stm32/main_stm32.c:46:16: warning: 'I2C_CountDevices' defined but not used [-Wunused-function]
+ static uint8_t I2C_CountDevices(I2C_HandleTypeDef *hi2c)
+                ^~~~~~~~~~~~~~~~
+stm32/main_stm32.c:28:16: warning: 'I2C_FindFirstDevice7' defined but not used [-Wunused-function]
+ static uint8_t I2C_FindFirstDevice7(I2C_HandleTypeDef *hi2c)
+                ^~~~~~~~~~~~~~~~~~~~
+Compiling .pio/build/genericSTM32F405RG/ui/screens/ui_chord_menu_screen.o
+Compiling .pio/build/genericSTM32F405RG/ui/screens/ui_chord_params_screen.o
+Compiling .pio/build/genericSTM32F405RG/ui/screens/ui_main_grid_screen.o
+Compiling .pio/build/genericSTM32F405RG/ui/screens/ui_screen_piano_roll.o
+Compiling .pio/build/genericSTM32F405RG/ui/ui_display.o
+Compiling .pio/build/genericSTM32F405RG/ui/ui_input.o
+Compiling .pio/build/genericSTM32F405RG/ui/ui_screen_router.o
+Compiling .pio/build/genericSTM32F405RG/ui/ui_sequencer.o
+Compiling .pio/build/genericSTM32F405RG/ui/ui_transport.o
+Compiling .pio/build/genericSTM32F405RG/lib16a/ST7789/font_mono14.o
+ui/ui_input.c:153:17: warning: 'PrimeButtons' defined but not used [-Wunused-function]
+ static uint16_t PrimeButtons(void)
+                 ^~~~~~~~~~~~
+ui/ui_input.c:105:13: warning: 'ClearPendingMcpEvents' defined but not used [-Wunused-function]
+ static void ClearPendingMcpEvents(void)
+             ^~~~~~~~~~~~~~~~~~~~~
+ui/ui_input.c:42:17: warning: 's_mcp_last_scan_mask' defined but not used [-Wunused-variable]
+ static uint8_t  s_mcp_last_scan_mask = 0x00;
+                 ^~~~~~~~~~~~~~~~~~~~
+ui/ui_input.c:41:17: warning: 's_mcp_last_addr7' defined but not used [-Wunused-variable]
+ static uint8_t  s_mcp_last_addr7 = 0x20;
+                 ^~~~~~~~~~~~~~~~
+Compiling .pio/build/genericSTM32F405RG/lib16a/ST7789/font_mono20b.o
+Compiling .pio/build/genericSTM32F405RG/lib16a/ST7789/font_num36b.o
+Compiling .pio/build/genericSTM32F405RG/lib16a/ST7789/font_sans16.o
+Compiling .pio/build/genericSTM32F405RG/lib16a/ST7789/fonts_extra.o
+ui/ui_display.c:2505:13: warning: 'DrawStepPianoRollScreen' defined but not used [-Wunused-function]
+ static void DrawStepPianoRollScreen(uint8_t step, const uint16_t note_mask, uint8_t selected_key)
+             ^~~~~~~~~~~~~~~~~~~~~~~
+ui/ui_display.c:2477:13: warning: 'DrawPianoKeyboardScreen' defined but not used [-Wunused-function]
+ static void DrawPianoKeyboardScreen(const char* title, const char* footer_label, const uint16_t note_mask, uint8_t selected_key)
+             ^~~~~~~~~~~~~~~~~~~~~~~
+ui/ui_display.c:2456:13: warning: 'DrawPianoKeyByNote' defined but not used [-Wunused-function]
+ static void DrawPianoKeyByNote(uint8_t note)
+             ^~~~~~~~~~~~~~~~~~
+ui/ui_display.c:2117:22: warning: 's_piano_view_mode' defined but not used [-Wunused-variable]
+Compiling .pio/build/genericSTM32F405RG/lib16a/ST7789/st7789.o
+ static PianoViewMode s_piano_view_mode = PIANO_VIEW_KEYBOARD;
+                      ^~~~~~~~~~~~~~~~~
+Compiling .pio/build/genericSTM32F405RG/FrameworkCMSISDevice/gcc/startup_stm32f405xx.o
+Compiling .pio/build/genericSTM32F405RG/FrameworkCMSISDevice/system_stm32f4xx.o
+Archiving .pio/build/genericSTM32F405RG/libFrameworkCMSISDevice.a
+Archiving .pio/build/genericSTM32F405RG/lib16a/libST7789.a
+Indexing .pio/build/genericSTM32F405RG/libFrameworkCMSISDevice.a
+Indexing .pio/build/genericSTM32F405RG/lib16a/libST7789.a
+Linking .pio/build/genericSTM32F405RG/firmware.elf
+Checking size .pio/build/genericSTM32F405RG/firmware.elf
+Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
+RAM:   [====      ]  42.6% (used 55804 bytes from 131072 bytes)
+Flash: [==        ]  20.3% (used 212852 bytes from 1048576 bytes)
+Building .pio/build/genericSTM32F405RG/firmware.bin
+========================= [SUCCESS] Took 3.80 seconds =========================
+
+Environment         Status    Duration
+------------------  --------  ------------
+genericSTM32F405RG  SUCCESS   00:00:03.803
+========================= 1 succeeded in 00:00:03.803 =========================

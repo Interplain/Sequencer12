@@ -69,6 +69,14 @@ static uint8_t I2C_CountDevices(I2C_HandleTypeDef *hi2c)
 int main(void)
 {
     HW_Init();
+    
+    /* ── uClock Compile-Only Integration ─────────────────────────────────
+     * Call this to ensure uClock library symbols are linked (for footprint
+     * measurement). The function returns immediately and has no runtime impact.
+     * In compile-only phase, uClock timer is configured but not started.
+     */
+    extern int uClock_linkage_check(void);
+    uClock_linkage_check();
 
     /* Assert display RST low immediately and hold it throughout all early init.
      * The panel controller stays in hardware reset — its backlight may still
