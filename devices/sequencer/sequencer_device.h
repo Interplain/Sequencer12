@@ -86,7 +86,7 @@ public:
                                   uint8_t* duration,
                                   uint8_t* repeat_count) const;
     bool     GetStepCustomChordName(uint8_t step_index, char* buf, size_t buf_len) const;
-    uint32_t GetCurrentStep() const { return current_step_; }
+    uint32_t GetCurrentStep() const { return current_bar_; }
     uint32_t GetElapsedMs()   const { return elapsed_step_ms_; }
     bool     IsPlaying()      const { return playing_; }
     bool     IsGateActive()   const { return gate_active_; }
@@ -134,10 +134,10 @@ private:
 
     /* ── Step engine ─────────────────────────────────────────────────── */
     uint8_t     current_pattern_index_    = 0;
-    uint32_t    current_step_             = 0;
+    uint32_t    current_bar_              = 0;
+    uint8_t     current_step_in_bar_      = 0;
     int8_t      step_direction_           = 1;
     uint8_t     repeat_current_           = 0;
-    uint8_t     step_repeat_current_      = 0;
 
     uint32_t    elapsed_step_ms_          = 0;
     uint32_t    base_step_interval_ms_    = 500;
