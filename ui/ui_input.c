@@ -58,7 +58,7 @@ static uint32_t s_last_mcp_recovery_ms = 0;
 #define MATRIX_SCAN_INTERVAL_MS 10u
 #define DIRECT_ARM_RELEASE_MS 60u
 #define ENCODER_LONG_PRESS_MS 350u
-#define ENCODER_COUNTS_PER_STEP 1
+#define ENCODER_COUNTS_PER_STEP 4
 
 static int8_t SaturatingAddInt8(int8_t base, int8_t delta)
 {
@@ -248,13 +248,19 @@ void UI_Input_Poll(void)
 
     if (delta >= ENCODER_COUNTS_PER_STEP || delta <= -ENCODER_COUNTS_PER_STEP)
     {
-        /* A single physical encoder movement should map to one UI step, even if the
-         * raw timer count jumps by a few ticks. This keeps note and parameter entry
-         * consistent and prevents the top-of-range note from being hard to hit. */
-        int8_t step = (delta > 0) ? 1 : -1;
+        int16_t detents = delta / ENCODER_COUNTS_PER_STEP;
 
-        s_last_enc = (int16_t)(s_last_enc + (step * ENCODER_COUNTS_PER_STEP));
-        s_encoder_delta = SaturatingAddInt8(s_encoder_delta, step);
+        s_last_enc = (int16_t)(s_last_enc + (detents * ENCODER_COUNTS_PER_STEP));
+        while (detents > 0)
+        {
+            s_encoder_delta = SaturatingAddInt8(s_encoder_delta, 1);
+            detents--;
+        }
+        while (detents < 0)
+        {
+            s_encoder_delta = SaturatingAddInt8(s_encoder_delta, -1);
+            detents++;
+        }
         if (s_shift_held) s_shift_consumed = 1;
     }
 

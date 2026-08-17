@@ -25,6 +25,7 @@ void     Bridge_PersistBegin(void);
 void     Bridge_PersistEnd(void);
 void     Bridge_SetPatternStepCount(uint8_t step_count);
 uint8_t  Bridge_GetPatternStepCount(void);
+uint8_t  Bridge_SetPatternTiming(uint8_t step_division, uint8_t numerator, uint8_t denominator);
 void     Bridge_SetPatternStepDivision(uint8_t step_division);
 uint8_t  Bridge_GetPatternStepDivision(void);
 void     Bridge_SetTimeSignature(uint8_t numerator, uint8_t denominator);

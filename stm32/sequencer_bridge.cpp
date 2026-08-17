@@ -280,7 +280,11 @@ extern "C"
         const uint32_t step_index = g_sequencer.GetCurrentStep();
         const uint32_t loops = g_sequencer.GetCompletedLoops();
         const uint8_t substep = g_sequencer.GetCurrentStepSubIndex();
-        if (step_index != s_gate_prev_step || loops != s_gate_prev_loops || substep != s_gate_prev_substep)
+        const bool position_changed =
+            step_index != s_gate_prev_step ||
+            loops != s_gate_prev_loops ||
+            substep != s_gate_prev_substep;
+        if (position_changed)
         {
             s_gate_prev_step = step_index;
             s_gate_prev_loops = loops;
@@ -289,8 +293,7 @@ extern "C"
             s_gate_hold_active = 0u;
             s_gate_block_ticks = 1u;
         }
-
-        if (s_gate_block_ticks > 0u)
+        else if (s_gate_block_ticks > 0u)
         {
             --s_gate_block_ticks;
         }
@@ -403,6 +406,12 @@ extern "C"
     }
     void     Bridge_SetPatternStepCount(uint8_t step_count) { g_sequencer.SetPatternStepCount(step_count); PersistSong(); }
     uint8_t  Bridge_GetPatternStepCount(void) { return g_sequencer.GetPatternStepCount(); }
+    uint8_t  Bridge_SetPatternTiming(uint8_t step_division, uint8_t numerator, uint8_t denominator)
+    {
+        if (!g_sequencer.SetPatternTiming(step_division, numerator, denominator)) return 0u;
+        PersistSong();
+        return 1u;
+    }
     void     Bridge_SetPatternStepDivision(uint8_t step_division) { g_sequencer.SetPatternStepDivision(step_division); PersistSong(); }
     uint8_t  Bridge_GetPatternStepDivision(void) { return g_sequencer.GetPatternStepDivision(); }
     void     Bridge_SetTimeSignature(uint8_t numerator, uint8_t denominator) { g_sequencer.SetTimeSignature(numerator, denominator); PersistSong(); }

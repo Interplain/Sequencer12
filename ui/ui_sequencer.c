@@ -45,6 +45,7 @@ static uint8_t     s_timing_step_division = 4;
 static uint8_t     s_timing_ts_num = 4;
 static uint8_t     s_timing_ts_den = 4;
 static uint8_t     s_timing_swing = 0;
+static uint8_t     s_timing_save_rejected = 0;
 static uint8_t     s_quant_cursor = 0;
 static uint8_t     s_quant_enabled = 1;
 /* Quant is the internal ledger-column duration, not the outer step duration. */
@@ -126,7 +127,7 @@ static void UI_Sequencer_ExitUserChordToGrid(void);
 static void UI_Sequencer_ExitUserChordSubToMenu(void);
 static void UI_Sequencer_DrawTimingMenu(void);
 static void UI_Sequencer_LoadTimingDraft(void);
-static void UI_Sequencer_CommitTimingDraft(void);
+static uint8_t UI_Sequencer_CommitTimingDraft(void);
 static void UI_Sequencer_DrawQuantTimingMenu(void);
 static void UI_Sequencer_LoadQuantTimingDraft(void);
 static void UI_Sequencer_CommitQuantTimingDraft(void);
@@ -1270,9 +1271,11 @@ static void UI_Sequencer_ExitTimingMenu(uint8_t commit)
 {
     UiScreen* active = UI_ScreenRouter_GetActive();
 
-    if (commit)
+    if (commit && !UI_Sequencer_CommitTimingDraft())
     {
-        UI_Sequencer_CommitTimingDraft();
+        s_timing_save_rejected = 1u;
+        UI_Sequencer_DrawTimingMenu();
+        return;
     }
 
     s_ui_mode = UI_MODE_GRID;
@@ -1533,20 +1536,6 @@ static uint8_t UI_Sequencer_GetFirstNoteFromMask(uint16_t note_mask, uint8_t fal
     return (fallback < 12u) ? fallback : 0u;
 }
 
-static uint8_t UI_Sequencer_SlotsForStepGridDivision(uint8_t step_division)
-{
-    /* Division sets the number of internal columns inside each step.
-     * 1/4, 1/8, 1/16 and 1/32 map directly to 4, 8, 16 and 32 columns. */
-    switch (step_division)
-    {
-        case 1u: return 4u;
-        case 2u: return 8u;
-        case 4u: return 16u;
-        case 8u: return 32u;
-        default: return 4u;
-    }
-}
-
 static void UI_Sequencer_BeginStepPianoSession(void)
 {
     s_step_piano_session_active = 1u;
@@ -1640,8 +1629,7 @@ static void UI_Sequencer_EnterStepPianoView(uint8_t step)
     {
         const uint8_t step_index = (uint8_t)(step - 1u);
         s_step_piano_slot = 0u;
-        (void)step_index;
-        s_step_piano_slot_count = UI_Sequencer_SlotsForStepGridDivision(Bridge_GetPatternStepDivision());
+        s_step_piano_slot_count = Bridge_GetStepLedgerLength(step_index);
         if (s_step_piano_slot_count < 1u) s_step_piano_slot_count = 1u;
         if (s_step_piano_slot_count > UI_STEP_LEDGER_MAX) s_step_piano_slot_count = UI_STEP_LEDGER_MAX;
     }
@@ -1858,7 +1846,8 @@ static void UI_Sequencer_DrawTimingMenu(void)
                               s_timing_swing,
                               s_timing_cursor,
                               UI_Display_GetTimingFooterAction(),
-                              UI_Sequencer_TimingDraftIsDirty());
+                              UI_Sequencer_TimingDraftIsDirty(),
+                              s_timing_save_rejected);
 }
 
 static void UI_Sequencer_LoadTimingDraft(void)
@@ -1868,16 +1857,22 @@ static void UI_Sequencer_LoadTimingDraft(void)
     s_timing_ts_num = Bridge_GetTimeSigNumerator();
     s_timing_ts_den = Bridge_GetTimeSigDenominator();
     s_timing_swing = Bridge_GetSwing();
+    s_timing_save_rejected = 0u;
 }
 
-static void UI_Sequencer_CommitTimingDraft(void)
+static uint8_t UI_Sequencer_CommitTimingDraft(void)
 {
     Bridge_PersistBegin();
+    if (!Bridge_SetPatternTiming(s_timing_step_division, s_timing_ts_num, s_timing_ts_den))
+    {
+        Bridge_PersistEnd();
+        return 0u;
+    }
     Bridge_SetPatternStepCount(s_timing_step_count);
-    Bridge_SetPatternStepDivision(s_timing_step_division);
-    Bridge_SetTimeSignature(s_timing_ts_num, s_timing_ts_den);
     Bridge_SetSwing(s_timing_swing);
     Bridge_PersistEnd();
+    UI_Sequencer_LoadTimingDraft();
+    return 1u;
 }
 
 static uint8_t UI_Sequencer_TimingDraftIsDirty(void)
@@ -2430,12 +2425,10 @@ static void UI_EncoderDelta_GridShiftBpm(int8_t delta)
 
 static void UI_EncoderDelta_TimingMenu(int8_t delta)
 {
-    /* Keep every timing value at one-count-per-turn so the user can select values like 4 reliably. */
-    static const uint8_t divisions[] = {1, 2, 4, 8};
-    const int8_t step = (delta > 0) ? 1 : ((delta < 0) ? -1 : 0);
-    const int8_t dir = step;
+    /* Each grouped encoder detent advances a timing value by exactly one position. */
+    static const uint8_t divisions[] = {1, 2, 4};
 
-    if (step == 0)
+    if (delta == 0)
     {
         UI_Sequencer_DrawTimingMenu();
         return;
@@ -2443,7 +2436,7 @@ static void UI_EncoderDelta_TimingMenu(int8_t delta)
 
     if (s_timing_cursor == 0)
     {
-        int16_t v = (int16_t)s_timing_step_count + step;
+        int16_t v = (int16_t)s_timing_step_count + delta;
         if (v < 1) v = 1;
         if (v > 12) v = 12;
         s_timing_step_count = (uint8_t)v;
@@ -2451,21 +2444,21 @@ static void UI_EncoderDelta_TimingMenu(int8_t delta)
     else if (s_timing_cursor == 1)
     {
         uint8_t idx = 0;
-        for (uint8_t i = 0; i < 4; i++) if (divisions[i] == s_timing_step_division) { idx = i; break; }
+        for (uint8_t i = 0; i < 3; i++) if (divisions[i] == s_timing_step_division) { idx = i; break; }
 
         if (s_timing_step_division != divisions[idx])
         {
             idx = 2u;
         }
 
-        int16_t n = (int16_t)idx + dir;
-        while (n < 0) n += 4;
-        while (n >= 4) n -= 4;
+        int16_t n = (int16_t)idx + delta;
+        while (n < 0) n += 3;
+        while (n >= 3) n -= 3;
         s_timing_step_division = divisions[n];
     }
     else if (s_timing_cursor == 2)
     {
-        int16_t v = (int16_t)s_timing_ts_num + step;
+        int16_t v = (int16_t)s_timing_ts_num + delta;
         if (v < 1) v = 1;
         if (v > 12) v = 12;
         s_timing_ts_num = (uint8_t)v;
@@ -2474,19 +2467,20 @@ static void UI_EncoderDelta_TimingMenu(int8_t delta)
     {
         uint8_t dens[] = {2, 4, 8};
         uint8_t idx = (s_timing_ts_den == 2) ? 0 : (s_timing_ts_den == 8) ? 2 : 1;
-        int16_t n = (int16_t)idx + dir;
+        int16_t n = (int16_t)idx + delta;
         while (n < 0) n += 3;
         while (n >= 3) n -= 3;
         s_timing_ts_den = dens[n];
     }
     else if (s_timing_cursor == 4)
     {
-        int16_t v = (int16_t)s_timing_swing + step;
+        int16_t v = (int16_t)s_timing_swing + delta;
         if (v < 0) v = 0;
         if (v > 75) v = 75;
         s_timing_swing = (uint8_t)v;
     }
 
+    s_timing_save_rejected = 0u;
     UI_Sequencer_DrawTimingMenu();
 }
 
@@ -2673,9 +2667,16 @@ static void UI_Sequencer_HandleEncoderDeltaInput(int8_t delta)
         return;
     }
 
-    /* Timing-family menus must always use encoder for value edits. */
+    shift_held = UI_Input_IsShiftHeld();
+
     if (s_ui_mode == UI_MODE_TIMING_MENU)
     {
+        if (shift_held)
+        {
+            UI_Display_NavigateTimingFooter(delta);
+            UI_Sequencer_DrawTimingMenu();
+            return;
+        }
         UI_EncoderDelta_TimingMenu(delta);
         return;
     }
@@ -2690,7 +2691,6 @@ static void UI_Sequencer_HandleEncoderDeltaInput(int8_t delta)
         return;
     }
 
-    shift_held = UI_Input_IsShiftHeld();
     route = UI_Sequencer_FindEncoderDeltaRoute(s_ui_mode);
 
     if (route)

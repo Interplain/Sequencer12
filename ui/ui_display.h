@@ -101,7 +101,8 @@ void UI_Display_DrawTimingMenu(uint8_t step_count,
                                uint8_t swing,
                                uint8_t cursor,
                                uint8_t footer_action,
-                               uint8_t has_unsaved_changes);
+                               uint8_t has_unsaved_changes,
+                               uint8_t save_rejected);
 void UI_Display_DrawQuantiserTimingMenu(uint8_t enabled,
                                         uint8_t grid_division,
                                         uint8_t strength,

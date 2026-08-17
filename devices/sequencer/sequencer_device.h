@@ -46,6 +46,7 @@ public:
     uint32_t GetServiceOneStepCount() const;
     void     SetPatternStepCount(uint8_t step_count);
     uint8_t  GetPatternStepCount() const;
+    bool     SetPatternTiming(uint8_t step_division, uint8_t numerator, uint8_t denominator);
     void     SetPatternStepDivision(uint8_t step_division);
     uint8_t  GetPatternStepDivision() const;
     void     SetTimeSignature(uint8_t numerator, uint8_t denominator);

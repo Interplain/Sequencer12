@@ -1598,7 +1598,6 @@ static void DrawTimingRow(uint8_t index,
         case 1: div_text = "1/4"; break;
         case 2: div_text = "1/8"; break;
         case 4: div_text = "1/16"; break;
-        case 8: div_text = "1/32"; break;
         default: break;
     }
 
@@ -1644,7 +1643,8 @@ void UI_Display_DrawTimingMenu(uint8_t step_count,
                                uint8_t swing,
                                uint8_t cursor,
                                uint8_t footer_action,
-                               uint8_t has_unsaved_changes)
+                               uint8_t has_unsaved_changes,
+                               uint8_t save_rejected)
 {
     MenuTemplate_Begin(MENU_FRAME_TIMING);
 
@@ -1677,7 +1677,10 @@ void UI_Display_DrawTimingMenu(uint8_t step_count,
 
     s_timing_row_cursor = cursor;
 
-    MenuTemplate_DrawHeader("Pattern Timing", has_unsaved_changes ? "*UNSAVED" : "Global sequencer timing", YELLOW);
+    MenuTemplate_DrawHeader("Pattern Timing",
+                            save_rejected ? "INVALID" :
+                            has_unsaved_changes ? "*UNSAVED" : "Global sequencer timing",
+                            save_rejected ? RED : YELLOW);
 
     /* Footer buttons */
     if (!s_timing_footer_valid || (s_timing_footer_drawn != footer_action))
