@@ -1085,9 +1085,6 @@ void SequencerDevice::RecalculateStepTicks()
     uint32_t base_ticks = 96u / division;
     musical_step_ticks_ = base_ticks;
     if (musical_step_ticks_ == 0u) musical_step_ticks_ = 1u;
-
-    musical_ticks_accum_ = 0u;
-    pending_step_events_ = 0u;
 }
 
 /*.......................................................... */
@@ -1272,8 +1269,7 @@ void SequencerDevice::AdvanceStep()
 
     ApplyCurrentStepBehavior();
     step_changed_ = true;
-    RecalculateStepTicks();
-}
+  }
 
 /*                                                                            */
 /*  ApplyCurrentStepBehavior — fires gate and loads arp for current step.   */
@@ -1283,7 +1279,6 @@ void SequencerDevice::AdvanceStep()
 void SequencerDevice::ApplyCurrentStepBehavior()
 {
     RecalculateStepIntervalMs();
-    RecalculateStepTicks();
 
     const StepSlot& slot = GetStep(current_bar_);
     const Pattern&  pat  = CurrentPattern();

@@ -142,12 +142,19 @@ extern "C" void TIM1_UP_TIM10_IRQHandler(void) {
  * 
  * @param tick uClock tick counter (unused, called on every sync tick)
  */
-static void uClock_OnSync_PC1_Toggle(uint32_t tick) {
+extern "C" uint8_t Bridge_IsPlaying(void);
+
+extern "C" void uClock_PC1_ClockOut_Toggle(uint32_t tick) {
     (void)tick;  // Suppress unused parameter warning
-    
+
+    if (!Bridge_IsPlaying()) {
+        GPIOC->BSRR = (GPIO_PIN_1 << 16);  // Force Clock OUT low when transport is stopped
+        return;
+    }
+
     // Static toggle state: 0 = LOW, 1 = HIGH
     static uint8_t pc1_state = 0;
-    
+
     // Toggle by writing to GPIO BSRR (Bit Set/Reset Register)
     // This is faster and more deterministic than ReadPin + WritePin
     if (pc1_state) {
@@ -187,7 +194,7 @@ extern "C" int uClock_StartRuntime(void) {
     
     // 1. Register PC1 toggle callback for 24 PPQN sync before init()
     //    This ensures the callback is installed before TIM1 starts firing
-    uClock.setOnSync(uClockClass::PPQN_24, uClock_OnSync_PC1_Toggle);
+    uClock.setOnSync(uClockClass::PPQN_24, uClock_PC1_ClockOut_Toggle);
     
     // 2. Initialize TIM1 backend and START the timer
     //    This configures TIM1 and calls HAL_TIM_Base_Start_IT()

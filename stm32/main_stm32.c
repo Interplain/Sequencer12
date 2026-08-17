@@ -336,19 +336,12 @@ int main(void)
     /* UI_Sequencer_Init performs the first full UI draw. */
     UI_Sequencer_Init();
 
-    /* ── uClock Runtime Test: PC1 Clock Output ────────────────────────────
-     * Initialize and start uClock to generate a 24 Hz square wave on PC1.
-     * 
-     * At 120 BPM with 24 PPQN:
-     *   - TIM1 interrupt rate: 48 Hz (one callback per PPQN tick)
-     *   - PC1 toggle rate: 48 toggles/sec → 24 Hz complete waveform
-     *   - Waveform period: 41.667 ms (HIGH 20.833 ms + LOW 20.833 ms)
-     * 
-     * This is an isolated hardware test only. uClock is NOT integrated with
-     * the sequencer engine, gates A-D, DAC, MIDI, arp, or quantizer.
+    /* ── uClock Runtime Test: PC1 Clock Output (disabled in production) ──
+     * This diagnostic helper remains available for hardware test use, but the
+     * normal firmware startup path must not initialize/start uClock here.
      */
-    extern int uClock_StartRuntime(void);
-    uClock_StartRuntime();
+    /* extern int uClock_StartRuntime(void); */
+    /* uClock_StartRuntime(); */
 
 #if MCP_DEBUG_RUNTIME
     {

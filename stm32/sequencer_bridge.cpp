@@ -13,6 +13,9 @@ static SequencerDevice g_sequencer;
 static uint8_t s_persist_depth = 0u;
 static uint8_t s_persist_dirty = 0u;
 static uint8_t s_tick_enabled = 1u;
+static uint8_t s_last_substep_index = 0xFFu;
+
+extern "C" void uClock_PC1_ClockOut_Toggle(uint32_t tick);
 
 enum CvRouterMode : uint8_t
 {
@@ -219,9 +222,22 @@ extern "C"
             s_cv_router_mode = kCvRouterSplit;
             SaveCvRouterModeSetting();
         }
-        g_sequencer.Init();
+      g_sequencer.Init();
+
 #if defined(S12_USE_UCLOCK_MUSICAL_STEP_CLOCK) && S12_USE_UCLOCK_MUSICAL_STEP_CLOCK
-        uClock.setOnSync(uClockClass::PPQN_96, Bridge_UClockMusicalCallback);
+    /*
+     * uClock is the musical transport clock.
+     * Register the 96 PPQN callback before initialising the hardware timer.
+     */
+    uClock.setOnSync(
+    umodular::clock::uClockClass::PPQN_96,
+    Bridge_UClockMusicalCallback);
+    uClock.setOnSync(
+    umodular::clock::uClockClass::PPQN_24,
+    uClock_PC1_ClockOut_Toggle);
+    uClock.init();
+    uClock.setTempo(120.0f);
+    uClock.start();
 #endif
         /* Keep runtime step state volatile: do not restore song step data on boot. */
 
@@ -235,6 +251,7 @@ extern "C"
         s_last_step_index = 0xFFFFFFFFu;
         s_last_step_mask = 0xFFFFu;
         s_last_arp_note = 0xFFu;
+        s_last_substep_index = 0xFFu;
         s_gate_channel_mask = 0u;
         s_gate_hold_active = 0u;
         s_gate_step_pulsed = 0u;
@@ -263,6 +280,7 @@ extern "C"
         s_last_step_index = 0xFFFFFFFFu;
         s_last_step_mask = 0xFFFFu;
         s_last_arp_note = 0xFFu;
+        s_last_substep_index = 0xFFu;
     }
     uint8_t  Bridge_GetCvRouterMode(void)
     {
@@ -355,29 +373,39 @@ extern "C"
 
         Bridge_WriteCurrentStepSnapshot();
     }
-    void     Bridge_Start(void)
+    void Bridge_Start(void)
     {
-        s_gate_hold_active = 0u;
-        s_gate_step_pulsed = 0u;
-        s_gate_block_ticks = 0u;
-        s_gate_prev_step = 0xFFFFFFFFu;
-        s_gate_prev_loops = 0xFFFFFFFFu;
-        s_gate_prev_substep = 0xFFu;
-        g_sequencer.Start();
-        /* Immediately process to output the current step's CV */
-        Bridge_Process();
+    s_gate_hold_active = 0u;
+    s_gate_step_pulsed = 0u;
+    s_gate_block_ticks = 0u;
+    s_gate_prev_step = 0xFFFFFFFFu;
+    s_gate_prev_loops = 0xFFFFFFFFu;
+    s_gate_prev_substep = 0xFFu;
+
+    g_sequencer.Start();
+
+    /* Load STEP 1 CV before the musical clock begins advancing. */
+    Bridge_WriteCurrentStepSnapshot();
+
+    GPIOC->BSRR = (GPIO_PIN_1 << 16);  /* force Clock OUT low until the first PPQN tick while playing */
+
+    Bridge_Process();
     }
-    void     Bridge_Stop(void)
+
+   void Bridge_Stop(void)
     {
-        g_sequencer.Stop();
-        s_gate_channel_mask = 0u;
-        s_gate_hold_active = 0u;
-        s_gate_step_pulsed = 0u;
-        s_gate_block_ticks = 0u;
-        s_gate_prev_step = 0xFFFFFFFFu;
-        s_gate_prev_loops = 0xFFFFFFFFu;
-        s_gate_prev_substep = 0xFFu;
+    g_sequencer.Stop();
+    GPIOC->BSRR = (GPIO_PIN_1 << 16);  /* force Clock OUT low when transport stops */
+
+    s_gate_channel_mask = 0u;
+    s_gate_hold_active = 0u;
+    s_gate_step_pulsed = 0u;
+    s_gate_block_ticks = 0u;
+    s_gate_prev_step = 0xFFFFFFFFu;
+    s_gate_prev_loops = 0xFFFFFFFFu;
+    s_gate_prev_substep = 0xFFu;
     }
+
     void     Bridge_Reset(void)
     {
         g_sequencer.Reset();
@@ -389,7 +417,16 @@ extern "C"
         s_gate_prev_loops = 0xFFFFFFFFu;
         s_gate_prev_substep = 0xFFu;
     }
-    void     Bridge_SetBpm(uint32_t bpm)    { g_sequencer.SetBpm(bpm); }
+
+    void Bridge_SetBpm(uint32_t bpm)
+    {
+    g_sequencer.SetBpm(bpm);
+
+    #if defined(S12_USE_UCLOCK_MUSICAL_STEP_CLOCK) && S12_USE_UCLOCK_MUSICAL_STEP_CLOCK
+    uClock.setTempo((float)bpm);
+    #endif
+    }
+
     void     Bridge_PersistBegin(void)
     {
         if (s_persist_depth < 255u) s_persist_depth++;
@@ -556,12 +593,15 @@ extern "C"
         s_cv_init_done = true;
 
         const uint32_t step_index = g_sequencer.GetCurrentStep();
+        const uint8_t substep = g_sequencer.GetCurrentStepSubIndex();
         const uint16_t note_mask = g_sequencer.GetCurrentStepNoteMaskForPlayback();
         const sequencer::ArpMode arp_mode = g_sequencer.GetCurrentArpMode();
 
         if (arp_mode == sequencer::ArpMode::Off)
         {
-            if (step_index == s_last_step_index && note_mask == s_last_step_mask)
+            if (step_index == s_last_step_index &&
+            substep == s_last_substep_index &&
+            note_mask == s_last_step_mask)
             {
                 return;
             }
@@ -608,9 +648,10 @@ extern "C"
                 else if (note_count == 0u) s_gate_channel_mask = 0u;
                 else s_gate_channel_mask = (uint8_t)((1u << note_count) - 1u);
             }
-            s_last_step_index = step_index;
-            s_last_step_mask = note_mask;
-            s_last_arp_note = 0xFFu;
+                s_last_step_index = step_index;
+                s_last_substep_index = substep;
+                s_last_step_mask = note_mask;
+                s_last_arp_note = 0xFFu;
         }
         else
         {
