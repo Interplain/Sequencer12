@@ -65,6 +65,7 @@ uint8_t  Bridge_GetStepChordUiParams(uint8_t step_index,
 									 uint8_t* duration,
 									 uint8_t* repeat_count);
 uint32_t Bridge_GetCurrentStep(void);
+uint8_t  Bridge_GetCurrentStepSubIndex(void);
 uint8_t  Bridge_IsPlaying(void);
 uint32_t Bridge_GetElapsedMs(void);
 uint8_t  Bridge_GetCurrentPattern(void);

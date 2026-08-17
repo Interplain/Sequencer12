@@ -274,6 +274,7 @@ static void UI_EncoderDelta_SongChain(int8_t delta);
 /* ── Status row caching (prevent flicker) ─────────────────────────────────── */
 static uint8_t  s_last_pattern    = 0xFF;
 static uint8_t  s_last_step       = 0xFF;
+static uint8_t  s_last_substep    = 0xFF;
 static uint32_t s_last_loops      = 0xFFFFFFFF;
 static uint32_t s_last_run_time   = 0xFFFFFFFF;
 static uint8_t  s_repeat_flash_on = 0;
@@ -936,6 +937,7 @@ static void UI_StepRoute_ShiftGridPattern(uint8_t step)
     Bridge_SetCurrentPattern((uint8_t)(step - 1));
     s_last_pattern = 0xFF;
     s_last_step = 0xFF;
+    s_last_substep = 0xFF;
     s_last_loops = 0xFFFFFFFF;
     s_last_run_time = 0xFFFFFFFF;
 }
@@ -2821,7 +2823,10 @@ static void UI_Sequencer_UpdateSongChainBlink(uint32_t now)
 
 static void UI_Sequencer_UpdateStatusRowTick(uint32_t now)
 {
-    if ((now - s_last_status_ms) >= 100)
+    /* Main UI cadence: use the regular 10 ms frame to sample live Bar/Substep values.
+     * This is much faster than the previous 100 ms status poll and still avoids
+     * unnecessary redraws unless the displayed values actually change. */
+    if ((now - s_last_status_ms) >= 10)
     {
         s_last_status_ms = now;
 
@@ -2830,6 +2835,7 @@ static void UI_Sequencer_UpdateStatusRowTick(uint32_t now)
         {
             uint8_t  pattern   = Bridge_GetCurrentPattern();
             uint8_t  step      = Bridge_GetCurrentStep();
+            uint8_t  substep   = Bridge_GetCurrentStepSubIndex();
             uint32_t loops     = Bridge_GetCompletedLoops();
             uint32_t run_time  = Bridge_GetRunTimeMs();
 #if UI_MCP_DEBUG_OVERLAY
@@ -2841,11 +2847,12 @@ static void UI_Sequencer_UpdateStatusRowTick(uint32_t now)
             uint8_t  mcp_scan_mask = 0x00;
 #endif
 
-            if ((pattern != s_last_pattern) || (step != s_last_step) ||
+            if ((pattern != s_last_pattern) || (step != s_last_step) || (substep != s_last_substep) ||
                 (loops != s_last_loops) || (run_time != s_last_run_time))
             {
                 s_last_pattern   = pattern;
                 s_last_step      = step;
+                s_last_substep   = substep;
                 s_last_loops     = loops;
                 s_last_run_time  = run_time;
 

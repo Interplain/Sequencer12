@@ -356,7 +356,7 @@ static void RollDrawHeader(void)
     const char* slot_state = is_rest_slot ? "REST" : "NOTE";
     const uint16_t slot_state_color = is_rest_slot ? ROLL_COL_ROW_SEP : COLOR_ACTIVE;
 
-    snprintf(step_label, sizeof(step_label), "STEP %u", s_piano_roll.step);
+    snprintf(step_label, sizeof(step_label), "BAR %u", s_piano_roll.step);
     Bridge_GetStepChordDisplayName((uint8_t)(s_piano_roll.step - 1u), chord_name, sizeof(chord_name));
 
     ST7789_FillRect(0u, 0u, SCREEN_W, ROLL_HEADER_H, COLOR_PANEL_ALT);

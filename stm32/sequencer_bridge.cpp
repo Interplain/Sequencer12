@@ -733,9 +733,10 @@ extern "C"
                                                 duration,
                                                 repeat_count) ? 1u : 0u;
     }
-    uint32_t Bridge_GetCurrentStep(void)    { return g_sequencer.GetCurrentStep(); }
-    uint8_t  Bridge_IsPlaying(void)         { return g_sequencer.IsPlaying() ? 1u : 0u; }
-    uint32_t Bridge_GetElapsedMs(void)      { return g_sequencer.GetElapsedMs(); }
+    uint32_t Bridge_GetCurrentStep(void)          { return g_sequencer.GetCurrentStep(); }
+    uint8_t  Bridge_GetCurrentStepSubIndex(void)  { return g_sequencer.GetCurrentStepSubIndex(); }
+    uint8_t  Bridge_IsPlaying(void)               { return g_sequencer.IsPlaying() ? 1u : 0u; }
+    uint32_t Bridge_GetElapsedMs(void)            { return g_sequencer.GetElapsedMs(); }
 
 
 uint8_t Bridge_GetCurrentPattern(void)

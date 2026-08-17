@@ -28,6 +28,10 @@
 #define HEADER_REC_X       (MAIN_W - 41)
 #define STATUS_LOOPS_X     (MAIN_W - 116)
 #define STATUS_TIME_X      (MAIN_W - 52)
+#define STATUS_TEXT_X      54u
+#define STATUS_TEXT_Y      26u
+#define STATUS_CHAR_W      8u
+#define STATUS_CHAR_H      15u
 
 #define MENU_TOP_Y        UI_REGION_MENU_TOP_H
 #define MENU_LIST_H       (SCREEN_H - UI_REGION_MENU_TOP_H - UI_REGION_MENU_FOOTER_H)
@@ -180,9 +184,14 @@ enum {
 /* Status row cache shared with init so we can force redraw after menu exits */
 static uint8_t  s_prev_pattern = 0xFF;
 static uint8_t  s_prev_step = 0xFF;
+static uint8_t  s_prev_substep = 0xFF;
+static uint8_t  s_prev_bar = 0xFF;
 static uint32_t s_prev_loops = 0xFFFFFFFF;
 static uint32_t s_prev_mins = 0xFFFFFFFF;
 static uint32_t s_prev_secs = 0xFFFFFFFF;
+static char     s_prev_bar_digits[3] = {'0', '0', '\0'};
+static char     s_prev_step_digits[3] = {'0', '0', '\0'};
+static char     s_prev_timer_digits[10] = {'0', '0', ':', '0', '0', '.', '0', '0', '0', '\0'};
 static uint8_t  s_force_status_redraw = 1;
 static uint8_t  s_chord_footer_valid;
 static uint8_t  s_param_footer_valid;
@@ -317,6 +326,7 @@ void UI_Display_FastReturnToGrid(void)
 
     s_prev_pattern = 0xFF;
     s_prev_step = 0xFF;
+    s_prev_substep = 0xFF;
     s_prev_loops = 0xFFFFFFFF;
     s_prev_mins = 0xFFFFFFFF;
     s_prev_secs = 0xFFFFFFFF;
@@ -767,12 +777,21 @@ static void MainGridComposeStrip(uint8_t* buffer,
                                  uint32_t loops,
                                  uint32_t run_time_ms)
 {
-    char text[16];
-    uint32_t total_sec = run_time_ms / 1000u;
-    uint32_t mins = total_sec / 60u;
-    uint32_t secs = total_sec % 60u;
+    (void)loops;
+    (void)run_time_ms;
+
+    char text[32];
     uint8_t div = Bridge_GetPatternStepDivision();
     uint8_t swing = Bridge_GetSwing();
+    uint8_t current_bar = (uint8_t)(Bridge_GetCurrentStep() + 1u);
+    uint8_t current_substep = (uint8_t)(Bridge_GetCurrentStepSubIndex() + 1u);
+    uint8_t current_bar_total = Bridge_GetPatternStepCount();
+    uint8_t current_step_total = Bridge_GetStepLedgerLength(Bridge_GetCurrentStep());
+    if (current_step_total == 0u) current_step_total = 1u;
+    uint32_t elapsed_ms = run_time_ms;
+    uint32_t elapsed_mins = elapsed_ms / 60000u;
+    uint32_t elapsed_secs = (elapsed_ms % 60000u) / 1000u;
+    uint32_t elapsed_millis = elapsed_ms % 1000u;
 
     MainGridStripFillRect(buffer, strip_y, strip_h, 0u, strip_y, SCREEN_W, strip_h, COLOR_BG);
     MainGridStripFillRect(buffer, strip_y, strip_h, 0u, 0u, SCREEN_W, HEADER_H, BLACK);
@@ -799,7 +818,7 @@ static void MainGridComposeStrip(uint8_t* buffer,
         uint16_t fill = WHITE;
         uint16_t border = COLOR_BOX_BORDER;
         uint16_t text_col = BLACK;
-        const char* label = "STEP";
+        const char* label = "BAR";
 
         if (s_main_mode == UI_MAIN_MODE_CHORD)
         {
@@ -830,14 +849,15 @@ static void MainGridComposeStrip(uint8_t* buffer,
         MainGridStripDrawString(buffer, strip_y, strip_h, 8u, 28u, label, &Font8x12, 1u, text_col, fill);
     }
 
-    snprintf(text, sizeof(text), "ST:%02u", (unsigned)(step + 1u));
+    snprintf(text, sizeof(text), "%02u/%02u S%02u/%02u %02lu:%02lu.%03lu",
+             (unsigned)current_bar,
+             (unsigned)current_bar_total,
+             (unsigned)current_substep,
+             (unsigned)current_step_total,
+             (unsigned long)elapsed_mins,
+             (unsigned long)elapsed_secs,
+             (unsigned long)elapsed_millis);
     MainGridStripDrawString(buffer, strip_y, strip_h, 54u, 26u, text, &Font_Mono14, 1u, COLOR_TEXT_MAIN, COLOR_BG);
-
-    snprintf(text, sizeof(text), "LP:%02lu", (unsigned long)loops);
-    MainGridStripDrawString(buffer, strip_y, strip_h, STATUS_LOOPS_X, 26u, text, &Font10x16, 1u, COLOR_TEXT_MAIN, COLOR_BG);
-
-    snprintf(text, sizeof(text), "%02lu:%02lu", (unsigned long)mins, (unsigned long)secs);
-    MainGridStripDrawString(buffer, strip_y, strip_h, STATUS_TIME_X, 26u, text, &Font10x16, 1u, COLOR_TEXT_MAIN, COLOR_BG);
 
     if (SIDEBAR_W != 0U)
     {
@@ -992,7 +1012,7 @@ static void DrawMainModeBox(void)
     uint16_t fill = WHITE;
     uint16_t border = COLOR_BOX_BORDER;
     uint16_t text = BLACK;
-    const char* label = "STEP";
+    const char* label = "BAR";
 
     if (s_main_mode == UI_MAIN_MODE_CHORD)
     {
@@ -1037,40 +1057,141 @@ void UI_Display_SetMainMode(UiMainMode mode)
     }
 }
 
+static void DrawStatusCell(uint16_t x, uint16_t y, char ch, uint16_t fg, uint16_t bg)
+{
+    ST7789_FillRect(x, y, STATUS_CHAR_W, STATUS_CHAR_H, bg);
+    ST7789_DrawChar(x, y, ch, &Font_Mono14, fg, bg);
+}
+
+static void DrawStatusBarDigitsDirty(const char* bar_digits, char prev_digits[2], uint16_t x, uint16_t y, uint16_t fg, uint16_t bg)
+{
+    for (uint8_t i = 0u; i < 2u; ++i)
+    {
+        char ch = bar_digits[i];
+        if (prev_digits[i] != ch)
+        {
+            prev_digits[i] = ch;
+            DrawStatusCell((uint16_t)(x + (uint16_t)i * STATUS_CHAR_W), y, ch, fg, bg);
+        }
+    }
+}
+
+static void DrawStatusStepDigitsDirty(const char* step_digits, char prev_digits[2], uint16_t x, uint16_t y, uint16_t fg, uint16_t bg)
+{
+    for (uint8_t i = 0u; i < 2u; ++i)
+    {
+        char ch = step_digits[i];
+        if (prev_digits[i] != ch)
+        {
+            prev_digits[i] = ch;
+            DrawStatusCell((uint16_t)(x + (uint16_t)i * STATUS_CHAR_W), y, ch, fg, bg);
+        }
+    }
+}
+
+static void DrawStatusTimerDigitsDirty(const char* timer_text, char prev_digits[9], uint16_t x, uint16_t y, uint16_t fg, uint16_t bg)
+{
+    static const uint8_t timer_digit_positions[7] = { 0u, 1u, 3u, 4u, 6u, 7u, 8u };
+
+    for (uint8_t idx = 0u; idx < 7u; ++idx)
+    {
+        const uint8_t pos = timer_digit_positions[idx];
+        const char ch = timer_text[pos];
+        if (prev_digits[pos] != ch)
+        {
+            prev_digits[pos] = ch;
+            DrawStatusCell((uint16_t)(x + (uint16_t)pos * STATUS_CHAR_W), y, ch, fg, bg);
+        }
+    }
+}
+
 /* ── Time Display ────────────────────────────────────────────────────────────── */
 void UI_Display_DrawStatusRow(uint8_t pattern,
                               uint8_t step,
                               uint32_t loops,
                               uint32_t run_time_ms)
 {
-    uint32_t total_sec = run_time_ms / 1000;
-    uint32_t mins      = total_sec / 60;
-    uint32_t secs      = total_sec % 60;
+    (void)loops;
+    (void)run_time_ms;
 
     DrawSidebarInfo();
 
-    if (s_force_status_redraw || s_main_mode != s_prev_main_mode || pattern != s_prev_pattern) {
+    const uint8_t current_bar = (uint8_t)(Bridge_GetCurrentStep() + 1u);
+    const uint8_t current_bar_total = Bridge_GetPatternStepCount();
+    const uint8_t current_substep = (uint8_t)(Bridge_GetCurrentStepSubIndex() + 1u);
+    const uint8_t current_step_total = Bridge_GetStepLedgerLength(Bridge_GetCurrentStep());
+    const uint32_t elapsed_ms = Bridge_GetRunTimeMs();
+    const uint32_t elapsed_mins = elapsed_ms / 60000u;
+    const uint32_t elapsed_secs = (elapsed_ms % 60000u) / 1000u;
+    const uint32_t elapsed_millis = elapsed_ms % 1000u;
+
+    if (s_force_status_redraw || s_main_mode != s_prev_main_mode || pattern != s_prev_pattern)
+    {
         DrawMainModeBox();
         s_prev_pattern = pattern;
-    }
-    if (s_force_status_redraw || step != s_prev_step) {
-        char st[8];
-        snprintf(st, sizeof(st), "ST:%02u", step + 1);
-        ST7789_DrawString(54, 26, st, &Font_Mono14, COLOR_TEXT_MAIN, COLOR_BG);
+
+        char st[32];
+        snprintf(st, sizeof(st), "%02u/%02u S%02u/%02u %02lu:%02lu.%03lu",
+                 (unsigned)current_bar,
+                 (unsigned)current_bar_total,
+                 (unsigned)current_substep,
+                 (unsigned)((current_step_total == 0u) ? 1u : current_step_total),
+                 (unsigned long)elapsed_mins,
+                 (unsigned long)elapsed_secs,
+                 (unsigned long)elapsed_millis);
+        ST7789_DrawString(STATUS_TEXT_X, STATUS_TEXT_Y, st, &Font_Mono14, COLOR_TEXT_MAIN, COLOR_BG);
+
+        s_prev_bar = current_bar;
         s_prev_step = step;
+        s_prev_substep = current_substep;
+
+        char bar_digits[3];
+        char step_digits[3];
+        char timer_digits[10];
+        snprintf(bar_digits, sizeof(bar_digits), "%02u", (unsigned)current_bar);
+        snprintf(step_digits, sizeof(step_digits), "%02u", (unsigned)current_substep);
+        snprintf(timer_digits, sizeof(timer_digits), "%02lu:%02lu.%03lu",
+                 (unsigned long)elapsed_mins,
+                 (unsigned long)elapsed_secs,
+                 (unsigned long)elapsed_millis);
+        s_prev_bar_digits[0] = bar_digits[0];
+        s_prev_bar_digits[1] = bar_digits[1];
+        s_prev_bar_digits[2] = '\0';
+        s_prev_step_digits[0] = step_digits[0];
+        s_prev_step_digits[1] = step_digits[1];
+        s_prev_step_digits[2] = '\0';
+        memcpy(s_prev_timer_digits, timer_digits, sizeof(s_prev_timer_digits));
     }
-    if (s_force_status_redraw || loops != s_prev_loops) {
-        char lp[12];
-        snprintf(lp, sizeof(lp), "LP:%02lu", (unsigned long)loops);
-        ST7789_DrawString(STATUS_LOOPS_X, 26, lp, &Font10x16, COLOR_TEXT_MAIN, COLOR_BG);
-        s_prev_loops = loops;
-    }
-    if (s_force_status_redraw || (mins != s_prev_mins) || (secs != s_prev_secs)) {
-        char tm[8];
-        snprintf(tm, sizeof(tm), "%02lu:%02lu", (unsigned long)mins, (unsigned long)secs);
-        ST7789_DrawString(STATUS_TIME_X, 26, tm, &Font10x16, COLOR_TEXT_MAIN, COLOR_BG);
-        s_prev_mins = mins;
-        s_prev_secs = secs;
+    else
+    {
+        char bar_digits[3];
+        char step_digits[3];
+        char timer_text[10];
+
+        snprintf(bar_digits, sizeof(bar_digits), "%02u", (unsigned)current_bar);
+        snprintf(step_digits, sizeof(step_digits), "%02u", (unsigned)current_substep);
+        snprintf(timer_text, sizeof(timer_text), "%02lu:%02lu.%03lu",
+                 (unsigned long)elapsed_mins,
+                 (unsigned long)elapsed_secs,
+                 (unsigned long)elapsed_millis);
+
+        if (current_bar != s_prev_bar)
+        {
+            s_prev_bar = current_bar;
+            DrawStatusBarDigitsDirty(bar_digits, s_prev_bar_digits, STATUS_TEXT_X, STATUS_TEXT_Y, COLOR_TEXT_MAIN, COLOR_BG);
+        }
+
+        if (step != s_prev_step || current_substep != s_prev_substep)
+        {
+            s_prev_step = step;
+            s_prev_substep = current_substep;
+            DrawStatusStepDigitsDirty(step_digits, s_prev_step_digits, (uint16_t)(STATUS_TEXT_X + 8u * 6u + 8u), STATUS_TEXT_Y, COLOR_TEXT_MAIN, COLOR_BG);
+        }
+
+        if (memcmp(timer_text, s_prev_timer_digits, sizeof(s_prev_timer_digits)) != 0)
+        {
+            DrawStatusTimerDigitsDirty(timer_text, s_prev_timer_digits, (uint16_t)(STATUS_TEXT_X + 8u * 13u), STATUS_TEXT_Y, COLOR_TEXT_MAIN, COLOR_BG);
+        }
     }
 
     s_force_status_redraw = 0;
@@ -1155,7 +1276,7 @@ void UI_Display_DrawChordMenu(uint8_t step, const ChordParams* chord, uint8_t se
 
     /* Title */
     char title[20];
-    snprintf(title, sizeof(title), "Step %u Chord", step);
+    snprintf(title, sizeof(title), "Bar %u Chord", step);
     ST7789_DrawString(4, 4, title, &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
 
     char selected_label[24];
@@ -1322,7 +1443,7 @@ void UI_Display_NavigateChordMenu(int8_t delta, uint8_t step, const ChordParams*
 
         char title[20];
         char selected_label[24];
-        snprintf(title, sizeof(title), "Step %u Chord", step);
+        snprintf(title, sizeof(title), "Bar %u Chord", step);
         snprintf(selected_label, sizeof(selected_label), "Selected: USER");
         MenuTemplate_DrawHeader(title, selected_label, YELLOW);
         return;
@@ -1344,7 +1465,7 @@ void UI_Display_NavigateChordMenu(int8_t delta, uint8_t step, const ChordParams*
 
         char title[20];
         char selected_label[24];
-        snprintf(title, sizeof(title), "Step %u Chord", step);
+        snprintf(title, sizeof(title), "Bar %u Chord", step);
         snprintf(selected_label, sizeof(selected_label), "Selected: %s %s", s_root_keys[chord->root_key], s_chord_names[*selection]);
         MenuTemplate_DrawHeader(title, selected_label, YELLOW);
         return;
@@ -1360,7 +1481,7 @@ void UI_Display_NavigateChordMenu(int8_t delta, uint8_t step, const ChordParams*
 
     char title[20];
     char selected_label[24];
-    snprintf(title, sizeof(title), "Step %u Chord", step);
+    snprintf(title, sizeof(title), "Bar %u Chord", step);
     if (*selection == 0)
     {
         snprintf(selected_label, sizeof(selected_label), "Selected: Clear");
@@ -1441,7 +1562,7 @@ void UI_Display_DrawChordParams(uint8_t step, const ChordParams* chord, uint8_t 
 
     /* Title */
     char title[20];
-    snprintf(title, sizeof(title), "Step %u Parameters", step);
+    snprintf(title, sizeof(title), "Bar %u Parameters", step);
     MenuTemplate_DrawHeader(title, "Per-step Parameters", COLOR_TEXT_MUTED);
 
     /* Footer action buttons */
@@ -1605,12 +1726,12 @@ static void DrawTimingRow(uint8_t index,
     {
         char b[12];
         snprintf(b, sizeof(b), "%u", step_count);
-        if (draw_label) ST7789_DrawString(8, y, "Pattern Steps", &Font12x20, label_color, COLOR_BG);
+        if (draw_label) ST7789_DrawString(8, y, "Pattern Bars", &Font12x20, label_color, COLOR_BG);
         ST7789_DrawString(value_x, y, b,      &Font12x20, color, COLOR_BG);
     }
     else if (index == 1)
     {
-        if (draw_label) ST7789_DrawString(8, y, "Step Grid",  &Font12x20, label_color, COLOR_BG);
+        if (draw_label) ST7789_DrawString(8, y, "Grid",  &Font12x20, label_color, COLOR_BG);
         ST7789_DrawString(value_x, y, div_text, &Font12x20, color, COLOR_BG);
     }
     else if (index == 2)
@@ -2187,7 +2308,7 @@ void UI_Display_DrawUserChordMenu(void)
     if (!s_chord_footer_valid)
     {
         FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-        DrawCenteredFooterButton(" MAIN STEPS", 1);
+        DrawCenteredFooterButton(" MAIN BARS", 1);
         s_chord_footer_valid = 1;
     }
 }
@@ -2357,13 +2478,13 @@ static void RollDrawHeader(void)
     char step_label[12];
     char chord_name[20];
 
-    snprintf(step_label, sizeof(step_label), "STEP %u", s_step_roll_step);
+    snprintf(step_label, sizeof(step_label), "BAR %u", s_step_roll_step);
     Bridge_GetStepChordDisplayName((uint8_t)(s_step_roll_step - 1u), chord_name, sizeof(chord_name));
 
     /* Fill entire header band */
     ST7789_FillRect(0u, 0u, SCREEN_W, ROLL_HEADER_H, COLOR_PANEL_ALT);
 
-    /* Step number, top-left */
+    /* Bar number, top-left */
     ST7789_DrawString(8u, 8u,  step_label, &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
     /* Chord name, second line */
     ST7789_DrawString(8u, 28u, chord_name, &Font8x12,  COLOR_ACTIVE,    COLOR_PANEL_ALT);
