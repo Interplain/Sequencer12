@@ -712,8 +712,13 @@ uint16_t SequencerDevice::GetStepNoteMaskForPlayback(uint8_t step_index) const
     if (step_index >= kStepCount) return 0;
     const StepSlot& slot = CurrentPattern().steps[step_index];
     const uint8_t ledger_index = GridPositionToLedgerIndex(CurrentPattern().step_division, 0u);
-    const uint16_t source_mask = ResolveLedgerMaskForIndex(slot, ledger_index);
-    return ApplyTranspose(source_mask);
+    if (!HasLedgerData(slot))
+    {
+        return ResolveLedgerMaskForIndex(slot, ledger_index);
+    }
+
+    const LedgerSlot transposed = ApplyTransposeToLedgerSlot(slot.note_ledger[ledger_index], bank_.GetSong().transpose);
+    return LedgerSlotToPitchClassMask(transposed);
 }
 
 uint16_t SequencerDevice::GetCurrentStepNoteMaskForPlayback() const
@@ -724,8 +729,62 @@ uint16_t SequencerDevice::GetCurrentStepNoteMaskForPlayback() const
     const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
     const uint8_t grid_position = (current_step_in_bar_ < steps_in_bar) ? current_step_in_bar_ : (uint8_t)(steps_in_bar - 1u);
     const uint8_t ledger_index = GridPositionToLedgerIndex(CurrentPattern().step_division, grid_position);
-    const uint16_t source_mask = ResolveLedgerMaskForIndex(slot, ledger_index);
-    return ApplyTranspose(source_mask);
+    if (!HasLedgerData(slot))
+    {
+        return ResolveLedgerMaskForIndex(slot, ledger_index);
+    }
+
+    const LedgerSlot transposed = ApplyTransposeToLedgerSlot(slot.note_ledger[ledger_index], bank_.GetSong().transpose);
+    return LedgerSlotToPitchClassMask(transposed);
+}
+
+uint8_t SequencerDevice::GetStepNotesForPlayback(uint8_t step_index, uint8_t slot_index, uint8_t out_notes[4]) const
+{
+    if (!out_notes) return 0u;
+    for (uint8_t i = 0u; i < 4u; ++i) out_notes[i] = kMidiNoteNone;
+
+    if (step_index >= kStepCount) return 0u;
+
+    const StepSlot& slot = CurrentPattern().steps[step_index];
+    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    if (steps_in_bar == 0u || slot_index >= steps_in_bar) return 0u;
+    const uint8_t ledger_index = GridPositionToLedgerIndex(CurrentPattern().step_division, slot_index);
+    if (ledger_index >= kStepLedgerMax) return 0u;
+
+    LedgerSlot resolved{};
+    LedgerSlotClear(resolved);
+
+    if (HasLedgerData(slot))
+    {
+        resolved = slot.note_ledger[ledger_index];
+    }
+    else
+    {
+        constexpr uint8_t kDefaultMidiBase = 60u;
+        for (uint8_t note = 0u; note < 12u; ++note)
+        {
+            if ((slot.note_mask & (uint16_t)(1u << note)) != 0u)
+            {
+                (void)LedgerSlotAdd(resolved, (uint8_t)(kDefaultMidiBase + note));
+            }
+        }
+    }
+
+    const LedgerSlot transposed = ApplyTransposeToLedgerSlot(resolved, bank_.GetSong().transpose);
+    return LedgerSlotToSortedNotes(transposed, out_notes);
+}
+
+uint8_t SequencerDevice::GetCurrentStepNotesForPlayback(uint8_t out_notes[4]) const
+{
+    if (current_bar_ >= kStepCount || !out_notes) return 0u;
+
+    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    if (steps_in_bar == 0u) return 0u;
+
+    const uint8_t grid_position = (current_step_in_bar_ < steps_in_bar) ?
+                                  current_step_in_bar_ :
+                                  (uint8_t)(steps_in_bar - 1u);
+    return GetStepNotesForPlayback((uint8_t)current_bar_, grid_position, out_notes);
 }
 
 void SequencerDevice::ExportSong(sequencer::Song* out_song) const
@@ -1369,14 +1428,20 @@ void SequencerDevice::ApplyCurrentStepBehavior()
     const Pattern&  pat  = CurrentPattern();
     const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, pat.step_division);
     const uint8_t grid_position = (current_step_in_bar_ < steps_in_bar) ? current_step_in_bar_ : (uint8_t)(steps_in_bar - 1u);
-    const uint8_t ledger_index = GridPositionToLedgerIndex(pat.step_division, grid_position);
 
     switch (slot.type)
     {
         case StepType::Chord:
         {
-            const uint16_t source_mask = ResolveLedgerMaskForIndex(slot, ledger_index);
-            const uint16_t play_mask = ApplyTranspose(source_mask);
+            uint8_t notes[4] = {kMidiNoteNone, kMidiNoteNone, kMidiNoteNone, kMidiNoteNone};
+            const uint8_t note_count = GetStepNotesForPlayback((uint8_t)current_bar_, grid_position, notes);
+            uint16_t play_mask = 0u;
+            for (uint8_t i = 0u; i < note_count; ++i)
+            {
+                const uint8_t note = notes[i];
+                if (note == kMidiNoteNone) continue;
+                play_mask |= (uint16_t)(1u << (note % 12u));
+            }
             if (play_mask == 0u)
             {
                 GateOff();
