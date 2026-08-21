@@ -7,6 +7,11 @@ extern "C" {
 
 #include <stdint.h>
 
+typedef struct
+{
+	uint8_t notes[4];
+} BridgeLedgerSlot;
+
 void     Bridge_Init(void);
 void     Bridge_SetTickEnabled(uint8_t enabled);
 void     Bridge_SetCvRouterMode(uint8_t mode);
@@ -42,9 +47,10 @@ void     Bridge_SetStepChordParams(uint8_t step_index,
 void     Bridge_SetStepCustomNoteMask(uint8_t step_index, uint16_t note_mask);
 void     Bridge_SetStepCustomUserChord(uint8_t step_index, uint16_t note_mask, const char* name);
 void     Bridge_SetStepLedgerLength(uint8_t step_index, uint8_t length);
-void     Bridge_SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, uint16_t note_mask);
+void     Bridge_SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, const BridgeLedgerSlot* slot);
 uint8_t  Bridge_GetStepLedgerLength(uint8_t step_index);
-uint16_t Bridge_GetStepLedgerSlot(uint8_t step_index, uint8_t slot_index);
+BridgeLedgerSlot Bridge_GetStepLedgerSlot(uint8_t step_index, uint8_t slot_index);
+void     Bridge_ClearStepLedger(uint8_t step_index);
 void     Bridge_SetPatternRepeatCount(uint8_t repeat_count);
 uint8_t  Bridge_GetPatternRepeatCount(void);
 void     Bridge_SetCurrentPattern(uint8_t pattern_index);

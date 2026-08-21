@@ -26,7 +26,7 @@ enum CvRouterMode : uint8_t
 namespace {
 
 static constexpr uint8_t kSongMagic[4] = { 0x53, 0x31, 0x32, 0x53 }; // "S12S"
-static constexpr uint32_t kSongBlobVersion = 1u;
+static constexpr uint32_t kSongBlobVersion = 2u;
 static constexpr float kCvPitchBaseVolts = 1.0f;
 static constexpr float kVoltsPerSemitone = (1.0f / 12.0f);
 /* Logical lanes 0..3 correspond to CV1..CV4 in UI/gate routing. */
@@ -49,6 +49,34 @@ static uint8_t s_gate_block_ticks = 0u;
 static uint32_t s_gate_prev_step = 0xFFFFFFFFu;
 static uint32_t s_gate_prev_loops = 0xFFFFFFFFu;
 static uint8_t s_gate_prev_substep = 0xFFu;
+
+static sequencer::LedgerSlot ToSequencerLedgerSlot(const BridgeLedgerSlot* in)
+{
+    sequencer::LedgerSlot out{};
+    sequencer::LedgerSlotClear(out);
+    if (!in) return out;
+
+    for (uint8_t i = 0u; i < 4u; ++i)
+    {
+        const uint8_t note = in->notes[i];
+        if (!sequencer::IsMidiNoteValid(note)) continue;
+        (void)sequencer::LedgerSlotAdd(out, note);
+    }
+    return out;
+}
+
+static BridgeLedgerSlot ToBridgeLedgerSlot(const sequencer::LedgerSlot& in)
+{
+    BridgeLedgerSlot out{{sequencer::kMidiNoteNone,
+                          sequencer::kMidiNoteNone,
+                          sequencer::kMidiNoteNone,
+                          sequencer::kMidiNoteNone}};
+    for (uint8_t i = 0u; i < 4u && i < in.notes.size(); ++i)
+    {
+        out.notes[i] = in.notes[i];
+    }
+    return out;
+}
 
 static void Bridge_UClockMusicalCallback(uint32_t tick)
 {
@@ -171,7 +199,7 @@ static void SaveCvRouterModeSetting(void)
 
 static float NoteToPitchVolts(uint8_t note)
 {
-    if (note > 11u) note = 11u;
+    if (note > 127u) note = 127u;
     return kCvPitchBaseVolts + ((float)note * kVoltsPerSemitone);
 }
 
@@ -481,18 +509,24 @@ extern "C"
         g_sequencer.SetStepLedgerLength(step_index, length);
         /* Step-piano ledger edits are runtime-only for now. */
     }
-    void     Bridge_SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, uint16_t note_mask)
+    void     Bridge_SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, const BridgeLedgerSlot* slot)
     {
-        g_sequencer.SetStepLedgerSlot(step_index, slot_index, note_mask);
+        const sequencer::LedgerSlot mapped = ToSequencerLedgerSlot(slot);
+        g_sequencer.SetStepLedgerSlot(step_index, slot_index, mapped);
         /* Step-piano ledger edits are runtime-only for now. */
     }
     uint8_t  Bridge_GetStepLedgerLength(uint8_t step_index)
     {
         return g_sequencer.GetStepLedgerLength(step_index);
     }
-    uint16_t Bridge_GetStepLedgerSlot(uint8_t step_index, uint8_t slot_index)
+    BridgeLedgerSlot Bridge_GetStepLedgerSlot(uint8_t step_index, uint8_t slot_index)
     {
-        return g_sequencer.GetStepLedgerSlot(step_index, slot_index);
+        const sequencer::LedgerSlot slot = g_sequencer.GetStepLedgerSlot(step_index, slot_index);
+        return ToBridgeLedgerSlot(slot);
+    }
+    void     Bridge_ClearStepLedger(uint8_t step_index)
+    {
+        g_sequencer.ClearStepLedger(step_index);
     }
     void     Bridge_SetPatternRepeatCount(uint8_t repeat_count)
     {
@@ -548,7 +582,18 @@ extern "C"
         const sequencer::ArpMode arp_mode = g_sequencer.GetCurrentArpMode();
         if (arp_mode == sequencer::ArpMode::Off)
         {
-            return g_sequencer.GetCurrentStepNoteMaskForPlayback();
+            uint8_t notes[4] = {sequencer::kMidiNoteNone,
+                                sequencer::kMidiNoteNone,
+                                sequencer::kMidiNoteNone,
+                                sequencer::kMidiNoteNone};
+            const uint8_t count = g_sequencer.GetCurrentStepNotesForPlayback(notes);
+            uint16_t mask = 0u;
+            for (uint8_t i = 0u; i < count; ++i)
+            {
+                if (notes[i] == sequencer::kMidiNoteNone) continue;
+                mask |= (uint16_t)(1u << (notes[i] % 12u));
+            }
+            return mask;
         }
 
         const uint8_t note = g_sequencer.GetCurrentNote();
@@ -556,27 +601,14 @@ extern "C"
     }
     int16_t Bridge_GetCurrentOutputPrimaryMilliVolts(void)
     {
-        const uint16_t note_mask = Bridge_GetCurrentOutputNoteMask();
-        if (note_mask == 0u)
-        {
-            return -1;
-        }
+        uint8_t notes[4] = {sequencer::kMidiNoteNone,
+                            sequencer::kMidiNoteNone,
+                            sequencer::kMidiNoteNone,
+                            sequencer::kMidiNoteNone};
+        const uint8_t count = g_sequencer.GetCurrentStepNotesForPlayback(notes);
+        if (count == 0u || notes[0] == sequencer::kMidiNoteNone) return -1;
 
-        uint8_t note = 0u;
-        while (note < 12u)
-        {
-            if ((note_mask & (uint16_t)(1u << note)) != 0u)
-            {
-                break;
-            }
-            note++;
-        }
-        if (note >= 12u)
-        {
-            return -1;
-        }
-
-        /* 1V base + one twelfth of a volt per semitone, rounded to mV. */
+        const uint8_t note = notes[0];
         return (int16_t)(1000 + ((int32_t)note * 1000 + 6) / 12);
     }
 
@@ -594,7 +626,18 @@ extern "C"
 
         const uint32_t step_index = g_sequencer.GetCurrentStep();
         const uint8_t substep = g_sequencer.GetCurrentStepSubIndex();
-        const uint16_t note_mask = g_sequencer.GetCurrentStepNoteMaskForPlayback();
+        uint8_t step_notes[4] = {sequencer::kMidiNoteNone,
+                                 sequencer::kMidiNoteNone,
+                                 sequencer::kMidiNoteNone,
+                                 sequencer::kMidiNoteNone};
+        const uint8_t step_note_count = g_sequencer.GetCurrentStepNotesForPlayback(step_notes);
+        uint16_t note_mask = 0u;
+        for (uint8_t i = 0u; i < step_note_count; ++i)
+        {
+            const uint8_t note = step_notes[i];
+            if (note == sequencer::kMidiNoteNone) continue;
+            note_mask |= (uint16_t)(1u << (note % 12u));
+        }
         const sequencer::ArpMode arp_mode = g_sequencer.GetCurrentArpMode();
 
         if (arp_mode == sequencer::ArpMode::Off)
@@ -606,16 +649,11 @@ extern "C"
                 return;
             }
 
-            uint8_t notes[4] = {0u, 0u, 0u, 0u};
-            uint8_t note_count = 0u;
-
-            for (uint8_t note = 0u; note < 12u && note_count < 4u; ++note)
-            {
-                if ((note_mask & (uint16_t)(1u << note)) != 0u)
-                {
-                    notes[note_count++] = note;
-                }
-            }
+            uint8_t notes[4] = {sequencer::kMidiNoteNone,
+                                sequencer::kMidiNoteNone,
+                                sequencer::kMidiNoteNone,
+                                sequencer::kMidiNoteNone};
+            uint8_t note_count = g_sequencer.GetCurrentStepNotesForPlayback(notes);
 
             uint16_t out[4] = {s_cv_zero_code[0], s_cv_zero_code[1], s_cv_zero_code[2], s_cv_zero_code[3]};
             if (s_cv_router_mode == kCvRouterUnison)
@@ -663,7 +701,8 @@ extern "C"
 
             if (note <= 11u)
             {
-                const float volts = NoteToPitchVolts(note);
+                const uint8_t midi_note = (uint8_t)(60u + note);
+                const float volts = NoteToPitchVolts(midi_note);
                 uint16_t out[4] = {s_cv_zero_code[0], s_cv_zero_code[1], s_cv_zero_code[2], s_cv_zero_code[3]};
                 out[0] = DAC8564_PitchVoltsToCodeForChannel(kLaneToDac[0], volts);
                 Bridge_WriteLogicalLanes(out);
