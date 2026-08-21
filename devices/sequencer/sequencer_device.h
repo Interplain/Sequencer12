@@ -63,9 +63,10 @@ public:
     void     SetStepCustomNoteMask(uint8_t step_index, uint16_t note_mask);
     void     SetStepCustomUserChord(uint8_t step_index, uint16_t note_mask, const char* name);
     void     SetStepLedgerLength(uint8_t step_index, uint8_t length);
-    void     SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, uint16_t note_mask);
+    void     SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, const sequencer::LedgerSlot& slot_notes);
     uint8_t  GetStepLedgerLength(uint8_t step_index) const;
-    uint16_t GetStepLedgerSlot(uint8_t step_index, uint8_t slot_index) const;
+    sequencer::LedgerSlot GetStepLedgerSlot(uint8_t step_index, uint8_t slot_index) const;
+    void     ClearStepLedger(uint8_t step_index);
     void     SetPatternRepeatCount(uint8_t repeat_count);
     uint8_t  GetPatternRepeatCount() const;
     void     SetCurrentPatternIndex(uint8_t pattern_index);
@@ -79,6 +80,8 @@ public:
     uint16_t GetStepNoteMask(uint8_t step_index) const;
     uint16_t GetStepNoteMaskForPlayback(uint8_t step_index) const;
     uint16_t GetCurrentStepNoteMaskForPlayback() const;
+    uint8_t  GetStepNotesForPlayback(uint8_t step_index, uint8_t slot_index, uint8_t out_notes[4]) const;
+    uint8_t  GetCurrentStepNotesForPlayback(uint8_t out_notes[4]) const;
     void     ExportSong(sequencer::Song* out_song) const;
     void     ImportSong(const sequencer::Song& song);
     bool     GetStepChordUiParams(uint8_t step_index,

@@ -13,6 +13,131 @@ constexpr uint32_t kStepCount    = 12;
 constexpr uint32_t kPatternCount = 32;
 constexpr uint32_t kChainLength  = 32;
 constexpr uint8_t  kStepLedgerMax = 16;
+constexpr uint8_t  kMidiNoteNone = 0xFFu;
+
+struct LedgerSlot
+{
+    std::array<uint8_t, 4> notes{
+        kMidiNoteNone,
+        kMidiNoteNone,
+        kMidiNoteNone,
+        kMidiNoteNone
+    };
+};
+
+inline bool IsMidiNoteValid(uint8_t note)
+{
+    return note <= 127u;
+}
+
+inline uint8_t LedgerSlotCount(const LedgerSlot& slot)
+{
+    uint8_t count = 0u;
+    for (uint8_t i = 0u; i < slot.notes.size(); ++i)
+    {
+        if (slot.notes[i] != kMidiNoteNone) ++count;
+    }
+    return count;
+}
+
+inline bool LedgerSlotIsEmpty(const LedgerSlot& slot)
+{
+    return LedgerSlotCount(slot) == 0u;
+}
+
+inline void LedgerSlotSort(LedgerSlot& slot)
+{
+    for (uint8_t i = 0u; i < slot.notes.size(); ++i)
+    {
+        for (uint8_t j = (uint8_t)(i + 1u); j < slot.notes.size(); ++j)
+        {
+            const uint8_t a = slot.notes[i];
+            const uint8_t b = slot.notes[j];
+            const bool a_empty = (a == kMidiNoteNone);
+            const bool b_empty = (b == kMidiNoteNone);
+
+            if (a_empty && !b_empty)
+            {
+                slot.notes[i] = b;
+                slot.notes[j] = a;
+            }
+            else if (!a_empty && !b_empty && b < a)
+            {
+                slot.notes[i] = b;
+                slot.notes[j] = a;
+            }
+        }
+    }
+}
+
+inline void LedgerSlotClear(LedgerSlot& slot)
+{
+    for (uint8_t i = 0u; i < slot.notes.size(); ++i)
+    {
+        slot.notes[i] = kMidiNoteNone;
+    }
+}
+
+inline bool LedgerSlotContains(const LedgerSlot& slot, uint8_t note)
+{
+    if (!IsMidiNoteValid(note)) return false;
+    for (uint8_t i = 0u; i < slot.notes.size(); ++i)
+    {
+        if (slot.notes[i] == note) return true;
+    }
+    return false;
+}
+
+inline bool LedgerSlotAdd(LedgerSlot& slot, uint8_t note)
+{
+    if (!IsMidiNoteValid(note)) return false;
+    if (LedgerSlotContains(slot, note)) return false;
+
+    for (uint8_t i = 0u; i < slot.notes.size(); ++i)
+    {
+        if (slot.notes[i] == kMidiNoteNone)
+        {
+            slot.notes[i] = note;
+            LedgerSlotSort(slot);
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool LedgerSlotRemove(LedgerSlot& slot, uint8_t note)
+{
+    if (!IsMidiNoteValid(note)) return false;
+    for (uint8_t i = 0u; i < slot.notes.size(); ++i)
+    {
+        if (slot.notes[i] == note)
+        {
+            slot.notes[i] = kMidiNoteNone;
+            LedgerSlotSort(slot);
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool LedgerSlotToggle(LedgerSlot& slot, uint8_t note)
+{
+    if (!IsMidiNoteValid(note)) return false;
+    if (LedgerSlotContains(slot, note)) return LedgerSlotRemove(slot, note);
+    return LedgerSlotAdd(slot, note);
+}
+
+inline uint16_t LedgerSlotToPitchClassMask(const LedgerSlot& slot)
+{
+    uint16_t mask = 0u;
+    for (uint8_t i = 0u; i < slot.notes.size(); ++i)
+    {
+        const uint8_t note = slot.notes[i];
+        if (note == kMidiNoteNone) continue;
+        mask |= (uint16_t)(1u << (note % 12u));
+    }
+    return mask;
+}
 
 // ─────────────────────────────────────────────
 // Note mask helpers
@@ -169,7 +294,7 @@ struct StepSlot
     uint32_t duration_multiplier = 1;
     uint8_t  repeat_count        = 1;     // ledger length / note count inside the step
     uint16_t note_mask           = 0;
-    std::array<uint16_t, kStepLedgerMax> note_ledger{}; // one mask per sub-note slot
+    std::array<LedgerSlot, kStepLedgerMax> note_ledger{}; // one absolute-note cell per sub-note slot
     char     custom_chord_name[17] = {0};
     uint8_t  velocity            = 100;   // 0-127 MIDI standard
     uint8_t  probability         = 100;   // 0-100 percent chance of firing

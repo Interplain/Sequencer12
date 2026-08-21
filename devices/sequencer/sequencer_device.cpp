@@ -94,27 +94,40 @@ static uint8_t GridPositionToLedgerIndex(uint8_t grid_division, uint8_t grid_pos
     return (ledger_index < kStepLedgerMax) ? ledger_index : kStepLedgerMax;
 }
 
-static void RefreshSlotSummary(StepSlot& slot)
+static uint16_t PitchClassMaskFromLedger(const StepSlot& slot)
 {
-    uint16_t first_nonzero = 0u;
+    uint16_t mask = 0u;
     for (uint8_t i = 0u; i < kStepLedgerMax; ++i)
     {
-        if (slot.note_ledger[i] != 0u)
-        {
-            first_nonzero = slot.note_ledger[i];
-            break;
-        }
+        mask |= LedgerSlotToPitchClassMask(slot.note_ledger[i]);
     }
+    return mask;
+}
 
-    slot.note_mask = first_nonzero;
-    slot.type = (first_nonzero != 0u) ? StepType::Chord : StepType::Empty;
+static void RefreshSlotSummary(StepSlot& slot)
+{
+    const uint16_t summary = PitchClassMaskFromLedger(slot);
+    slot.note_mask = summary;
+    slot.type = (summary != 0u) ? StepType::Chord : StepType::Empty;
 }
 
 static void InitLedgerFromMask(sequencer::StepSlot& slot, uint16_t note_mask, uint8_t length)
 {
-    slot.note_ledger.fill(0u);
-    slot.note_ledger[0] = note_mask;
+    constexpr uint8_t kDefaultMidiBase = 60u; /* C4 */
+    for (uint8_t i = 0u; i < kStepLedgerMax; ++i)
+    {
+        LedgerSlotClear(slot.note_ledger[i]);
+    }
+
+    LedgerSlot& first = slot.note_ledger[0];
+    for (uint8_t note = 0u; note < 12u; ++note)
+    {
+        if ((note_mask & (uint16_t)(1u << note)) == 0u) continue;
+        (void)LedgerSlotAdd(first, (uint8_t)(kDefaultMidiBase + note));
+    }
+
     slot.repeat_count = ClampLedgerLength(length);
+    slot.note_mask = (uint16_t)(note_mask & 0x0FFFu);
 }
 
 static void NormalizePatternDivisionCadence(Pattern& pattern, const TimeSig& time_sig)
@@ -156,6 +169,49 @@ static uint16_t LimitNoteMaskToMaxVoices(uint16_t note_mask, uint8_t max_voices)
     return limited;
 }
 
+static uint8_t LedgerSlotToSortedNotes(const LedgerSlot& slot, uint8_t out_notes[4])
+{
+    uint8_t count = 0u;
+    for (uint8_t i = 0u; i < slot.notes.size() && count < 4u; ++i)
+    {
+        const uint8_t note = slot.notes[i];
+        if (note == kMidiNoteNone) continue;
+        out_notes[count++] = note;
+    }
+    return count;
+}
+
+static bool ApplyTransposeToMidiNote(uint8_t note, int8_t transpose, uint8_t* out_note)
+{
+    if (!out_note) return false;
+    if (!IsMidiNoteValid(note)) return false;
+
+    const int16_t transposed = (int16_t)note + (int16_t)transpose;
+    if (transposed < 0 || transposed > 127) return false;
+    *out_note = (uint8_t)transposed;
+    return true;
+}
+
+static LedgerSlot ApplyTransposeToLedgerSlot(const LedgerSlot& slot, int8_t transpose)
+{
+    LedgerSlot result{};
+    LedgerSlotClear(result);
+
+    for (uint8_t i = 0u; i < slot.notes.size(); ++i)
+    {
+        const uint8_t note = slot.notes[i];
+        if (note == kMidiNoteNone) continue;
+
+        uint8_t shifted = kMidiNoteNone;
+        if (ApplyTransposeToMidiNote(note, transpose, &shifted))
+        {
+            (void)LedgerSlotAdd(result, shifted);
+        }
+    }
+
+    return result;
+}
+
 /* ── Convenience accessors ──────────────────────────────────────────────── */
 
 Pattern& SequencerDevice::CurrentPattern()
@@ -170,13 +226,7 @@ const Pattern& SequencerDevice::CurrentPattern() const
 
 uint16_t SequencerDevice::ApplyTranspose(uint16_t note_mask) const
 {
-    int8_t transpose = bank_.GetSong().transpose;
-    if (transpose == 0) return note_mask;
-
-    uint8_t semitones = static_cast<uint8_t>(
-        ((transpose % 12) + 12) % 12);
-
-    return sequencer::TransposeNoteMask(note_mask, semitones);
+    return note_mask;
 }
 
 /* ── Init ────────────────────────────────────────────────────────────────── */
@@ -371,7 +421,10 @@ void SequencerDevice::SetStepChordParams(uint8_t step_index,
     {
         slot.type = StepType::Empty;
         slot.note_mask = 0;
-        slot.note_ledger.fill(0u);
+        for (uint8_t i = 0u; i < kStepLedgerMax; ++i)
+        {
+            LedgerSlotClear(slot.note_ledger[i]);
+        }
         slot.custom_chord_name[0] = '\0';
     }
     else
@@ -560,7 +613,7 @@ void SequencerDevice::SetStepLedgerLength(uint8_t step_index, uint8_t length)
     }
 }
 
-void SequencerDevice::SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, uint16_t note_mask)
+void SequencerDevice::SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, const LedgerSlot& slot_notes)
 {
     if (step_index >= kStepCount) return;
 
@@ -570,8 +623,17 @@ void SequencerDevice::SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, 
     const uint8_t ledger_index = GridPositionToLedgerIndex(CurrentPattern().step_division, slot_index);
     if (ledger_index >= kStepLedgerMax) return;
 
-    const uint16_t clipped = LimitNoteMaskToMaxVoices((uint16_t)(note_mask & 0x0FFFu), 4u);
-    slot.note_ledger[ledger_index] = clipped;
+    LedgerSlot normalized{};
+    LedgerSlotClear(normalized);
+    for (uint8_t i = 0u; i < slot_notes.notes.size(); ++i)
+    {
+        const uint8_t note = slot_notes.notes[i];
+        if (!IsMidiNoteValid(note)) continue;
+        if (LedgerSlotCount(normalized) >= 4u) break;
+        (void)LedgerSlotAdd(normalized, note);
+    }
+
+    slot.note_ledger[ledger_index] = normalized;
     slot.repeat_count = fixed_len;
     RefreshSlotSummary(slot);
     slot.custom_chord_name[0] = '\0';
@@ -590,14 +652,37 @@ uint8_t SequencerDevice::GetStepLedgerLength(uint8_t step_index) const
     return StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
 }
 
-uint16_t SequencerDevice::GetStepLedgerSlot(uint8_t step_index, uint8_t slot_index) const
+LedgerSlot SequencerDevice::GetStepLedgerSlot(uint8_t step_index, uint8_t slot_index) const
 {
-    if (step_index >= kStepCount) return 0u;
+    LedgerSlot empty{};
+    LedgerSlotClear(empty);
+    if (step_index >= kStepCount) return empty;
     const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
-    if (slot_index >= steps_in_bar) return 0u;
+    if (slot_index >= steps_in_bar) return empty;
     const uint8_t ledger_index = GridPositionToLedgerIndex(CurrentPattern().step_division, slot_index);
-    if (ledger_index >= kStepLedgerMax) return 0u;
+    if (ledger_index >= kStepLedgerMax) return empty;
     return CurrentPattern().steps[step_index].note_ledger[ledger_index];
+}
+
+void SequencerDevice::ClearStepLedger(uint8_t step_index)
+{
+    if (step_index >= kStepCount) return;
+
+    StepSlot& slot = CurrentPattern().steps[step_index];
+    for (uint8_t i = 0u; i < kStepLedgerMax; ++i)
+    {
+        LedgerSlotClear(slot.note_ledger[i]);
+    }
+    slot.repeat_count = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    RefreshSlotSummary(slot);
+    slot.custom_chord_name[0] = '\0';
+    CurrentPattern().arp_mode = ArpMode::Off;
+
+    if (step_index == current_bar_)
+    {
+        ApplyCurrentStepBehavior();
+        step_changed_ = true;
+    }
 }
 
 uint16_t SequencerDevice::GetStepNoteMask(uint8_t step_index) const
@@ -610,7 +695,7 @@ static bool HasLedgerData(const StepSlot& slot)
 {
     for (uint8_t i = 0u; i < kStepLedgerMax; ++i)
     {
-        if (slot.note_ledger[i] != 0u) return true;
+        if (!LedgerSlotIsEmpty(slot.note_ledger[i])) return true;
     }
     return false;
 }
@@ -619,7 +704,7 @@ static uint16_t ResolveLedgerMaskForIndex(const StepSlot& slot, uint8_t ledger_i
 {
     if (!HasLedgerData(slot)) return slot.note_mask;
     /* Ledger is populated: zero means intentional rest for that slot. */
-    return slot.note_ledger[ledger_index];
+    return LedgerSlotToPitchClassMask(slot.note_ledger[ledger_index]);
 }
 
 uint16_t SequencerDevice::GetStepNoteMaskForPlayback(uint8_t step_index) const
