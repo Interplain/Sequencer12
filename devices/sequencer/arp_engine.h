@@ -20,12 +20,13 @@ public:
 
     void Init();
 
-    // Load a new chord into the arp buffer
-    // Call this when the sequencer advances to a new step
-    void LoadChord(uint16_t note_mask, ArpMode mode);
+    // Load a new absolute-MIDI source pool into the arp buffer.
+    // count is clamped to 0..4 and notes are sorted ascending.
+    // Call this when the sequencer advances to a new grid position.
+    void LoadNotes(const uint8_t* notes, uint8_t count, ArpMode mode);
 
     // Advance to the next arp note
-    // Returns the next note (0-11) to play
+    // Returns the next absolute MIDI note (0-127) to play
     // Returns 0xFF if no notes loaded
     uint8_t Advance();
 
@@ -45,17 +46,16 @@ public:
     void SetMode(ArpMode mode);
     ArpMode GetMode() const;
 
-    // Interval ms calculation helper
-    // Returns the arp tick interval in ms for a given BPM and rate
-    static uint32_t CalcIntervalMs(uint32_t bpm, ArpRate rate);
+    // 96-PPQN tick cadence helper.
+    // Returns ticks per ARP event for a given rate.
+    static uint32_t TicksPerEvent(ArpRate rate);
 
 private:
-
-    // Unpack note_mask into sorted note array
-    void BuildNoteList(uint16_t note_mask);
+    // Build sorted note array from absolute MIDI notes.
+    void BuildNoteList(const uint8_t* notes, uint8_t count);
 
     ArpMode  mode_          = ArpMode::Off;
-    uint8_t  notes_[12]     = {};    // unpacked notes from mask
+    uint8_t  notes_[4]      = {};    // sorted absolute MIDI source pool
     uint8_t  note_count_    = 0;
     uint8_t  position_      = 0;
     int8_t   direction_     = 1;     // +1 or -1 for UpDown/DownUp

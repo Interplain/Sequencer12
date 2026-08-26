@@ -23,8 +23,8 @@
 
 /* Calibration interpolation window */
 /* Calibration points — MUST match the voltages the wizard asks for in
- * calibration.c. Wizard currently calibrates at 0.00V and +6.00V. */
-#define DAC_CAL_VLOW    ( 0.0f)
+ * calibration.c. Wizard currently calibrates at -2.00V and +6.00V. */
+#define DAC_CAL_VLOW    (-2.0f)
 #define DAC_CAL_VHIGH   ( 6.0f)
 #define DAC_CAL_SPAN    (DAC_CAL_VHIGH - DAC_CAL_VLOW)
 

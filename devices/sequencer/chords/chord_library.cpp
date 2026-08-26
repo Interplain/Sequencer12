@@ -57,7 +57,7 @@ static constexpr uint8_t kMin6[]    = { 0, 3, 7, 9  };
 // Type name strings
 // ─────────────────────────────────────────────
 
-static const char* kTypeNames[kChordTypeCount] =
+static constexpr const char* const kTypeNames[kChordTypeCount] =
 {
     "maj",   "min",   "dim",    "aug",    "sus2",   "sus4",
     "maj7",  "min7",  "dom7",   "dim7",   "hdim7",  "minmaj7",
@@ -65,7 +65,7 @@ static const char* kTypeNames[kChordTypeCount] =
     "maj13", "min13", "add9",   "madd9",  "maj6",   "min6"
 };
 
-static const char* kRootNames[12] =
+static constexpr const char* const kRootNames[12] =
 {
     "C", "C#", "D", "D#", "E", "F",
     "F#", "G", "G#", "A", "A#", "B"
@@ -87,7 +87,7 @@ static const char* kRootNames[12] =
 // Ordered: for each root, all types in ChordType order
 // ─────────────────────────────────────────────
 
-static const ChordPreset kPresets[kPresetCount] =
+static constexpr ChordPreset kPresets[kPresetCount] =
 {
     #define ROOT(r) \
         PRESET(r, Major,      kMaj),    \

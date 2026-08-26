@@ -4,9 +4,10 @@
 #include "lib/ST7789/st7789.h"
 #include <stdio.h>
 #include <string.h>
-#include "fonts_extra.h"
+#include "s12_fonts.h"
 #include "sequencer_bridge.h"
 #include "screens/ui_screen_piano_roll.h"
+#include "ui_render_scratch.h"
 /* ── Layout constants ────────────────────────────────────────────────────── */
 #define SCREEN_W    ST7789_WIDTH
 #define SCREEN_H    ST7789_HEIGHT
@@ -31,7 +32,7 @@
 #define STATUS_TEXT_X      54u
 #define STATUS_TEXT_Y      26u
 #define STATUS_CHAR_W      8u
-#define STATUS_CHAR_H      15u
+#define STATUS_CHAR_H      12u
 
 #define MENU_TOP_Y        UI_REGION_MENU_TOP_H
 #define MENU_LIST_H       (SCREEN_H - UI_REGION_MENU_TOP_H - UI_REGION_MENU_FOOTER_H)
@@ -196,8 +197,6 @@ static uint8_t  s_force_status_redraw = 1;
 static uint8_t  s_chord_footer_valid;
 static uint8_t  s_param_footer_valid;
 static uint8_t  s_timing_footer_valid;
-static uint8_t  s_timing_footer_selection = 0; /* 0=MAIN, 1=SAVE */
-static uint8_t  s_timing_footer_drawn = 0xFF;
 static uint8_t  s_menu_frame = MENU_FRAME_NONE;
 static uint8_t  s_menu_header_valid = 0;
 static uint8_t  s_sidebar_valid = 0;
@@ -218,6 +217,8 @@ static uint8_t  s_timing_prev_ts_num = 0xFF;
 static uint8_t  s_timing_prev_ts_den = 0xFF;
 static uint8_t  s_timing_prev_swing = 0xFF;
 static uint8_t  s_timing_prev_unsaved = 0xFF;
+static uint8_t  s_arp_prev_mode = 0xFF;
+static uint8_t  s_arp_prev_rate = 0xFF;
 static uint8_t  s_quan_router_prev_cursor = 0xFF;
 static uint8_t  s_quan_router_prev_edit_field = 0xFF;
 static uint8_t  s_quan_router_prev_unsaved = 0xFF;
@@ -250,7 +251,6 @@ static uint8_t s_step_cache_active[12] = {0};
 static uint8_t s_step_cache_has_chord[12] = {0};
 static uint8_t s_step_cache_flash_on[12] = {0};
 static uint8_t s_step_cache_flash_enabled[12] = {0};
-static uint8_t s_main_grid_strip_buffer[SCREEN_W * 16u * 2u];
 static uint8_t s_mcp_dbg_valid = 0;
 static uint8_t s_mcp_dbg_online = 0xFF;
 static uint8_t s_mcp_dbg_read_ok = 0xFF;
@@ -282,7 +282,6 @@ void UI_Display_Init(void)
     s_force_status_redraw = 1;
     s_chord_footer_valid = 0;
     s_timing_footer_valid = 0;
-    s_timing_footer_drawn = 0xFF;
     s_menu_frame = MENU_FRAME_NONE;
     s_menu_header_valid = 0;
     s_menu_header_title[0] = 0;
@@ -295,6 +294,8 @@ void UI_Display_Init(void)
     s_timing_prev_ts_den = 0xFF;
     s_timing_prev_swing = 0xFF;
     s_timing_prev_unsaved = 0xFF;
+    s_arp_prev_mode = 0xFF;
+    s_arp_prev_rate = 0xFF;
     s_song_footer_valid = 0;
     s_song_page_valid = 0;
     s_song_prev_page_base = 0xFF;
@@ -335,7 +336,6 @@ void UI_Display_FastReturnToGrid(void)
     s_chord_footer_valid = 0;
     s_param_footer_valid = 0;
     s_timing_footer_valid = 0;
-    s_timing_footer_drawn = 0xFF;
     s_menu_frame = MENU_FRAME_NONE;
     s_menu_header_valid = 0;
     s_menu_header_title[0] = 0;
@@ -348,6 +348,8 @@ void UI_Display_FastReturnToGrid(void)
     s_timing_prev_ts_den = 0xFF;
     s_timing_prev_swing = 0xFF;
     s_timing_prev_unsaved = 0xFF;
+    s_arp_prev_mode = 0xFF;
+    s_arp_prev_rate = 0xFF;
     s_song_footer_valid = 0;
     s_song_page_valid = 0;
     s_song_prev_page_base = 0xFF;
@@ -381,6 +383,12 @@ void UI_Display_DrawMainGridComposed(uint8_t selected_step,
                                      uint32_t loops,
                                      uint32_t run_time_ms)
 {
+    uint8_t* grid_strip_buf = UI_RenderScratch_Acquire(UI_RENDER_SCRATCH_OWNER_MAIN_GRID);
+    if (!grid_strip_buf)
+    {
+        return;
+    }
+
     (void)pattern;
 
     for (uint16_t strip_y = 0; strip_y < SCREEN_H; strip_y += MAIN_GRID_STRIP_H)
@@ -391,7 +399,7 @@ void UI_Display_DrawMainGridComposed(uint8_t selected_step,
             strip_h = (uint16_t)(SCREEN_H - strip_y);
         }
 
-        MainGridComposeStrip(s_main_grid_strip_buffer,
+        MainGridComposeStrip(grid_strip_buf,
                              strip_y,
                              strip_h,
                              selected_step,
@@ -408,9 +416,11 @@ void UI_Display_DrawMainGridComposed(uint8_t selected_step,
                                 strip_y,
                                 SCREEN_W,
                                 strip_h,
-                                s_main_grid_strip_buffer,
+                                grid_strip_buf,
                                 (uint32_t)SCREEN_W * (uint32_t)strip_h * 2u);
     }
+
+    UI_RenderScratch_Release(UI_RENDER_SCRATCH_OWNER_MAIN_GRID);
 
     {
         uint32_t total_sec = run_time_ms / 1000u;
@@ -468,7 +478,7 @@ void UI_Display_DrawHeader(uint16_t bpm, TransportState state, uint8_t rec_armed
         char bpm_str[8];
         ST7789_FillRect(0, 0, 120, HEADER_H, BLACK);
         snprintf(bpm_str, sizeof(bpm_str), "%3u", bpm);
-        ST7789_DrawString(4, 2, bpm_str, &Font_Sans16, COLOR_TEXT_MAIN, BLACK);
+        ST7789_DrawString(4, 0, bpm_str, &Font16x24, COLOR_TEXT_MAIN, BLACK);
         ST7789_DrawString(52, 2, "BPM", &Font16x24, COLOR_TEXT_MAIN, BLACK);
     }
 
@@ -611,11 +621,11 @@ static void DrawSidebarInfo(void)
         }
         snprintf(q, sizeof(q), "%s", div_text);
         ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 52, "QUANT", &Font8x12, LIGHTBLUE, panel_bg);
-        ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 66, q, &Font10x16, WHITE, panel_bg);
+        ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 66, q, &Font12x20, WHITE, panel_bg);
 
         snprintf(q, sizeof(q), "%u%%", (unsigned)swing);
         ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 100, "SWING", &Font8x12, LIGHTBLUE, panel_bg);
-        ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 116, q, &Font10x16, WHITE, panel_bg);
+        ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 116, q, &Font12x20, WHITE, panel_bg);
     }
 
     s_prev_sidebar_div   = div;
@@ -857,17 +867,17 @@ static void MainGridComposeStrip(uint8_t* buffer,
              (unsigned long)elapsed_mins,
              (unsigned long)elapsed_secs,
              (unsigned long)elapsed_millis);
-    MainGridStripDrawString(buffer, strip_y, strip_h, 54u, 26u, text, &Font_Mono14, 1u, COLOR_TEXT_MAIN, COLOR_BG);
+    MainGridStripDrawString(buffer, strip_y, strip_h, 54u, 26u, text, &Font8x12, 1u, COLOR_TEXT_MAIN, COLOR_BG);
 
     if (SIDEBAR_W != 0U)
     {
         snprintf(text, sizeof(text), "1/%u", (unsigned)(div * 4u));
         MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 52u, "QUANT", &Font8x12, 1u, LIGHTBLUE, COLOR_BG);
-        MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 66u, text, &Font10x16, 1u, WHITE, COLOR_BG);
+        MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 66u, text, &Font12x20, 1u, WHITE, COLOR_BG);
 
         snprintf(text, sizeof(text), "%u%%", (unsigned)swing);
         MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 100u, "SWING", &Font8x12, 1u, LIGHTBLUE, COLOR_BG);
-        MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 116u, text, &Font10x16, 1u, WHITE, COLOR_BG);
+        MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 116u, text, &Font12x20, 1u, WHITE, COLOR_BG);
     }
 
     for (uint8_t step_no = 1u; step_no <= 12u; step_no++)
@@ -943,9 +953,10 @@ void MenuTemplate_Begin(uint8_t frame_id)
     s_param_footer_valid = 0;
     s_timing_footer_valid = 0;
     s_song_footer_valid = 0;
-    s_timing_footer_drawn = 0xFF;
     s_param_row_cursor = 0xFF;
     s_timing_row_cursor = 0xFF;
+    s_arp_prev_mode = 0xFF;
+    s_arp_prev_rate = 0xFF;
     s_quan_router_prev_cursor = 0xFF;
     s_quan_router_prev_edit_field = 0xFF;
     s_quan_router_prev_unsaved = 0xFF;
@@ -994,7 +1005,7 @@ void MenuTemplate_DrawHeader(const char* title, const char* indicator, uint16_t 
     FillRegion(UI_REGION_MENU_TOP, COLOR_PANEL_ALT);
     ST7789_DrawString(4, 4, title, &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
     if (indicator[0]) {
-        ST7789_DrawString(4, 22, indicator, &Font10x16, indicator_color, COLOR_PANEL_ALT);
+        ST7789_DrawString(4, 22, indicator, &Font12x20, indicator_color, COLOR_PANEL_ALT);
     }
 
     StrCopy(s_menu_header_title, sizeof(s_menu_header_title), title);
@@ -1060,7 +1071,7 @@ void UI_Display_SetMainMode(UiMainMode mode)
 static void DrawStatusCell(uint16_t x, uint16_t y, char ch, uint16_t fg, uint16_t bg)
 {
     ST7789_FillRect(x, y, STATUS_CHAR_W, STATUS_CHAR_H, bg);
-    ST7789_DrawChar(x, y, ch, &Font_Mono14, fg, bg);
+    ST7789_DrawChar(x, y, ch, &Font8x12, fg, bg);
 }
 
 static void DrawStatusBarDigitsDirty(const char* bar_digits, char prev_digits[2], uint16_t x, uint16_t y, uint16_t fg, uint16_t bg)
@@ -1139,7 +1150,7 @@ void UI_Display_DrawStatusRow(uint8_t pattern,
                  (unsigned long)elapsed_mins,
                  (unsigned long)elapsed_secs,
                  (unsigned long)elapsed_millis);
-        ST7789_DrawString(STATUS_TEXT_X, STATUS_TEXT_Y, st, &Font_Mono14, COLOR_TEXT_MAIN, COLOR_BG);
+        ST7789_DrawString(STATUS_TEXT_X, STATUS_TEXT_Y, st, &Font8x12, COLOR_TEXT_MAIN, COLOR_BG);
 
         s_prev_bar = current_bar;
         s_prev_step = step;
@@ -1241,6 +1252,11 @@ void UI_Display_DrawMcpDebug(uint8_t online, uint8_t read_ok, uint8_t gpio_a, ui
 
 /* ── Chord Menu ───────────────────────────────────────────────────────────── */
 static uint8_t s_param_footer_selection = PARAM_ACTION_MAIN;
+static uint8_t s_chord_params_direct_mode = 0u;
+static uint8_t s_direct_chord_bar_number = 0u;
+static uint8_t s_direct_chord_pos_number = 0u;
+static uint8_t s_direct_chord_grid_division = 4u;
+static uint8_t s_direct_chord_notes[4] = {0xFFu, 0xFFu, 0xFFu, 0xFFu};
 static const char* s_root_keys[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 static const char* s_chord_names[] = {
     "Clear", "Major", "Minor", "Dim", "Aug", "Sus4", "7th", "Maj7",
@@ -1372,7 +1388,7 @@ static void DrawChordButtonText(uint8_t slot, uint8_t chord_idx, uint8_t selecte
     ST7789_FillRect((uint16_t)(x + 3), (uint16_t)(y + 3), (uint16_t)(CHORD_BTN_W - 6), (uint16_t)(CHORD_BTN_H - 6), COLOR_BOX_BG);
 
     if (chord_idx == 0) {
-        ST7789_DrawString((uint16_t)(x + 14), (uint16_t)(y + 16), "Clear", &Font10x16, text_col, COLOR_BOX_BG);
+        ST7789_DrawString((uint16_t)(x + 14), (uint16_t)(y + 16), "Clear", &Font12x20, text_col, COLOR_BOX_BG);
     } else {
         char top[8];
         char bottom[10];
@@ -1380,8 +1396,8 @@ static void DrawChordButtonText(uint8_t slot, uint8_t chord_idx, uint8_t selecte
         snprintf(top, sizeof(top), "%s", s_root_keys[root]);
         snprintf(bottom, sizeof(bottom), "%s", s_chord_names[chord_idx]);
 
-        ST7789_DrawString((uint16_t)(x + 8), (uint16_t)(y + 8), top, &Font10x16, COLOR_TEXT_SECONDARY, COLOR_BOX_BG);
-        ST7789_DrawString((uint16_t)(x + 8), (uint16_t)(y + 26), bottom, &Font10x16, text_col, COLOR_BOX_BG);
+        ST7789_DrawString((uint16_t)(x + 8), (uint16_t)(y + 8), top, &Font12x20, COLOR_TEXT_SECONDARY, COLOR_BOX_BG);
+        ST7789_DrawString((uint16_t)(x + 8), (uint16_t)(y + 26), bottom, &Font12x20, text_col, COLOR_BOX_BG);
     }
 }
 
@@ -1400,7 +1416,7 @@ static void DrawParamFooterButton(uint8_t slot, const char* label, uint8_t selec
     uint16_t text_col = selected ? WHITE : COLOR_TEXT_MAIN;
 
     DrawRoundedButton(x, y, FOOTER_BTN_W, FOOTER_BTN_H, fill, border);
-    ST7789_DrawString(x + 8, y + 12, label, &Font10x16, text_col, fill);
+    ST7789_DrawString(x + 8, y + 12, label, &Font12x20, text_col, fill);
 }
 
 static void DrawCenteredFooterButton(const char* label, uint8_t selected)
@@ -1413,7 +1429,7 @@ static void DrawCenteredFooterButton(const char* label, uint8_t selected)
     uint16_t text_col = selected ? WHITE : COLOR_TEXT_MAIN;
 
     DrawRoundedButton(x, y, w, FOOTER_BTN_H, fill, border);
-    ST7789_DrawString(x + 18, y + 12, label, &Font10x16, text_col, fill);
+    ST7789_DrawString(x + 18, y + 12, label, &Font12x20, text_col, fill);
 }
 
 void UI_Display_NavigateChordMenu(int8_t delta, uint8_t step, const ChordParams* chord, uint8_t* selection)
@@ -1500,7 +1516,7 @@ void UI_Display_NavigateChordMenu(int8_t delta, uint8_t step, const ChordParams*
 /* ── Chord Parameters ─────────────────────────────────────────────────────── */
 static void DrawParamRow(uint8_t index, const ChordParams* chord, uint8_t is_selected)
 {
-    const char* param_names[] = {"Root Key:", "Type:", "Arp:", "Gate:", "Step Repeats:"};
+    const char* param_names[] = {"Root Key:", "Type:", "Arp:", "Gate:"};
     const uint16_t value_x = (uint16_t)(SCREEN_W - 96);
     const char* root_keys[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
     const char* chord_types[] = {"Clear", "Major", "Minor", "Dim", "Aug", "Sus4", "7th", "Maj7", "Min7", "Dim7", "7sus4", "6th", "Min6", "9th", "Maj9", "Min9", "11th"};
@@ -1527,21 +1543,107 @@ static void DrawParamRow(uint8_t index, const ChordParams* chord, uint8_t is_sel
         case 1: snprintf(value, sizeof(value), "%s", chord_types[chord->chord_type]); break;
         case 2: snprintf(value, sizeof(value), "%s", arp_patterns[chord->arp_pattern]); break;
         case 3: snprintf(value, sizeof(value), "%s", durations[chord->duration]); break;
-        case 4: snprintf(value, sizeof(value), "%u", chord->loop_count); break;
         default: value[0] = 0; break;
     }
     ST7789_DrawString(value_x, y, value, &Font12x20, color, COLOR_BG);
+}
+
+static void MidiToNoteLabel(uint8_t midi_note, char* out, size_t out_len)
+{
+    static const char* note_names[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    if (!out || out_len == 0u)
+    {
+        return;
+    }
+
+    if (midi_note == 0xFFu)
+    {
+        out[0] = '\0';
+        return;
+    }
+
+    const uint8_t note = (uint8_t)(midi_note % 12u);
+    const int8_t octave = (int8_t)((midi_note / 12u) - 1u);
+    snprintf(out, out_len, "%s%d", note_names[note], (int)octave);
+}
+
+static const char* GridDivisionLabel(uint8_t grid_division)
+{
+    switch (grid_division)
+    {
+        case 1u: return "1/4";
+        case 2u: return "1/8";
+        case 4u: return "1/16";
+        case 8u: return "1/32";
+        default: return "1/16";
+    }
+}
+
+static void DrawDirectChordPreview(void)
+{
+    char subtitle[24];
+    char grid_line[24];
+    char preview[48];
+    char note_buf[8];
+    uint8_t shown = 0u;
+
+    snprintf(subtitle, sizeof(subtitle), "BAR%02u POS%02u", (unsigned)s_direct_chord_bar_number, (unsigned)s_direct_chord_pos_number);
+    MenuTemplate_DrawHeader("DIRECT CHORD", subtitle, YELLOW);
+
+    snprintf(grid_line, sizeof(grid_line), "GRID %s", GridDivisionLabel(s_direct_chord_grid_division));
+    ST7789_FillRect(8, 104, (uint16_t)(SCREEN_W - 16), 20, COLOR_BG);
+    ST7789_DrawString(8, 104, grid_line, &Font12x20, COLOR_ACTIVE, COLOR_BG);
+
+    preview[0] = '\0';
+    for (uint8_t i = 0u; i < 4u; ++i)
+    {
+        if (s_direct_chord_notes[i] == 0xFFu)
+        {
+            continue;
+        }
+
+        MidiToNoteLabel(s_direct_chord_notes[i], note_buf, sizeof(note_buf));
+        if (note_buf[0] == '\0')
+        {
+            continue;
+        }
+
+        if (shown > 0u)
+        {
+            strncat(preview, "  ", sizeof(preview) - strlen(preview) - 1u);
+        }
+        strncat(preview, note_buf, sizeof(preview) - strlen(preview) - 1u);
+        shown++;
+    }
+
+    if (shown > 0u)
+    {
+        ST7789_FillRect(8, 128, (uint16_t)(SCREEN_W - 16), 20, COLOR_BG);
+        ST7789_DrawString(8, 128, preview, &Font12x20, COLOR_TEXT_SECONDARY, COLOR_BG);
+    }
+    else
+    {
+        ST7789_FillRect(8, 128, (uint16_t)(SCREEN_W - 16), 20, COLOR_BG);
+    }
 }
 
 void UI_Display_DrawChordParams(uint8_t step, const ChordParams* chord, uint8_t param_cursor, uint8_t footer_action)
 {
     MenuTemplate_Begin(MENU_FRAME_PARAMS);
 
-    if (s_param_row_cursor == 0xFF)
+    if (s_chord_params_direct_mode)
+    {
+        FillRegion(UI_REGION_MENU_LIST, COLOR_BG);
+        DrawParamRow(0, chord, (param_cursor == 0u));
+        DrawParamRow(1, chord, (param_cursor == 1u));
+        s_param_row_cursor = param_cursor;
+        DrawDirectChordPreview();
+    }
+    else if (s_param_row_cursor == 0xFF)
     {
         /* First draw: clear entire list and draw all rows */
         FillRegion(UI_REGION_MENU_LIST, COLOR_BG);
-        for (uint8_t i = 0; i < 5; i++)
+        for (uint8_t i = 0; i < 4; i++)
         {
             DrawParamRow(i, chord, (i == param_cursor));
         }
@@ -1558,12 +1660,15 @@ void UI_Display_DrawChordParams(uint8_t step, const ChordParams* chord, uint8_t 
         DrawParamRow(param_cursor, chord, 1);
     }
 
-    s_param_row_cursor = param_cursor;
+    if (!s_chord_params_direct_mode)
+    {
+        s_param_row_cursor = param_cursor;
 
-    /* Title */
-    char title[20];
-    snprintf(title, sizeof(title), "Bar %u Parameters", step);
-    MenuTemplate_DrawHeader(title, "Per-step Parameters", COLOR_TEXT_MUTED);
+        /* Title */
+        char title[20];
+        snprintf(title, sizeof(title), "Bar %u Parameters", step);
+        MenuTemplate_DrawHeader(title, "Per-step Parameters", COLOR_TEXT_MUTED);
+    }
 
     /* Footer action buttons */
     if (!s_param_footer_valid)
@@ -1614,14 +1719,6 @@ void UI_Display_NavigateChordParams(int8_t delta, uint8_t step, ChordParams* cho
             chord->duration = (uint8_t)next;
             break;
         }
-        case 4: /* Pattern loop count */
-        {
-            int16_t next = (int16_t)chord->loop_count - 1 + delta;
-            while (next < 0) next += 16;
-            while (next >= 16) next -= 16;
-            chord->loop_count = (uint8_t)(next + 1);
-            break;
-        }
         default:
             break;
     }
@@ -1632,6 +1729,14 @@ void UI_Display_NavigateChordParams(int8_t delta, uint8_t step, ChordParams* cho
 
 void UI_Display_DrawParamFooterActions(uint8_t selected_action)
 {
+    if (s_chord_params_direct_mode)
+    {
+        (void)selected_action;
+        FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
+        DrawCenteredFooterButton("M9 PLACE", 1u);
+        return;
+    }
+
     static const char* labels[PARAM_ACTION_COUNT] = {"BACK", "PREV", "NEXT", "SAVE"};
     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
 
@@ -1643,6 +1748,17 @@ void UI_Display_DrawParamFooterActions(uint8_t selected_action)
 
 void UI_Display_NavigateParamFooterActions(int8_t delta, uint8_t step, const ChordParams* chord, uint8_t param_cursor, uint8_t* footer_action)
 {
+    if (s_chord_params_direct_mode)
+    {
+        (void)delta;
+        (void)step;
+        (void)chord;
+        (void)param_cursor;
+        if (footer_action) *footer_action = PARAM_ACTION_MAIN;
+        s_param_footer_selection = PARAM_ACTION_MAIN;
+        return;
+    }
+
     uint8_t old = *footer_action;
     int16_t next = (int16_t)old + delta;
     while (next < 0) next += PARAM_ACTION_COUNT;
@@ -1650,15 +1766,37 @@ void UI_Display_NavigateParamFooterActions(int8_t delta, uint8_t step, const Cho
 
     *footer_action = (uint8_t)next;
 
-        DrawParamFooterButton(old,
-                                                    (old == PARAM_ACTION_MAIN) ? "1 BACK" :
-                                                    (old == PARAM_ACTION_PREV) ? "2 PREV" :
-                                                    (old == PARAM_ACTION_NEXT) ? "3 NEXT" : "4 SAVE",
-                                                    0);
+    DrawParamFooterButton(old,
+                          (old == PARAM_ACTION_MAIN) ? "BACK" :
+                          (old == PARAM_ACTION_PREV) ? "PREV" :
+                          (old == PARAM_ACTION_NEXT) ? "NEXT" : "SAVE",
+                          0);
     DrawParamFooterButton(*footer_action,
-                                                    (*footer_action == PARAM_ACTION_MAIN) ? "1 BACK" :
-                          (*footer_action == PARAM_ACTION_PREV) ? "2 PREV" :
-                          (*footer_action == PARAM_ACTION_NEXT) ? "3 NEXT" : "4 SAVE", 1);
+                          (*footer_action == PARAM_ACTION_MAIN) ? "BACK" :
+                          (*footer_action == PARAM_ACTION_PREV) ? "PREV" :
+                          (*footer_action == PARAM_ACTION_NEXT) ? "NEXT" : "SAVE",
+                          1);
+}
+
+void UI_Display_SetChordParamsDirectMode(uint8_t enabled)
+{
+    s_chord_params_direct_mode = enabled ? 1u : 0u;
+    if (s_chord_params_direct_mode)
+    {
+        s_param_footer_selection = PARAM_ACTION_MAIN;
+    }
+}
+
+void UI_Display_SetDirectChordInfo(uint8_t bar_number, uint8_t pos_number, uint8_t grid_division, const uint8_t notes[4])
+{
+    s_direct_chord_bar_number = bar_number;
+    s_direct_chord_pos_number = pos_number;
+    s_direct_chord_grid_division = grid_division;
+
+    for (uint8_t i = 0u; i < 4u; ++i)
+    {
+        s_direct_chord_notes[i] = (notes != NULL) ? notes[i] : 0xFFu;
+    }
 }
 
 uint8_t UI_Display_GetSelectedParamAction(void)
@@ -1670,22 +1808,6 @@ void UI_Display_SetSelectedParamAction(uint8_t action)
 {
     if (action < PARAM_ACTION_COUNT)
         s_param_footer_selection = action;
-}
-
-static void DrawTimingFooterButton(uint8_t slot, const char* label, uint8_t selected)
-{
-    uint16_t w = 92;
-    uint16_t gap = 8;
-    uint16_t total = (2 * w) + gap;
-    uint16_t x0 = (SCREEN_W - total) / 2;
-    uint16_t x = x0 + slot * (w + gap);
-    uint16_t y = FOOTER_BTN_Y0;
-    uint16_t fill = selected ? COLOR_PANEL_ALT : COLOR_BOX_BG;
-    uint16_t border = selected ? COLOR_ACTIVE : COLOR_BOX_BORDER;
-    uint16_t text_col = selected ? WHITE : COLOR_TEXT_MAIN;
-
-    DrawRoundedButton(x, y, w, FOOTER_BTN_H, fill, border);
-    ST7789_DrawString(x + 22, y + 12, label, &Font10x16, text_col, fill);
 }
 
 static void DrawTimingRow(uint8_t index,
@@ -1763,7 +1885,6 @@ void UI_Display_DrawTimingMenu(uint8_t step_count,
                                uint8_t ts_den,
                                uint8_t swing,
                                uint8_t cursor,
-                               uint8_t footer_action,
                                uint8_t has_unsaved_changes,
                                uint8_t save_rejected)
 {
@@ -1803,14 +1924,10 @@ void UI_Display_DrawTimingMenu(uint8_t step_count,
                             has_unsaved_changes ? "*UNSAVED" : "Global sequencer timing",
                             save_rejected ? RED : YELLOW);
 
-    /* Footer buttons */
-    if (!s_timing_footer_valid || (s_timing_footer_drawn != footer_action))
+    if (!s_timing_footer_valid)
     {
         FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-        DrawTimingFooterButton(0, "MAIN", footer_action == 0);
-        DrawTimingFooterButton(1, "SAVE", footer_action == 1);
-        s_timing_footer_valid = 1;
-        s_timing_footer_drawn = footer_action;
+        s_timing_footer_valid = 1u;
     }
 
     s_timing_prev_step_count = step_count;
@@ -1885,7 +2002,6 @@ void UI_Display_DrawQuantiserTimingMenu(uint8_t enabled,
                                         uint8_t humanize_ms,
                                         uint8_t lag_ms,
                                         uint8_t cursor,
-                                        uint8_t footer_action,
                                         uint8_t has_unsaved_changes)
 {
     MenuTemplate_Begin(MENU_FRAME_QUANT_TIMING);
@@ -1921,13 +2037,10 @@ void UI_Display_DrawQuantiserTimingMenu(uint8_t enabled,
 
     MenuTemplate_DrawHeader("Quantiser Timing", has_unsaved_changes ? "*UNSAVED" : "Timing quantise setup", YELLOW);
 
-    if (!s_timing_footer_valid || (s_timing_footer_drawn != footer_action))
+    if (!s_timing_footer_valid)
     {
         FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-        DrawTimingFooterButton(0, "MAIN", footer_action == 0);
-        DrawTimingFooterButton(1, "SAVE", footer_action == 1);
-        s_timing_footer_valid = 1;
-        s_timing_footer_drawn = footer_action;
+        s_timing_footer_valid = 1u;
     }
 
     s_timing_prev_step_count = enabled;
@@ -1942,7 +2055,6 @@ void UI_Display_DrawQuanRouterMenu(const uint8_t* sources,
                                    const uint8_t* targets,
                                    uint8_t cursor,
                                    uint8_t edit_field,
-                                   uint8_t footer_action,
                                    uint8_t has_unsaved_changes)
 {
     static const char* src_names[] = {"OFF", "ADC-IN1", "ADC-IN2", "ADC-IN3", "ADC-IN4"};
@@ -1993,9 +2105,9 @@ void UI_Display_DrawQuanRouterMenu(const uint8_t* sources,
             snprintf(tgt_txt, sizeof(tgt_txt), "%s%s",
                      (selected && edit_field == 1) ? ">" : " ", tgt_names[tgt_idx]);
 
-            ST7789_DrawString(col_slot_x, (uint16_t)(y + row_text_y_off), slot_txt, &Font10x16, text_col, bg_col);
-            ST7789_DrawString(col_src_x, (uint16_t)(y + row_text_y_off), src_txt, &Font10x16, text_col, bg_col);
-            ST7789_DrawString(col_tgt_x, (uint16_t)(y + row_text_y_off), tgt_txt, &Font10x16, text_col, bg_col);
+            ST7789_DrawString(col_slot_x, (uint16_t)(y + row_text_y_off), slot_txt, &Font12x20, text_col, bg_col);
+            ST7789_DrawString(col_src_x, (uint16_t)(y + row_text_y_off), src_txt, &Font12x20, text_col, bg_col);
+            ST7789_DrawString(col_tgt_x, (uint16_t)(y + row_text_y_off), tgt_txt, &Font12x20, text_col, bg_col);
         }
     }
     else
@@ -2034,20 +2146,17 @@ void UI_Display_DrawQuanRouterMenu(const uint8_t* sources,
                 snprintf(tgt_txt, sizeof(tgt_txt), "%s%s",
                          (selected && edit_field == 1) ? ">" : " ", tgt_names[tgt_idx]);
 
-                ST7789_DrawString(col_slot_x, (uint16_t)(y + row_text_y_off), slot_txt, &Font10x16, text_col, bg_col);
-                ST7789_DrawString(col_src_x, (uint16_t)(y + row_text_y_off), src_txt, &Font10x16, text_col, bg_col);
-                ST7789_DrawString(col_tgt_x, (uint16_t)(y + row_text_y_off), tgt_txt, &Font10x16, text_col, bg_col);
+                ST7789_DrawString(col_slot_x, (uint16_t)(y + row_text_y_off), slot_txt, &Font12x20, text_col, bg_col);
+                ST7789_DrawString(col_src_x, (uint16_t)(y + row_text_y_off), src_txt, &Font12x20, text_col, bg_col);
+                ST7789_DrawString(col_tgt_x, (uint16_t)(y + row_text_y_off), tgt_txt, &Font12x20, text_col, bg_col);
             }
         }
     }
 
-    if (!s_timing_footer_valid || (s_timing_footer_drawn != footer_action))
+    if (!s_timing_footer_valid)
     {
         FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-        DrawTimingFooterButton(0, "MAIN", footer_action == 0);
-        DrawTimingFooterButton(1, "SAVE", footer_action == 1);
-        s_timing_footer_valid = 1;
-        s_timing_footer_drawn = footer_action;
+        s_timing_footer_valid = 1u;
     }
 
     for (uint8_t i = 0; i < 8; i++)
@@ -2060,22 +2169,70 @@ void UI_Display_DrawQuanRouterMenu(const uint8_t* sources,
     s_quan_router_prev_unsaved = has_unsaved_changes;
 }
 
-void UI_Display_NavigateTimingFooter(int8_t delta)
+void UI_Display_DrawArpMenu(uint8_t arp_mode,
+                            uint8_t arp_rate,
+                            uint8_t cursor,
+                            uint8_t has_unsaved_changes)
 {
-    int16_t next = (int16_t)s_timing_footer_selection + delta;
-    while (next < 0) next += 2;
-    while (next >= 2) next -= 2;
-    s_timing_footer_selection = (uint8_t)next;
-}
+    static const char* mode_labels[] = {"Block", "Up", "Down", "UpDn", "Random"};
+    static const char* rate_labels[] = {"1/4", "1/8", "1/16", "1/32"};
+    const uint16_t value_x = (uint16_t)(SCREEN_W - 96);
+    const uint16_t label_color = COLOR_TEXT_MAIN;
+    char value[16];
 
-uint8_t UI_Display_GetTimingFooterAction(void)
-{
-    return s_timing_footer_selection;
-}
+    if (arp_mode > 4u) arp_mode = 0u;
+    if (arp_rate > 3u) arp_rate = 2u;
+    if (cursor > 1u) cursor = 0u;
 
-void UI_Display_SetTimingFooterAction(uint8_t action)
-{
-    if (action < 2) s_timing_footer_selection = action;
+    MenuTemplate_Begin(MENU_FRAME_TIMING);
+
+    {
+        uint8_t first_draw = (s_timing_row_cursor == 0xFF) ? 1u : 0u;
+        uint8_t value_changed = (s_arp_prev_mode != arp_mode) || (s_arp_prev_rate != arp_rate);
+
+        if (first_draw)
+        {
+            FillRegion(UI_REGION_MENU_LIST, COLOR_BG);
+
+            ST7789_DrawString(8, PARAM_ROW_Y0, "Mode", &Font12x20, label_color, COLOR_BG);
+            ST7789_DrawString(8, (uint16_t)(PARAM_ROW_Y0 + PARAM_ROW_STEP), "Rate", &Font12x20, label_color, COLOR_BG);
+        }
+
+        if (first_draw || s_timing_row_cursor != cursor || value_changed)
+        {
+            /* Row 0: mode */
+            ST7789_FillRect(0, PARAM_ROW_Y0, 3, 22, (cursor == 0u) ? COLOR_ACTIVE : COLOR_BG);
+            ST7789_FillRect(value_x, PARAM_ROW_Y0, (uint16_t)(SCREEN_W - value_x), 22, COLOR_BG);
+            snprintf(value, sizeof(value), "%s", mode_labels[arp_mode]);
+            ST7789_DrawString(value_x, PARAM_ROW_Y0, value, &Font12x20,
+                              (cursor == 0u) ? COLOR_ACTIVE : COLOR_TEXT_MAIN,
+                              COLOR_BG);
+
+            /* Row 1: rate */
+            ST7789_FillRect(0, (uint16_t)(PARAM_ROW_Y0 + PARAM_ROW_STEP), 3, 22,
+                            (cursor == 1u) ? COLOR_ACTIVE : COLOR_BG);
+            ST7789_FillRect(value_x, (uint16_t)(PARAM_ROW_Y0 + PARAM_ROW_STEP),
+                            (uint16_t)(SCREEN_W - value_x), 22, COLOR_BG);
+            snprintf(value, sizeof(value), "%s", rate_labels[arp_rate]);
+            ST7789_DrawString(value_x, (uint16_t)(PARAM_ROW_Y0 + PARAM_ROW_STEP), value, &Font12x20,
+                              (cursor == 1u) ? COLOR_ACTIVE : COLOR_TEXT_MAIN,
+                              COLOR_BG);
+        }
+
+        s_timing_row_cursor = cursor;
+        s_arp_prev_mode = arp_mode;
+        s_arp_prev_rate = arp_rate;
+    }
+
+    MenuTemplate_DrawHeader("Pattern ARP",
+                            has_unsaved_changes ? "*UNSAVED" : "Mode and rate",
+                            YELLOW);
+
+    if (!s_timing_footer_valid)
+    {
+        FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
+        s_timing_footer_valid = 1u;
+    }
 }
 
 static void DrawSongChainRow(const uint8_t* chain,
@@ -2208,9 +2365,9 @@ void UI_Display_DrawSongChainMenu(const uint8_t* chain,
     if (!s_song_footer_valid)
     {
         FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-        ST7789_DrawString(6, FOOTER_TEXT_Y1, "1-4 Slot", &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL);
-        ST7789_DrawString(6, FOOTER_TEXT_Y2, "5 +Slot 6 -Slot", &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL);
-        ST7789_DrawString(142, MENU_FOOTER_Y + 17, "REC MAIN", &Font10x16, COLOR_ACTIVE, COLOR_PANEL);
+        ST7789_DrawString(6, FOOTER_TEXT_Y1, "1-4 Slot", &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL);
+        ST7789_DrawString(6, FOOTER_TEXT_Y2, "5 +Slot 6 -Slot", &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL);
+        ST7789_DrawString(142, MENU_FOOTER_Y + 17, "REC MAIN", &Font12x20, COLOR_ACTIVE, COLOR_PANEL);
         s_song_footer_valid = 1;
     }
 
@@ -2272,7 +2429,7 @@ static void DrawUserChordButtonText(uint8_t slot, uint8_t selected)
 
     /* Redraw entire button with correct highlight state */
     DrawRoundedButton(x, y, btn_w, btn_h, bg, border);
-    ST7789_DrawString((uint16_t)(x + (btn_w - 50) / 2), (uint16_t)(y + 18), labels[slot], &Font10x16, text_col, bg);
+    ST7789_DrawString((uint16_t)(x + (btn_w - 50) / 2), (uint16_t)(y + 18), labels[slot], &Font12x20, text_col, bg);
 }
 
 void UI_Display_DrawUserChordMenu(void)
@@ -2485,7 +2642,7 @@ static void RollDrawHeader(void)
     ST7789_FillRect(0u, 0u, SCREEN_W, ROLL_HEADER_H, COLOR_PANEL_ALT);
 
     /* Bar number, top-left */
-    ST7789_DrawString(8u, 8u,  step_label, &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
+    ST7789_DrawString(8u, 8u,  step_label, &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
     /* Chord name, second line */
     ST7789_DrawString(8u, 28u, chord_name, &Font8x12,  COLOR_ACTIVE,    COLOR_PANEL_ALT);
 
@@ -2497,9 +2654,9 @@ static void RollDrawFooter(void)
 {
     ST7789_FillRect(0u, ROLL_FOOTER_Y, SCREEN_W, ROLL_FOOTER_H, COLOR_PANEL);
     ST7789_DrawString(6u,   (uint16_t)(ROLL_FOOTER_Y + 12u),
-                      "PLAY SAVE", &Font10x16, COLOR_ACTIVE,    COLOR_PANEL);
+                      "PLAY SAVE", &Font12x20, COLOR_ACTIVE,    COLOR_PANEL);
     ST7789_DrawString(126u, (uint16_t)(ROLL_FOOTER_Y + 12u),
-                      "REC BACK",  &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL);
+                      "REC BACK",  &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL);
 }
 
 static void RollDrawAllRows(void)
@@ -2617,8 +2774,8 @@ static void DrawPianoKeyboardScreen(const char* title, const char* footer_label,
     }
 
     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-    ST7789_DrawString(6, FOOTER_TEXT_Y1, "PLAY SAVE", &Font10x16, COLOR_ACTIVE, COLOR_PANEL);
-    ST7789_DrawString(126, FOOTER_TEXT_Y1, "REC BACK", &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL);
+    ST7789_DrawString(6, FOOTER_TEXT_Y1, "PLAY SAVE", &Font12x20, COLOR_ACTIVE, COLOR_PANEL);
+    ST7789_DrawString(126, FOOTER_TEXT_Y1, "REC BACK", &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL);
     s_chord_footer_valid = 1;
 }
 
@@ -2688,8 +2845,21 @@ void UI_Display_DrawPianoKeyboard(const uint16_t note_mask, uint8_t selected_key
         .step = 1,
         .note_mask = note_mask,
         .selected_key = selected_key,
+        .selected_midi_note = (uint8_t)(60u + (selected_key % 12u)),
+        .top_visible_midi = 71u,
         .slot_index = 0,
         .slot_count = 1,
+        .grid_division = 4u,
+        .slot_notes = {0xFFu, 0xFFu, 0xFFu, 0xFFu},
+        .cv_absolute_valid = 0,
+        .arp_on = 0,
+        .length_mode_active = 0,
+        .pending_length = 1,
+        .key_label = "C",
+        .scale_label = "Chromatic",
+        .clear_confirm_active = 0,
+        .clear_confirm_yes_selected = 0,
+        .bar_skipped = 0,
         .title = "Create Chord",
         .footer_label = "SAVE/DONE"
     };
@@ -2714,8 +2884,21 @@ void UI_Display_DrawStepPianoRoll(uint8_t step, const uint16_t note_mask, uint8_
         .step = step,
         .note_mask = note_mask,
         .selected_key = selected_key,
+        .selected_midi_note = (uint8_t)(60u + (selected_key % 12u)),
+        .top_visible_midi = 71u,
         .slot_index = 0,
         .slot_count = 1,
+        .grid_division = 4u,
+        .slot_notes = {0xFFu, 0xFFu, 0xFFu, 0xFFu},
+        .cv_absolute_valid = 0,
+        .arp_on = 0,
+        .length_mode_active = 0,
+        .pending_length = 1,
+        .key_label = "C",
+        .scale_label = "Chromatic",
+        .clear_confirm_active = 0,
+        .clear_confirm_yes_selected = 0,
+        .bar_skipped = 0,
         .title = "Piano Roll",
         .footer_label = "SAVE/DONE"
     };
@@ -2775,7 +2958,7 @@ void UI_Display_DrawUserChordNameEditor(const char* name, uint8_t cursor)
     uint16_t box_h = 34;
     DrawRoundedButton(box_x, box_y, box_w, box_h, COLOR_BOX_BG, COLOR_BOX_BORDER);
 
-    ST7789_DrawString(16, 108, name, &Font10x16, COLOR_TEXT_MAIN, COLOR_BOX_BG);
+    ST7789_DrawString(16, 108, name, &Font12x20, COLOR_TEXT_MAIN, COLOR_BOX_BG);
 
     if (cursor < 16)
     {
@@ -2784,8 +2967,8 @@ void UI_Display_DrawUserChordNameEditor(const char* name, uint8_t cursor)
     }
 
     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-    ST7789_DrawString(6, FOOTER_TEXT_Y1, "PLAY SAVE", &Font10x16, COLOR_ACTIVE, COLOR_PANEL);
-    ST7789_DrawString(126, FOOTER_TEXT_Y1, "REC BACK", &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL);
+    ST7789_DrawString(6, FOOTER_TEXT_Y1, "PLAY SAVE", &Font12x20, COLOR_ACTIVE, COLOR_PANEL);
+    ST7789_DrawString(126, FOOTER_TEXT_Y1, "REC BACK", &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL);
     s_chord_footer_valid = 1;
 }
 
@@ -2810,7 +2993,7 @@ static void DrawUserChordLoadRow(uint8_t row,
             uint16_t text_col = (row == selected_index) ? COLOR_ACTIVE : COLOR_TEXT_MAIN;
             char line[24];
             snprintf(line, sizeof(line), "%2u: %s", (unsigned)(row + 1), chord->name);
-            ST7789_DrawString(10, y, line, &Font10x16, text_col, COLOR_BG);
+            ST7789_DrawString(10, y, line, &Font12x20, text_col, COLOR_BG);
         }
     }
 }
@@ -2851,16 +3034,16 @@ void UI_Display_DrawUserChordLoad(void)
 
     if (count == 0)
     {
-        ST7789_DrawString(10, 100, "No saved chords", &Font10x16, GRAY, COLOR_BG);
+        ST7789_DrawString(10, 100, "No saved chords", &Font12x20, GRAY, COLOR_BG);
     }
 
     /* Footer */
     if (entering || !s_user_chord_load_footer_valid)
     {
         FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-        ST7789_DrawString(6, FOOTER_TEXT_Y1, "PLAY LOAD", &Font10x16, COLOR_ACTIVE, COLOR_PANEL);
-        ST7789_DrawString(126, FOOTER_TEXT_Y1, "REC BACK", &Font10x16, COLOR_TEXT_MAIN, COLOR_PANEL);
-        ST7789_DrawString(6, FOOTER_TEXT_Y2, "SHIFT+REC DELETE", &Font10x16, ORANGE, COLOR_PANEL);
+        ST7789_DrawString(6, FOOTER_TEXT_Y1, "PLAY LOAD", &Font12x20, COLOR_ACTIVE, COLOR_PANEL);
+        ST7789_DrawString(126, FOOTER_TEXT_Y1, "REC BACK", &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL);
+        ST7789_DrawString(6, FOOTER_TEXT_Y2, "SHIFT+REC DELETE", &Font12x20, ORANGE, COLOR_PANEL);
         s_chord_footer_valid = 1;
         s_user_chord_load_footer_valid = 1;
     }
@@ -2888,4 +3071,44 @@ uint8_t UI_Display_GetSelectedUserChord(void)
 void UI_Display_SetSelectedUserChord(uint8_t index)
 {
     s_selected_user_chord = index;
+}
+
+void UI_Display_DrawYesNoQuestionModal(const char* message, uint8_t yes_selected)
+{
+    const uint16_t box_w = 188u;
+    const uint16_t box_h = 88u;
+    const uint16_t box_x = (uint16_t)((SCREEN_W - box_w) / 2u);
+    const uint16_t box_y = (uint16_t)((SCREEN_H - box_h) / 2u);
+    const uint16_t btn_w = 68u;
+    const uint16_t btn_h = 26u;
+    const uint16_t btn_y = (uint16_t)(box_y + box_h - btn_h - 10u);
+    const uint16_t no_x = (uint16_t)(box_x + 18u);
+    const uint16_t yes_x = (uint16_t)(box_x + box_w - btn_w - 18u);
+    const uint16_t panel = COLOR_PANEL_ALT;
+
+    if (!message) message = "CONFIRM?";
+
+    ST7789_FillRect(box_x, box_y, box_w, box_h, panel);
+    DrawRectBorder(box_x, box_y, box_w, box_h, COLOR_BOX_BORDER);
+    ST7789_DrawString((uint16_t)(box_x + 14u), (uint16_t)(box_y + 16u), message, &Font12x20, WHITE, panel);
+
+    DrawRoundedButton(no_x,
+                      btn_y,
+                      btn_w,
+                      btn_h,
+                      yes_selected ? COLOR_BOX_BG : COLOR_PANEL,
+                      yes_selected ? COLOR_BOX_BORDER : COLOR_ACTIVE);
+    DrawRoundedButton(yes_x,
+                      btn_y,
+                      btn_w,
+                      btn_h,
+                      yes_selected ? COLOR_PANEL : COLOR_BOX_BG,
+                      yes_selected ? COLOR_ACTIVE : COLOR_BOX_BORDER);
+
+    ST7789_DrawString((uint16_t)(no_x + 20u), (uint16_t)(btn_y + 6u), "NO", &Font12x20,
+                      yes_selected ? WHITE : BLACK,
+                      yes_selected ? COLOR_BOX_BG : COLOR_PANEL);
+    ST7789_DrawString((uint16_t)(yes_x + 14u), (uint16_t)(btn_y + 6u), "YES", &Font12x20,
+                      yes_selected ? BLACK : WHITE,
+                      yes_selected ? COLOR_PANEL : COLOR_BOX_BG);
 }

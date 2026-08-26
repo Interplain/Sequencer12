@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include "stm32f4xx_hal.h"
 #include "st7789.h"
-#include "fonts_extra.h"
+#include "s12_fonts.h"
 #include "hw_init.h"
 #include "platform/dac8564/dac8564.h"
 #include "platform/fram/mb85rc256.h"
@@ -25,11 +25,11 @@
  * the sequencer plays comes out at the wrong voltage.
  *
  * Output stage reaches roughly +6.98V .. -4.72V, so targets must sit inside
- * that. 0V/+6V gives a stable unipolar range with useful headroom. */
-#define CAL_V_LOW_TEXT           "0.00V"
+ * that. -2V/+6V keeps the full C0..C8 span while preserving 0V at C2. */
+#define CAL_V_LOW_TEXT           "-2.00V"
 #define CAL_V_HIGH_TEXT          "+6.00V"
 
-#define CAL_DEFAULT_NEG1_CODE    45000u   /* rough starting code for 0.00V */
+#define CAL_DEFAULT_NEG1_CODE    56000u   /* rough starting code for -2.00V */
 #define CAL_DEFAULT_POS2_CODE    12000u   /* rough starting code for +6.00V */
 #define CAL_DEBOUNCE_MS          80u
 #define CAL_STAGE_TIMEOUT_MS   8000u
@@ -203,51 +203,28 @@ static uint8_t EncButtonLongPress(void)
     return 0u;
 }
 
+static void EncStepReset(int16_t now)
+{
+    (void)now;
+}
+
 static int8_t EncStep(int16_t* last)
 {
-    static int8_t pending_dir = 0;
-    static uint32_t pending_ms = 0u;
     int16_t now = (int16_t)TIM2->CNT;
     int16_t delta = (int16_t)(now - *last);
-    int8_t dir = 0;
+    const int16_t detent = (int16_t)CAL_ENCODER_DETENT_TICKS;
 
-    if (delta >= (int16_t)CAL_ENCODER_DETENT_TICKS)
+    if (delta >= detent)
     {
-        *last = now;
-        dir = 1;
+        *last = (int16_t)(*last + detent);
+        return 1;
     }
-    else if (delta <= -(int16_t)CAL_ENCODER_DETENT_TICKS)
+    if (delta <= -detent)
     {
-        *last = now;
-        dir = -1;
-    }
-    else
-    {
-        return 0;
+        *last = (int16_t)(*last - detent);
+        return -1;
     }
 
-    if (pending_dir == 0)
-    {
-        pending_dir = dir;
-        pending_ms = HAL_GetTick();
-        return 0;
-    }
-
-    if ((HAL_GetTick() - pending_ms) > CAL_ENCODER_CONFIRM_MS)
-    {
-        pending_dir = dir;
-        pending_ms = HAL_GetTick();
-        return 0;
-    }
-
-    if (dir == pending_dir)
-    {
-        pending_dir = 0;
-        return dir;
-    }
-
-    pending_dir = dir;
-    pending_ms = HAL_GetTick();
     return 0;
 }
 
@@ -521,7 +498,7 @@ static uint16_t AdjustCodeStep(const char* title,
     uint16_t code = start_code;
     int16_t last_enc = (int16_t)TIM2->CNT;
     uint16_t shown_code = (uint16_t)(code ^ 0xFFFFu);
-    uint16_t current_step = CAL_CODE_STEP_FINE;
+    uint16_t current_step = CAL_CODE_STEP_COARSE;
     uint8_t swallow_release = 0u;
 
     /* Prime the debounced button so a press used to *enter* this screen
@@ -529,6 +506,7 @@ static uint16_t AdjustCodeStep(const char* title,
     (void)EncButtonStable();
     (void)EncButtonPressed();
     (void)EncButtonLongPress();
+    EncStepReset(last_enc);
 
     DrawCalHeader(wiz_step, wiz_total);
     DrawCalStatic(title, hint);
@@ -667,7 +645,7 @@ void Calibration_RunWizard(void)
         DAC8564_SetPitchCalibrationForChannel(channels[ch], neg1[ch], pos2[ch]);
         
         /* Reset this channel back to calibrated 0V before the next channel. */
-        DAC8564_SetChannelRaw(channels[ch], neg1[ch]);
+        DAC8564_SetChannelRaw(channels[ch], DAC8564_PitchVoltsToCodeForChannel(channels[ch], 0.0f));
     }
 
     saved = CalWrite(neg1, pos2);

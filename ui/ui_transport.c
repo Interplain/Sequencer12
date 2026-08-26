@@ -1,7 +1,6 @@
 #include "ui_transport.h"
 #include "ui_display.h"
 #include "sequencer_bridge.h"
-#include "platform/dac8564/dac8564.h"
 
 /* ── State ───────────────────────────────────────────────────────────────── */
 static TransportState s_state     = TRANSPORT_STOPPED;
@@ -29,9 +28,6 @@ void UI_Transport_PlayStop(void)
     {
         s_state = TRANSPORT_STOPPED;
         Bridge_Stop();
-        /* Reset all CV outputs to 0V with per-channel calibration offsets */
-        /* CV1=40363, CV2=40451, CV3=40330, CV4=40221 */
-        DAC8564_SetAllRaw(40361, 40485, 40300, 40221);
     }
     UI_Display_DrawHeader(s_bpm, s_state, s_rec_armed);
 }

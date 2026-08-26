@@ -90,6 +90,8 @@ void UI_Display_DrawChordParams(uint8_t step, const ChordParams* chord, uint8_t 
 void UI_Display_NavigateChordParams(int8_t delta, uint8_t step, ChordParams* chord, uint8_t param_cursor, uint8_t footer_action);
 void UI_Display_DrawParamFooterActions(uint8_t selected_action);
 void UI_Display_NavigateParamFooterActions(int8_t delta, uint8_t step, const ChordParams* chord, uint8_t param_cursor, uint8_t* footer_action);
+void UI_Display_SetChordParamsDirectMode(uint8_t enabled);
+void UI_Display_SetDirectChordInfo(uint8_t bar_number, uint8_t pos_number, uint8_t grid_division, const uint8_t notes[4]);
 uint8_t UI_Display_GetSelectedParamAction(void);
 void UI_Display_SetSelectedParamAction(uint8_t action);
 
@@ -100,7 +102,6 @@ void UI_Display_DrawTimingMenu(uint8_t step_count,
                                uint8_t ts_den,
                                uint8_t swing,
                                uint8_t cursor,
-                               uint8_t footer_action,
                                uint8_t has_unsaved_changes,
                                uint8_t save_rejected);
 void UI_Display_DrawQuantiserTimingMenu(uint8_t enabled,
@@ -109,17 +110,16 @@ void UI_Display_DrawQuantiserTimingMenu(uint8_t enabled,
                                         uint8_t humanize_ms,
                                         uint8_t lag_ms,
                                         uint8_t cursor,
-                                        uint8_t footer_action,
                                         uint8_t has_unsaved_changes);
 void UI_Display_DrawQuanRouterMenu(const uint8_t* sources,
                                    const uint8_t* targets,
                                    uint8_t cursor,
                                    uint8_t edit_field,
-                                   uint8_t footer_action,
                                    uint8_t has_unsaved_changes);
-void UI_Display_NavigateTimingFooter(int8_t delta);
-uint8_t UI_Display_GetTimingFooterAction(void);
-void UI_Display_SetTimingFooterAction(uint8_t action);
+void UI_Display_DrawArpMenu(uint8_t arp_mode,
+                            uint8_t arp_rate,
+                            uint8_t cursor,
+                            uint8_t has_unsaved_changes);
 
 /* ── Song Chain Menu ─────────────────────────────────────────────────────── */
 void UI_Display_DrawSongChainMenu(const uint8_t* chain,
@@ -152,6 +152,9 @@ void UI_Display_DrawUserChordLoad(void);
 void UI_Display_NavigateUserChordLoad(int8_t delta);
 uint8_t UI_Display_GetSelectedUserChord(void);
 void UI_Display_SetSelectedUserChord(uint8_t index);
+
+/* ── Generic YES/NO confirm modal overlay ──────────────────────────────── */
+void UI_Display_DrawYesNoQuestionModal(const char* message, uint8_t yes_selected);
 
 #ifdef __cplusplus
 }

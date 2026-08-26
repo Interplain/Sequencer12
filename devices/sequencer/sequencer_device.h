@@ -49,6 +49,9 @@ public:
     bool     SetPatternTiming(uint8_t step_division, uint8_t numerator, uint8_t denominator);
     void     SetPatternStepDivision(uint8_t step_division);
     uint8_t  GetPatternStepDivision() const;
+    void     SetPatternArpMode(sequencer::ArpMode mode);
+    void     SetPatternArpRate(sequencer::ArpRate rate);
+    sequencer::ArpRate GetCurrentArpRate() const;
     void     SetTimeSignature(uint8_t numerator, uint8_t denominator);
     uint8_t  GetTimeSigNumerator() const;
     uint8_t  GetTimeSigDenominator() const;
@@ -66,7 +69,18 @@ public:
     void     SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, const sequencer::LedgerSlot& slot_notes);
     uint8_t  GetStepLedgerLength(uint8_t step_index) const;
     sequencer::LedgerSlot GetStepLedgerSlot(uint8_t step_index, uint8_t slot_index) const;
+    uint8_t  IsStepEventStartCanonical(uint8_t step_index, uint8_t canonical_index) const;
+    uint8_t  GetStepEventLengthCanonical(uint8_t step_index, uint8_t canonical_index) const;
+    uint8_t  GetStepEventMaxLengthCanonical(uint8_t step_index, uint8_t canonical_index) const;
+    void     SetStepEventLengthCanonical(uint8_t step_index, uint8_t canonical_index, uint8_t length_positions);
+    uint8_t  IsStepEventStartGrid(uint8_t step_index, uint8_t slot_index) const;
+    uint8_t  GetStepEventLengthGrid(uint8_t step_index, uint8_t slot_index) const;
+    uint8_t  GetStepEventMaxLengthGrid(uint8_t step_index, uint8_t slot_index) const;
+    void     SetStepEventLengthGrid(uint8_t step_index, uint8_t slot_index, uint8_t grid_length);
     void     ClearStepLedger(uint8_t step_index);
+    void     SetStepBarState(uint8_t step_index, sequencer::BarState state);
+    sequencer::BarState GetStepBarState(uint8_t step_index) const;
+    bool     IsStepSkipped(uint8_t step_index) const;
     void     SetPatternRepeatCount(uint8_t repeat_count);
     uint8_t  GetPatternRepeatCount() const;
     void     SetCurrentPatternIndex(uint8_t pattern_index);
@@ -84,6 +98,9 @@ public:
     uint8_t  GetCurrentStepNotesForPlayback(uint8_t out_notes[4]) const;
     void     ExportSong(sequencer::Song* out_song) const;
     void     ImportSong(const sequencer::Song& song);
+    const sequencer::Song& GetSongView() const;
+    sequencer::Song* GetMutableSongForImport();
+    void     FinalizeImportedSong();
     bool     GetStepChordUiParams(uint8_t step_index,
                                   uint8_t* root_key,
                                   uint8_t* chord_type,
@@ -95,15 +112,16 @@ public:
     bool     IsPlaying()      const { return playing_; }
     bool     IsGateActive()   const { return gate_active_; }
     sequencer::ArpMode GetCurrentArpMode() const;
-    /* Returns the semitone (0-11) of the current arp note, or 0xFF if no note. */
+    /* Returns the absolute MIDI note (0-127) of the current arp note, or 0xFF if no note. */
     uint8_t  GetCurrentNote() const { return arp_.CurrentNote(); }
     /* Consume a pending CV/gate event. Returns true if note+gate state changed.
-     * note is 0-11 (semitone within octave). gate is true when gate is active.
+     * note is absolute MIDI when valid. gate is true when gate is active.
      * Clears the dirty flag atomically — call once per Process() cycle. */
     bool     ConsumeCvEvent(uint8_t* note, bool* gate);
 private:
     void RecalculateStepIntervalMs();
     void RecalculateStepTicks();
+    uint8_t ResolveEventNotesForPlayback(uint8_t step_index, uint8_t slot_index, uint8_t out_notes[4]) const;
     void AdvanceStep();
     void GateOn();
     void GateOff();
@@ -111,6 +129,7 @@ private:
     void ApplyCurrentStepBehavior();
 
     const char* StepTypeName(sequencer::StepType type) const;
+    static sequencer::BarState LegacyStepTypeToBarState(sequencer::StepType type);
     void        PrintNoteMask(uint16_t note_mask) const;
     uint16_t    ApplyTranspose(uint16_t note_mask) const;
 
@@ -165,8 +184,8 @@ private:
     uint32_t    gate_retrigger_delay_ms_  = 0;
 
     /* ── Arp ─────────────────────────────────────────────────────────── */
-    uint32_t    arp_elapsed_ms_           = 0;
-    uint32_t    arp_interval_ms_          = 0;
+    uint32_t    arp_ticks_accum_          = 0;
+    uint32_t    arp_event_ticks_          = 0;
 
     /* ── Dirty flags ─────────────────────────────────────────────────── */
     bool        step_changed_             = false;

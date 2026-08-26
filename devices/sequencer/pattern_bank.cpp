@@ -7,7 +7,7 @@ namespace sequencer
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
-void PatternBank::Init()
+__attribute__((optimize("Os"), noinline)) void PatternBank::Init()
 {
     song_ = Song{};
 
@@ -81,7 +81,7 @@ const Pattern& PatternBank::GetPattern(uint8_t index) const
     return PatternAt(index);
 }
 
-void PatternBank::ClearPattern(uint8_t index)
+__attribute__((optimize("Os"), noinline)) void PatternBank::ClearPattern(uint8_t index)
 {
     PatternAt(index) = Pattern{};
 }

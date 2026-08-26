@@ -16,6 +16,7 @@ static const uint8_t kFramEnabled = 1;
 static uint8_t s_fram_ready = 0;
 static uint8_t s_loaded_from_fram = 0;
 static uint8_t s_last_io_ok = 1;
+static uint8_t s_fram_work_buf[kUserChordBlockSize];
 
 static uint32_t OrdinalToSlot(uint8_t ordinal)
 {
@@ -72,10 +73,9 @@ static void FramLoadAll(void)
     }
 
     // Magic found - read chord data
-    static uint8_t s_buf[kUserChordBlockSize];
-    if (MB85RC256_Read(FRAM_USERCHORDS_ADDR, s_buf, (uint16_t)kUserChordBlockSize))
+    if (MB85RC256_Read(FRAM_USERCHORDS_ADDR, s_fram_work_buf, (uint16_t)kUserChordBlockSize))
     {
-        g_user_chords.Load(s_buf, kUserChordBlockSize);
+        g_user_chords.Load(s_fram_work_buf, kUserChordBlockSize);
         s_loaded_from_fram = 1;
         s_last_io_ok = 1;
     }
@@ -93,9 +93,8 @@ static void FramWriteSlot(uint8_t index, uint8_t* out_ok)
     if (!kFramEnabled) return;
 
     // Step 1: Write chord block
-    static uint8_t s_buf[kUserChordBlockSize];
-    g_user_chords.Save(s_buf, kUserChordBlockSize);
-    uint8_t ok_block = MB85RC256_Write(FRAM_USERCHORDS_ADDR, s_buf, (uint16_t)kUserChordBlockSize);
+    g_user_chords.Save(s_fram_work_buf, kUserChordBlockSize);
+    uint8_t ok_block = MB85RC256_Write(FRAM_USERCHORDS_ADDR, s_fram_work_buf, (uint16_t)kUserChordBlockSize);
     
     if (!ok_block)
     {

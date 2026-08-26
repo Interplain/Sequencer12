@@ -1,6 +1,7 @@
 #include "st7789.h"
-#include "fonts.h"
-#include "fonts_extra.h"
+#include "s12_fonts.h"
+#include <stdio.h>
+#include <string.h>
 /* ------------------------------------------------------------------------- */
 /* Pin map                                                                   */
 /* PA4=CS  PA5=SCK  PA6=DC  PA7=MOSI  PA9=RST                                 */
@@ -31,6 +32,198 @@ static uint8_t __attribute__((aligned(4))) lineBuf[ST7789_WIDTH * 3];
 #else
 static uint8_t __attribute__((aligned(4))) lineBuf[ST7789_WIDTH * 2];
 #endif
+
+#if ST7789_PIANO_TRACE
+typedef struct {
+    uint8_t step_piano_active;
+    uint8_t in_piano_frame;
+    uint8_t event_id;
+    uint32_t frame_seq;
+    ST7789_PianoTraceSnapshot totals;
+    ST7789_PianoTraceSnapshot frame;
+} ST7789_PianoTraceState;
+
+static ST7789_PianoTraceState s_trace = {
+    .step_piano_active = 0u,
+    .in_piano_frame = 0u,
+    .event_id = ST7789_PIANO_EVENT_NONE,
+    .frame_seq = 0u
+};
+
+static uint8_t TraceActive(void)
+{
+    return (uint8_t)(s_trace.step_piano_active || s_trace.in_piano_frame);
+}
+
+static void TraceUpdateY(uint16_t y, uint16_t h)
+{
+    uint16_t y2;
+    if (h == 0u) return;
+    y2 = (uint16_t)(y + h - 1u);
+    if (y2 > s_trace.totals.max_y2) s_trace.totals.max_y2 = y2;
+    if (y2 > s_trace.frame.max_y2) s_trace.frame.max_y2 = y2;
+    if (y2 >= 288u || y >= 288u)
+    {
+        s_trace.totals.touches_y_gte_288++;
+        s_trace.frame.touches_y_gte_288++;
+    }
+}
+
+static void TraceOp(const char* op,
+                    uint16_t req_x,
+                    uint16_t req_y,
+                    uint16_t req_w,
+                    uint16_t req_h,
+                    uint16_t x,
+                    uint16_t y,
+                    uint16_t w,
+                    uint16_t h,
+                    uint32_t bytes,
+                    uint16_t x_shifted,
+                    uint16_t y_shifted,
+                    uint16_t x2_shifted,
+                    uint16_t y2_shifted)
+{
+    uint16_t y2 = (h > 0u) ? (uint16_t)(y + h - 1u) : y;
+    if (!TraceActive()) return;
+
+    s_trace.totals.op_total++;
+    s_trace.frame.op_total++;
+    if (!s_trace.in_piano_frame && s_trace.step_piano_active)
+    {
+        s_trace.totals.op_external_while_step_piano++;
+        s_trace.frame.op_external_while_step_piano++;
+    }
+
+    if (strcmp(op, "SetAddressWindow") == 0)
+    {
+        s_trace.totals.op_set_address_window++;
+        s_trace.frame.op_set_address_window++;
+    }
+    else if (strcmp(op, "FillRect") == 0)
+    {
+        s_trace.totals.op_fill_rect++;
+        s_trace.frame.op_fill_rect++;
+    }
+    else if (strcmp(op, "DrawRGB565Buffer") == 0)
+    {
+        s_trace.totals.op_draw_rgb565++;
+        s_trace.frame.op_draw_rgb565++;
+    }
+    else if (strcmp(op, "DrawString") == 0)
+    {
+        s_trace.totals.op_draw_string++;
+        s_trace.frame.op_draw_string++;
+    }
+
+    s_trace.totals.rgb565_bytes_total += bytes;
+    s_trace.frame.rgb565_bytes_total += bytes;
+    s_trace.totals.spi_bytes_total += bytes;
+    s_trace.frame.spi_bytes_total += bytes;
+    TraceUpdateY(y, h);
+
+    printf("LCDTRACE frame=%lu event=%u scope=%s op=%s req=(%u,%u,%u,%u) final=(%u,%u,%u,%u y2=%u) shift=(%u,%u,%u,%u) bytes=%lu footerY=%u\n",
+           (unsigned long)s_trace.frame_seq,
+           (unsigned)s_trace.event_id,
+           s_trace.in_piano_frame ? "piano" : "external",
+           op,
+           (unsigned)req_x,
+           (unsigned)req_y,
+           (unsigned)req_w,
+           (unsigned)req_h,
+           (unsigned)x,
+           (unsigned)y,
+           (unsigned)w,
+           (unsigned)h,
+           (unsigned)y2,
+           (unsigned)x_shifted,
+           (unsigned)y_shifted,
+           (unsigned)x2_shifted,
+           (unsigned)y2_shifted,
+           (unsigned long)bytes,
+           (unsigned)((y >= 288u || y2 >= 288u) ? 1u : 0u));
+}
+#endif
+
+void ST7789_DebugSetStepPianoActive(uint8_t active)
+{
+#if ST7789_PIANO_TRACE
+    s_trace.step_piano_active = active ? 1u : 0u;
+#else
+    (void)active;
+#endif
+}
+
+void ST7789_DebugSetPianoEvent(uint8_t event_id)
+{
+#if ST7789_PIANO_TRACE
+    s_trace.event_id = event_id;
+#else
+    (void)event_id;
+#endif
+}
+
+void ST7789_DebugBeginPianoRenderFrame(const char* tag)
+{
+#if ST7789_PIANO_TRACE
+    (void)tag;
+    s_trace.in_piano_frame = 1u;
+    s_trace.frame_seq++;
+    memset(&s_trace.frame, 0, sizeof(s_trace.frame));
+    s_trace.frame.frame_seq = s_trace.frame_seq;
+    s_trace.frame.last_event = s_trace.event_id;
+    s_trace.frame.step_piano_active = s_trace.step_piano_active;
+    s_trace.totals.frame_seq = s_trace.frame_seq;
+    s_trace.totals.last_event = s_trace.event_id;
+    s_trace.totals.step_piano_active = s_trace.step_piano_active;
+    printf("LCDTRACE frame=%lu begin event=%u\n",
+           (unsigned long)s_trace.frame_seq,
+           (unsigned)s_trace.event_id);
+#else
+    (void)tag;
+#endif
+}
+
+void ST7789_DebugEndPianoRenderFrame(void)
+{
+#if ST7789_PIANO_TRACE
+    if (!s_trace.in_piano_frame) return;
+    printf("LCDTRACE frame=%lu end ops=%lu setWin=%lu fillRect=%lu drawRGB=%lu drawString=%lu external=%lu bytes=%lu y>=288=%lu maxY2=%u\n",
+           (unsigned long)s_trace.frame.frame_seq,
+           (unsigned long)s_trace.frame.op_total,
+           (unsigned long)s_trace.frame.op_set_address_window,
+           (unsigned long)s_trace.frame.op_fill_rect,
+           (unsigned long)s_trace.frame.op_draw_rgb565,
+           (unsigned long)s_trace.frame.op_draw_string,
+           (unsigned long)s_trace.frame.op_external_while_step_piano,
+           (unsigned long)s_trace.frame.spi_bytes_total,
+           (unsigned long)s_trace.frame.touches_y_gte_288,
+           (unsigned)s_trace.frame.max_y2);
+    s_trace.in_piano_frame = 0u;
+#endif
+}
+
+void ST7789_DebugResetPianoTrace(void)
+{
+#if ST7789_PIANO_TRACE
+    memset(&s_trace.totals, 0, sizeof(s_trace.totals));
+    memset(&s_trace.frame, 0, sizeof(s_trace.frame));
+    s_trace.frame_seq = 0u;
+    s_trace.event_id = ST7789_PIANO_EVENT_NONE;
+    s_trace.step_piano_active = 0u;
+    s_trace.in_piano_frame = 0u;
+#endif
+}
+
+void ST7789_DebugGetPianoTraceSnapshot(ST7789_PianoTraceSnapshot* out)
+{
+    if (!out) return;
+#if ST7789_PIANO_TRACE
+    *out = s_trace.totals;
+#else
+    memset(out, 0, sizeof(*out));
+#endif
+}
 
 /* ------------------------------------------------------------------------- */
 /* Low level write helpers                                                   */
@@ -67,10 +260,26 @@ static void WriteSmallData(uint8_t data)
 
 static void SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
+    const uint16_t raw_x0 = x0;
+    const uint16_t raw_y0 = y0;
+    const uint16_t raw_x1 = x1;
+    const uint16_t raw_y1 = y1;
     x0 += X_SHIFT;
     x1 += X_SHIFT;
     y0 += Y_SHIFT;
     y1 += Y_SHIFT;
+
+#if ST7789_PIANO_TRACE
+    {
+        const uint16_t w = (raw_x1 >= raw_x0) ? (uint16_t)(raw_x1 - raw_x0 + 1u) : 0u;
+        const uint16_t h = (raw_y1 >= raw_y0) ? (uint16_t)(raw_y1 - raw_y0 + 1u) : 0u;
+        TraceOp("SetAddressWindow",
+                raw_x0, raw_y0, w, h,
+                raw_x0, raw_y0, w, h,
+                0u,
+                x0, y0, x1, y1);
+    }
+#endif
 
     {
         uint8_t d[4] = {
@@ -313,10 +522,36 @@ void ST7789_Fill_Color(uint16_t color)
 
 void ST7789_FillRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color)
 {
-    if (x >= ST7789_WIDTH || y >= ST7789_HEIGHT) return;
+    const uint16_t req_x = x;
+    const uint16_t req_y = y;
+    const uint16_t req_w = w;
+    const uint16_t req_h = h;
+    if (x >= ST7789_WIDTH || y >= ST7789_HEIGHT)
+    {
+#if ST7789_PIANO_TRACE
+        TraceOp("FillRectReject", req_x, req_y, req_w, req_h,
+                req_x, req_y, req_w, req_h, 0u,
+                (uint16_t)(req_x + X_SHIFT),
+                (uint16_t)(req_y + Y_SHIFT),
+                (uint16_t)(req_x + X_SHIFT),
+                (uint16_t)(req_y + Y_SHIFT));
+#endif
+        return;
+    }
     if (w == 0 || h == 0) return;
     if ((x + w) > ST7789_WIDTH)  w = ST7789_WIDTH  - x;
     if ((y + h) > ST7789_HEIGHT) h = ST7789_HEIGHT - y;
+
+#if ST7789_PIANO_TRACE
+    TraceOp("FillRect",
+            req_x, req_y, req_w, req_h,
+            x, y, w, h,
+            (uint32_t)w * (uint32_t)h * 2u,
+            (uint16_t)(x + X_SHIFT),
+            (uint16_t)(y + Y_SHIFT),
+            (uint16_t)(x + w - 1u + X_SHIFT),
+            (uint16_t)(y + h - 1u + Y_SHIFT));
+#endif
 
     uint8_t hi = (uint8_t)(color >> 8);
     uint8_t lo = (uint8_t)(color & 0xFF);
@@ -422,16 +657,75 @@ void ST7789_DrawRGB565Buffer(uint16_t x, uint16_t y,
                              const uint8_t* buffer,
                              uint32_t buffer_size)
 {
-    if (buffer == 0) return;
-    if (x >= ST7789_WIDTH || y >= ST7789_HEIGHT) return;
-    if (w == 0 || h == 0) return;
-    if ((x + w) > ST7789_WIDTH)  return;
-    if ((y + h) > ST7789_HEIGHT) return;
-    if (buffer_size < ((uint32_t)w * (uint32_t)h * 2u)) return;
+    const uint16_t req_x = x;
+    const uint16_t req_y = y;
+    const uint16_t req_w = w;
+    const uint16_t req_h = h;
+    const uint32_t req_buffer_size = buffer_size;
+    const uint32_t min_bytes = (uint32_t)w * (uint32_t)h * 2u;
+
+        if (buffer == 0) return;
+        if (x >= ST7789_WIDTH || y >= ST7789_HEIGHT)
+        {
+    #if ST7789_PIANO_TRACE
+        TraceOp("DrawRGB565BufferReject", req_x, req_y, req_w, req_h,
+            req_x, req_y, req_w, req_h, req_buffer_size,
+            (uint16_t)(req_x + X_SHIFT),
+            (uint16_t)(req_y + Y_SHIFT),
+            (uint16_t)(req_x + X_SHIFT),
+            (uint16_t)(req_y + Y_SHIFT));
+    #endif
+        return;
+        }
+        if (w == 0 || h == 0) return;
+        if ((x + w) > ST7789_WIDTH || (y + h) > ST7789_HEIGHT)
+        {
+    #if ST7789_PIANO_TRACE
+        TraceOp("DrawRGB565BufferReject", req_x, req_y, req_w, req_h,
+            x, y, w, h, req_buffer_size,
+            (uint16_t)(x + X_SHIFT),
+            (uint16_t)(y + Y_SHIFT),
+            (uint16_t)(x + w - 1u + X_SHIFT),
+            (uint16_t)(y + h - 1u + Y_SHIFT));
+    #endif
+        return;
+        }
+        if (buffer_size < min_bytes)
+        {
+    #if ST7789_PIANO_TRACE
+        TraceOp("DrawRGB565BufferReject", req_x, req_y, req_w, req_h,
+            x, y, w, h, req_buffer_size,
+            (uint16_t)(x + X_SHIFT),
+            (uint16_t)(y + Y_SHIFT),
+            (uint16_t)(x + w - 1u + X_SHIFT),
+            (uint16_t)(y + h - 1u + Y_SHIFT));
+    #endif
+        return;
+        }
+
+#if ST7789_PIANO_TRACE
+    TraceOp("DrawRGB565Buffer",
+            req_x, req_y, req_w, req_h,
+            x, y, w, h,
+            req_buffer_size,
+            (uint16_t)(x + X_SHIFT),
+            (uint16_t)(y + Y_SHIFT),
+            (uint16_t)(x + w - 1u + X_SHIFT),
+            (uint16_t)(y + h - 1u + Y_SHIFT));
+    if (req_buffer_size != min_bytes)
+    {
+        printf("LCDTRACE frame=%lu warn=buffer_size_mismatch reqBytes=%lu expectedBytes=%lu\n",
+               (unsigned long)s_trace.frame_seq,
+               (unsigned long)req_buffer_size,
+               (unsigned long)min_bytes);
+    }
+#endif
 
     SetAddressWindow(x, y, (uint16_t)(x + w - 1u), (uint16_t)(y + h - 1u));
     CS_ASSERT();
     DC_HIGH();
+
+    buffer_size = min_bytes;
 
     while (buffer_size > 0u)
     {
@@ -556,10 +850,59 @@ void ST7789_DrawStringScaled(uint16_t x, uint16_t y, const char *str,
                              const Font_t *font, uint8_t scale,
                              uint16_t fg, uint16_t bg)
 {
+    uint16_t start_x = x;
+    uint16_t start_y = y;
+    uint16_t max_right = x;
+    uint16_t max_bottom = y;
+    uint32_t glyph_count = 0u;
     if (font == 0 || str == 0 || scale == 0) return;
 
     const uint16_t stepX = (uint16_t)(font->width * scale);
     const uint16_t stepY = (uint16_t)(font->height * scale);
+
+#if ST7789_PIANO_TRACE
+    {
+        const char* p = str;
+        uint16_t tx = x;
+        uint16_t ty = y;
+        while (*p)
+        {
+            if ((tx + stepX) > ST7789_WIDTH)
+            {
+                tx = 0u;
+                ty = (uint16_t)(ty + stepY);
+            }
+            if ((ty + stepY) > ST7789_HEIGHT)
+            {
+                break;
+            }
+            glyph_count++;
+            if ((uint16_t)(tx + stepX) > max_right) max_right = (uint16_t)(tx + stepX);
+            if ((uint16_t)(ty + stepY) > max_bottom) max_bottom = (uint16_t)(ty + stepY);
+            tx = (uint16_t)(tx + stepX);
+            ++p;
+        }
+
+        if (glyph_count > 0u)
+        {
+            TraceOp("DrawString",
+                    start_x, start_y,
+                    (uint16_t)(max_right - start_x),
+                    (uint16_t)(max_bottom - start_y),
+                    start_x, start_y,
+                    (uint16_t)(max_right - start_x),
+                    (uint16_t)(max_bottom - start_y),
+                    (uint32_t)(max_right - start_x) * (uint32_t)(max_bottom - start_y) * 2u,
+                    (uint16_t)(start_x + X_SHIFT),
+                    (uint16_t)(start_y + Y_SHIFT),
+                    (uint16_t)(max_right - 1u + X_SHIFT),
+                    (uint16_t)(max_bottom - 1u + Y_SHIFT));
+        }
+    }
+#endif
+
+    (void)fg;
+    (void)bg;
 
     while (*str) {
         if ((x + stepX) > ST7789_WIDTH) {

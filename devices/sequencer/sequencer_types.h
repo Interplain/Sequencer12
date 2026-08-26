@@ -12,7 +12,8 @@ namespace sequencer
 constexpr uint32_t kStepCount    = 12;
 constexpr uint32_t kPatternCount = 32;
 constexpr uint32_t kChainLength  = 32;
-constexpr uint8_t  kStepLedgerMax = 16;
+constexpr uint8_t  kStepLedgerMax = 32;
+constexpr uint8_t  kStepEventLengthPackedBytes = 20;
 constexpr uint8_t  kMidiNoteNone = 0xFFu;
 
 struct LedgerSlot
@@ -288,13 +289,23 @@ enum class StepType : uint8_t
     Empty
 };
 
+enum class BarState : uint8_t
+{
+    Active = 0,
+    Skip
+};
+
 struct StepSlot
 {
     StepType type                = StepType::Empty;
+    BarState bar_state           = BarState::Active;
     uint32_t duration_multiplier = 1;
     uint8_t  repeat_count        = 1;     // ledger length / note count inside the step
     uint16_t note_mask           = 0;
     std::array<LedgerSlot, kStepLedgerMax> note_ledger{}; // one absolute-note cell per sub-note slot
+    /* Canonical event lengths in 1/32 units packed as 32 x 5-bit length_minus_1 values.
+     * Values at non-event-start positions are ignored. */
+    std::array<uint8_t, kStepEventLengthPackedBytes> event_length_packed{};
     char     custom_chord_name[17] = {0};
     uint8_t  velocity            = 100;   // 0-127 MIDI standard
     uint8_t  probability         = 100;   // 0-100 percent chance of firing
@@ -358,7 +369,7 @@ struct Pattern
 
     // Step range
     uint8_t     step_count        = kStepCount;  // active steps 1-12
-    uint8_t     step_division     = 4;           // steps per quarter: 4=1/16, 2=1/8, 1=1/4
+    uint8_t     step_division     = 4;           // steps per quarter: 1=1/4, 2=1/8, 4=1/16, 8=1/32
 
     // Playback
     PlaybackMode playback_mode    = PlaybackMode::Forward;

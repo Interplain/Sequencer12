@@ -2,7 +2,7 @@
 #define __ST7789_H
 
 #include "stm32f4xx_hal.h"
-#include "fonts.h"
+#include "s12_fonts.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -154,6 +154,37 @@ extern SPI_HandleTypeDef hspi1;
 #define ST7789_MINIMAL_INIT 1
 #endif
 
+/* Temporary runtime tracing for Piano Roll render-path debugging. */
+#ifndef ST7789_PIANO_TRACE
+#define ST7789_PIANO_TRACE 1
+#endif
+
+enum {
+    ST7789_PIANO_EVENT_NONE = 0,
+    ST7789_PIANO_EVENT_ENCODER = 1,
+    ST7789_PIANO_EVENT_OCT_UP = 2,
+    ST7789_PIANO_EVENT_OCT_DOWN = 3,
+    ST7789_PIANO_EVENT_ENTER = 4,
+    ST7789_PIANO_EVENT_MISC = 5,
+    ST7789_PIANO_EVENT_SYNTHETIC = 6
+};
+
+typedef struct {
+    uint32_t frame_seq;
+    uint8_t last_event;
+    uint8_t step_piano_active;
+    uint32_t op_total;
+    uint32_t op_set_address_window;
+    uint32_t op_fill_rect;
+    uint32_t op_draw_rgb565;
+    uint32_t op_draw_string;
+    uint32_t op_external_while_step_piano;
+    uint32_t touches_y_gte_288;
+    uint16_t max_y2;
+    uint32_t rgb565_bytes_total;
+    uint32_t spi_bytes_total;
+} ST7789_PianoTraceSnapshot;
+
 void ST7789_Init(void);
 void ST7789_DisplayOff(void);
 void ST7789_DisplayOn(void);
@@ -185,6 +216,14 @@ void ST7789_DrawCharScaled(uint16_t x, uint16_t y, char c,
 void ST7789_DrawStringScaled(uint16_t x, uint16_t y, const char *str,
                              const Font_t *font, uint8_t scale,
                              uint16_t fg, uint16_t bg);
+
+/* Piano Roll render diagnostics helpers (temporary instrumentation). */
+void ST7789_DebugSetStepPianoActive(uint8_t active);
+void ST7789_DebugSetPianoEvent(uint8_t event_id);
+void ST7789_DebugBeginPianoRenderFrame(const char* tag);
+void ST7789_DebugEndPianoRenderFrame(void);
+void ST7789_DebugResetPianoTrace(void);
+void ST7789_DebugGetPianoTraceSnapshot(ST7789_PianoTraceSnapshot* out);
 
 #ifdef __cplusplus
 }

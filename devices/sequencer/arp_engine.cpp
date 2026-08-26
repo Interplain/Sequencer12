@@ -13,13 +13,13 @@ void ArpEngine::Init()
     peak_         = false;
     current_note_ = 0xFF;
 
-    for (int i = 0; i < 12; ++i) notes_[i] = 0;
+    for (int i = 0; i < 4; ++i) notes_[i] = 0;
 }
 
-void ArpEngine::LoadChord(uint16_t note_mask, ArpMode mode)
+void ArpEngine::LoadNotes(const uint8_t* notes, uint8_t count, ArpMode mode)
 {
     mode_ = mode;
-    BuildNoteList(note_mask);
+    BuildNoteList(notes, count);
     Reset();
 }
 
@@ -31,7 +31,23 @@ void ArpEngine::Reset()
 
     if (note_count_ > 0)
     {
-        current_note_ = notes_[0];
+        switch (mode_)
+        {
+            case ArpMode::Down:
+                position_ = (uint8_t)(note_count_ - 1u);
+                current_note_ = notes_[position_];
+                break;
+
+            case ArpMode::DownUp:
+                position_ = 0u;
+                current_note_ = notes_[(uint8_t)(note_count_ - 1u)];
+                break;
+
+            default:
+                position_ = 0u;
+                current_note_ = notes_[0];
+                break;
+        }
     }
     else
     {
@@ -143,8 +159,7 @@ uint8_t ArpEngine::Advance()
             break;
 
         case ArpMode::AsPlayed:
-            // AsPlayed uses insertion order — same as Up on the
-            // as-entered list (note_mask bit order = entry order)
+            // AsPlayed currently follows sorted UP order.
             position_     = (position_ + 1) % note_count_;
             current_note_ = notes_[position_];
             break;
@@ -154,44 +169,76 @@ uint8_t ArpEngine::Advance()
 }
 
 // ─────────────────────────────────────────────
-// Interval calculation
+// 96-PPQN cadence helper
 // ─────────────────────────────────────────────
 
-uint32_t ArpEngine::CalcIntervalMs(uint32_t bpm, ArpRate rate)
+uint32_t ArpEngine::TicksPerEvent(ArpRate rate)
 {
-    if (bpm == 0) bpm = 1;
-
-    // Quarter note interval in ms
-    uint32_t quarter_ms = 60000 / bpm;
-
     switch (rate)
     {
-        case ArpRate::Quarter:      return quarter_ms;
-        case ArpRate::Eighth:       return quarter_ms / 2;
-        case ArpRate::Sixteenth:    return quarter_ms / 4;
-        case ArpRate::ThirtySecond: return quarter_ms / 8;
-        default:                    return quarter_ms / 4;
+        case ArpRate::Quarter:      return 96u;
+        case ArpRate::Eighth:       return 48u;
+        case ArpRate::Sixteenth:    return 24u;
+        case ArpRate::ThirtySecond: return 12u;
+        default:                    return 24u;
     }
 }
 
 // ─────────────────────────────────────────────
-// Build sorted note list from mask
+// Build sorted absolute-MIDI note list
 // ─────────────────────────────────────────────
 
-void ArpEngine::BuildNoteList(uint16_t note_mask)
+void ArpEngine::BuildNoteList(const uint8_t* notes, uint8_t count)
 {
     note_count_ = 0;
 
-    for (uint8_t i = 0; i < 12; ++i)
+    if (!notes || count == 0u)
     {
-        if (note_mask & (1u << i))
+        return;
+    }
+
+    if (count > 4u)
+    {
+        count = 4u;
+    }
+
+    for (uint8_t i = 0u; i < count; ++i)
+    {
+        const uint8_t note = notes[i];
+        if (note > 127u)
         {
-            notes_[note_count_++] = i;
+            continue;
+        }
+
+        uint8_t duplicate = 0u;
+        for (uint8_t j = 0u; j < note_count_; ++j)
+        {
+            if (notes_[j] == note)
+            {
+                duplicate = 1u;
+                break;
+            }
+        }
+        if (duplicate)
+        {
+            continue;
+        }
+
+        notes_[note_count_++] = note;
+    }
+
+    for (uint8_t i = 0u; i < note_count_; ++i)
+    {
+        for (uint8_t j = (uint8_t)(i + 1u); j < note_count_; ++j)
+        {
+            if (notes_[j] < notes_[i])
+            {
+                const uint8_t t = notes_[i];
+                notes_[i] = notes_[j];
+                notes_[j] = t;
+            }
         }
     }
-    // notes_ is already in ascending order (C=0 ... B=11)
-    // Up mode plays ascending, Down plays descending
-    // DownUp reverses the array index at play time
 }
 
 } // namespace sequencer
