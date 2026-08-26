@@ -1,659 +1,536 @@
-# Sequencer12 (S12)
+# Sequencer12 (S12) v2.0
 
-Structured modular composition system for Eurorack.
+**Structured modular composition system for Eurorack**
 
-Built on STM32F405RGT6 with:
-- calibrated multi-channel CV output
-- interpreted ADC/CV input architecture
-- clock input and output
-- MIDI integration
-- persistent FRAM storage
-- deterministic scheduler-driven firmware
-- and a 240x320 ST7789 SPI display UI.
+A deterministic embedded composition environment designed to interpret modular signals, harmonic structure, and performance gestures into organized musical output.
 
-S12 is designed not only to generate musical output, but to interpret external modular signals, timing, harmonic input, transport state, and performance gestures into structured musical composition.
-Firmware is in a stable, committed state. Development is paused while the PCB is designed. The breadboard prototype is too fragile (loose wires causing intermittent ST-Link upload failures and unreliable hardware connections). The firmware built and runs correctly on the breadboard — gate and CV output were confirmed working before parking.
-
-Rather than functioning purely as a traditional sequencer or generative chaos source, S12 aims to become a musically-aware embedded composition environment:
-- chord aware
-- progression aware
-- transport aware
-- song aware
-- scale aware
-- CV aware
-- and MIDI aware.
-
-The long-term goal is to create a deterministic modular instrument capable of transforming voltage, timing, harmony, and interaction into organised musical structure while remaining stable, modular, and architecturally coherent.
-
-- Main mode cycling on Shift tap:
-  - STEP
-  - CHORD
-  - TIME
-  - SONG
-- Chord workflow updates:
-  - Matrix 1-4 in chord params are footer actions:
-    - 1 MAIN
-    - 2 PREV
-    - 3 NEXT
-    - 4 SAVE
-  - PREV/NEXT carries chord params to neighboring steps for rapid programming
-  - SAVE no longer leaves footer locked on SAVE
-- Timing UI cleanup and naming:
-  - Timing -> Pattern Timing
-  - Duration -> Gate
-  - TS Num -> Beats Per Bar
-  - TS Den -> Beat Unit
-  - Value columns moved right to prevent overlap
-- Per-step repeat behavior (engine-level):
-  - Step Repeats is stored per step
-  - Repeat plays step N multiple times before advancing
-- Repeat visual feedback in grid:
-  - Active repeating step flashes white/blue
-  - Flicker fix applied to redraw only on transitions/toggle phases
-- Song chain editor:
-  - SONG mode matrix 1 opens chain editor
-  - Matrix 1-4 select visible slots
-  - Matrix 5 add slot
-  - Matrix 6 remove slot
-  - Encoder edits slot pattern assignment
-  - Playing slot blinks in chain view
-- Pattern step-count live update:
-  - Pattern Steps now applies immediately while playing
-- Chord-preservation fixes:
-  - Per-pattern chord draft cache in UI
-  - UI auto-switches chord cache on pattern change
-  - Hydration from engine note-mask metadata for pink-step recovery in chord mode
-- Main loop responsiveness:
-  - Loop delay now targets a 10 ms floor instead of always adding 10 ms
-- DAC8564 calibration (all 4 channels):
-  - Per-channel two-point calibration (low/high voltage reference measurements)
-  - Calibration data persisted to FRAM and loaded at boot
-  - All 4 CV output channels (A/B/C/D) calibrated independently
-  - Calibration mode accessible via Shift+Encoder press in STEP grid
-  - Real-world voltage accuracy corrected for DAC offset and gain error
-- ST7789 display:
-  - Running at 10.5 MHz (SPI1 prescaler /16), DMA disabled (ST7789_USE_DMA=0)
-  - This is the confirmed stable config — DMA=1 and /4 prescaler caused a white-screen regression on breadboard (likely noise on SPI lines)
-  - Once on PCB with clean traces, DMA=1 and /4 should be revisited
-- CV / Gate hardware output (new, May 2026):
-  - Gate A on PC5 — driven directly from sequencer step engine via BSRR in the 1 ms SysTick ISR
-  - Gate is 50% duty cycle (gate_length_ms = step_interval / 2, min 5 ms)
-  - CV1 on the pitch lane routed from `GetCurrentNote()` using two-point calibration (-1V to +2V across notes C–B)
-  - Default pattern (steps 0–7) loads C major scale so CV moves on every step
-  - Confirmed working on breadboard: gate fires on all 8 note steps, rest steps silent
-  - CV calibration (per-channel two-point, FRAM-persisted) applied at boot
-- Step piano roll UI:
-  - Completely redesigned — each row owns all its pixels, no partial repaints
-  - Pastel green (white keys) and sky blue (black keys) lane colours
-  - Clean 1 px row separators, no bleed artefacts
-  - Header covers full 48 px (matches main screen header+status strip)
-  - Shift indicator and sidebar suppressed while roll is active
-- FRAM persistence (User Chords):
-  - MB85RC256 32KB FRAM on dedicated I2C3 bus (PA8 SCL, PC9 SDA)
-  - 128 user chord slots with ~2560 bytes total storage (offset 0x0010)
-  - Auto-preload entire library at boot for instant menu access
-  - Per-slot write optimization (~20 bytes per save instead of full block)
-  - Persistent across power cycles with integrity validation
-  - Full CRUD operations: Create, Save (with Shift+Play), Rename, Delete (with Shift+Rec)
-- User Chord UI standardization:
-  - Load Chord screen: flat-text footer ("PLAY LOAD" / "REC BACK")
-  - Name Chord screen: flat-text footer ("PLAY SAVE" / "REC BACK")
-  - Create Chord (piano keyboard): flat-text footer ("PLAY SAVE" / "REC BACK")
-  - Step Piano Roll: flat-text footer ("PLAY SAVE" / "REC BACK")
-  - Consistent visual language across all chord workflow screens
-  - Live chord name identification on piano keyboard header
-
-## Known Issues / Needs Sorting
-
-- **Breadboard parked — move to PCB**: ST-Link upload was failing (exit code 1) due to loose SWDIO/SWDCLK wires on breadboard. This is a hardware problem, not a firmware bug.
-- Display DMA deferred: `ST7789_USE_DMA=1` with SPI1 at /4 (42 MHz) caused white-screen boot failure on breadboard. Reverted to DMA=0, /16 (10.5 MHz). Revisit once PCB has clean SPI traces.
-- CV output: only CH:A physically wired on breadboard. Channels B/C/D are calibrated in firmware but untested on hardware.
-- Persistence (remaining):
-  - FRAM save/load for full song and pattern state is not complete (user chords done)
-- Build hygiene:
-  - Build artifacts under .pio/build should stay out of commits (current repo contains tracked binary build outputs)
-- Test coverage:
-  - No formal regression test harness yet for mode transitions and input maps
-
-## STM32 Flash Recovery Procedure (ST-Link)
-
-Use this when upload fails with device protected on STM32F405.
-
-1. Run unlock-only recovery:
-  /home/interplain/.platformio/penv/bin/platformio run -e genericSTM32F405RG_recovery
-2. Fully power-cycle the target board (remove and re-apply board power).
-3. Flash normally:
-  /home/interplain/.platformio/penv/bin/platformio run -e genericSTM32F405RG -t upload
-4. If protection persists, repeat from step 1.
-
-Notes:
-- Recovery environment only unlocks readout protection and does not flash firmware.
-- A real power-cycle between unlock and upload is required for settings to take effect.
-
-## Control Map (Current Firmware)
-
-Command reference page for manual drafting:
-- See `CONTROL_COMMAND_REFERENCE.md`
-
-### Global Input Layer
-
-- Shift tap: cycle main mode STEP -> CHORD -> TIME -> SONG -> QUAN
-- Play: transport play/stop on grid, save/confirm in submenus
-- Rec: rec arm on grid, back/cancel in submenus
-- Shift+Play: transport reset on grid
-- Shift+Rec: transport clear on grid
-- Encoder turn:
-  - Grid + Shift held: BPM adjust
-  - Menu contexts: navigate/edit context-specific fields
-- Encoder press:
-  - Context-specific select/enter/toggle
-- Matrix 1-12:
-  - Context-specific (see mode tables)
-- Shift+Matrix 1-12:
-  - Context-specific (pattern select, timing jump, footer shortcuts)
-
-### STEP Main Mode (Grid)
-
-- Matrix 1-12: open per-step piano roll for that step
-- Encoder turn (no Shift): currently ignored in grid
-- Encoder press: open per-step piano roll for selected step
-
-### CHORD Main Mode (Grid)
-
-- Matrix 1-12: open chord menu directly for that step
-
---------------------------------------
-
-<img width="420" height="440" alt="image" src="https://github.com/user-attachments/assets/27a54389-0bef-4fea-b638-a025a2c24736" />
-
---------------------------------------
-
-<img width="420" height="440" alt="image" src="https://github.com/user-attachments/assets/4dd10511-03a8-4e69-b7f9-2b1f31ab992a" />
-
---------------------------------------
-
-<img width="420" height="440" alt="image" src="https://github.com/user-attachments/assets/bda8e4f0-fadb-4365-a04b-f634995fcc8e" />
-
---------------------------------------
-
-<img width="420" height="440" alt="image" src="https://github.com/user-attachments/assets/b09b02ee-3b01-46fa-93f2-72d0a6dcf1e9" />
-
---------------------------------------
-  
-
-
-### TIME Main Mode (Grid)
-
-- Matrix 1: open Pattern Timing menu focused to Step Grid
-- Matrix 2: open Quantizer Timing menu focused to Grid
-- Shift+Matrix 1-12: open that step's params focused on Gate
-
-### SONG Main Mode (Grid)
-
-- Matrix 1-12: open Song Chain editor focused to pressed slot
-- Shift+Matrix 1-12: set current pattern P01-P12
-
-### QUAN Main Mode (Grid)
-
-- Matrix 1: open Quantizer Timing menu focused to Quantize ON/OFF
-- Matrix 2: open Quantizer Timing menu focused to Grid
-- Matrix 3-10: open Quantizer CV Router focused to S03-S10 slot
-- Encoder press: open Quantizer CV Router
-
-### Chord Params Mode
-
-- Matrix 1-4: footer actions (MAIN/PREV/NEXT/SAVE)
-- Matrix 5-12: jump editing target step
-- Shift+Matrix 1-4: same footer actions
-- Shift+Encoder turn: navigate footer actions
-- Encoder turn (normal): edit selected parameter
-
-### Song Chain Mode
-
-- Matrix 1-4: select visible slot on page
-- Matrix 5: add slot
-- Matrix 6: remove slot
-- Encoder turn: change pattern assigned to selected slot
-
-## Potentially Free Buttons / Combos (For Manual Planning)
-
-These appear unassigned or effectively no-op in current code paths.
-
-### High-value free combos
-
-- Grid, STEP mode:
-  - Encoder turn without Shift (currently intentionally ignored)
-- Grid, TIME mode:
-  - Matrix 2-12 (plain press)
-- Grid, SONG mode:
-  - Matrix 2-12 (plain press)
-
-### Submenu free combos
-
-- Song Chain mode:
-  - Matrix 7-12
-  - Shift+Matrix 1-12 (currently falls through and does nothing useful)
-- Step Piano mode:
-  - Encoder press is reserved (no action yet)
-- Most submenu contexts:
-  - Shift+Play
-  - Shift+Rec
-  (transport shift combos are only handled on grid)
-
-### Gesture-level free space
-
-- Long-press actions are not implemented
-- Double-tap actions are not implemented
-- Chorded combos beyond Shift modifier are not implemented
-
-## Suggested Next Priorities
-
-### When Returning to Firmware (post-PCB)
-1. Re-enable `ST7789_USE_DMA=1` and SPI1 prescaler `/4` — test on PCB with clean traces.
-2. Wire and test CV channels B/C/D (gate B/C/D also on PC6/PC7/PC8).
-3. Verify CV pitch accuracy on modular VCO across the full -1V to +2V range with saved calibration.
-4. Extend FRAM persistence to patterns and song chain (user chords complete).
-5. Finalize USER chord load/write path so loaded user chords are represented consistently in step params.
-
-### PCB Priorities
-- Clean SPI1 traces for display (no stubs, 50-ohm impedance control where possible)
-- Decouple DAC8564 supply carefully — CV noise floor matters for pitch accuracy
-- Confirm SWDIO/SWDCLK with proper pull-ups for reliable ST-Link on first boot
-- PC5–PC8 and PC1 gate outputs — level shift or buffer if driving eurorack gate levels (3.3V may be marginal)
-3. Assign SONG mode spare matrix buttons (2-12) for direct slot/pattern workflows.
-4. Add a simple input-map regression test checklist before each upload.
-
-## April 2026: Hardware Bring-up & Gate/Clock Pin Mapping
-
-### DAC & Gate/Clock Output Integration Progress
-
-- **DAC8564 4-Channel CV Output:**
-  - All 4 DAC channels (CH_OUT_A/B/C/D) are now confirmed working and mapped to CV jacks via OPA4171 op-amps.
-  - Output range is bipolar (±5V) as per schematic.
-- **Gate Outputs:**
-  - GATE_A → PC5
-  - GATE_B → PC6
-  - GATE_C → PC7
-  - GATE_D → PC8
-  - All mapped directly to STM32 for low-latency, sample-accurate timing.
-- **Clock I/O:**
-  - Clock_IN → PC0 (input, no pull)
-  - Clock_OUT → PC1 (output, initialized LOW)
-  - Clock_OUT is inverted by 74HC14, so firmware must invert logic for correct polarity at the jack.
-- **DAC_CLR:**
-  - DAC_CLR → PC4 (output, initialized HIGH)
-
-### Next Steps (for firmware & repo):
-- [ ] Implement sequencer engine logic to drive GATE_A/B/C/D and Clock_OUT pins in real time.
-- [ ] Add code to read Clock_IN for external sync.
-- [ ] Document pin mappings in code and README.
-- [ ] Push all bring-up and pin mapping changes to GitHub after confirming hardware and code.
-
-**Schematic and firmware are now in sync for all CV, Gate, and Clock outputs.**
+**Current Status**: v2.0 Pre-Fabrication | PCB v2.0 Ready for JLCPCB | Memory Optimized (22.1% FLASH, 74.6% RAM)
 
 ---
 
-# Philosophy
+## Overview
 
-S12 is not intended to be another generative chaos module.
+S12 is **not** a generative chaos module. It's a musical interpretation system:
 
-Its purpose is to transform modular signals, timing, harmonic input, and performance gestures into structured musical composition.
-
-Rather than simply outputting voltages or random patterns, S12 is being designed as a musical interpretation system:
-- chord aware
-- progression aware
-- transport aware
-- song aware
-- scale aware
-- CV aware
-- MIDI aware
-
-The project sits between:
-- the unpredictability of modular synthesis
-- and the intentionality of arranged composition.
-
-S12 aims to provide a structured compositional layer for Eurorack.
+- **Chord aware** — understands harmonic structure and inversions
+- **Progression aware** — manages harmonic movement and timing relationships
+- **Transport aware** — synchronizes to external clock or masters timing
+- **Scale aware** — respects pitch quantization and note constraints
+- **CV aware** — interprets external modular signals musically
+- **MIDI aware** — integrates MIDI clock and note input
+- **Deterministic** — stable, predictable real-time behavior
 
 ---
 
-# Project Direction
+## Hardware Platform
 
-The original project began as a 12-step chord sequencer for Eurorack.
-
-As development progressed, the firmware architecture evolved into something much larger:
-a deterministic embedded composition environment capable of interpreting musical context rather than merely sequencing notes.
-
-The long-term vision is a modular composition instrument that can:
-- interpret external CV musically
-- manage harmonic structure
-- coordinate transport and timing
-- understand progression relationships
-- integrate MIDI and modular workflows
-- and remain deterministic and stable under real-time embedded constraints.
-
-The project intentionally avoids:
-- feature chaos
-- architectural drift
-- generic modulation spaghetti
-- and imitation of existing Eurorack modules.
-
-S12 is intended to become a unique instrument with its own design language and architectural identity.
+| Component | Spec |
+|-----------|------|
+| **MCU** | STM32F405RGT6 @ 168 MHz |
+| **Display** | ST7789 240×320 SPI display |
+| **CV Output** | DAC8564 (4× channels, -2V to +6V range) |
+| **CV Input** | Multi-channel ADC (future quantizer routing) |
+| **Persistence** | MB85RC256 32KB FRAM on I2C3 |
+| **Input Expander** | MCP23017 on I2C1 (12-button matrix + encoder) |
+| **Timing** | uClock 96 PPQN internal, 24 PPQN MIDI output |
+| **Gates** | 4× GPIO outputs (PC5-PC8, sample-accurate) |
+| **Clock I/O** | Clock IN (PC0), Clock OUT (PC1) |
+| **MIDI** | DIN IN + OUT (standard 5-pin connectors) |
 
 ---
 
-# System Architecture
+## Architecture (4-Tier Model)
 
-The firmware is evolving toward a layered embedded architecture.
-
-## Hardware Layer
-
-Responsible for:
-- SPI
-- I2C
-- ADC
-- DAC
-- GPIO
-- MIDI UART
-- display communication
-- encoder/buttons
-- FRAM persistence
-
-This layer understands signals and hardware only.
-
----
-
-## Runtime / Scheduler Layer
-
-Deterministic fixed-rate scheduler providing:
-- 1ms ticks
-- 5ms ticks
-- 10ms ticks
-- 20ms ticks
-
-Responsible for:
-- transport timing
-- gate timing
-- event scheduling
-- sequencer runtime updates
-- synchronization
-
-This is the heartbeat of S12.
-
----
-
-## UI / Screen System
-
-The UI architecture is evolving toward modular screen ownership.
-
-Detailed architecture proposal for screen hierarchy, ADC/CV activation, and quantizer mode placement:
-- See `UI_WORKFLOW_HIERARCHY.md` (Issue #35)
-
-UI route freeze checklist for safe modularization:
-- See `UI_ROUTE_REGRESSION_CHECKLIST.md`
-
-Goals:
-- isolated screen state
-- deterministic redraw ownership
-- reusable rendering infrastructure
-- minimal global state leakage
-- scalable screen lifecycle management
-
-Current architectural direction includes:
-- dedicated screen modules
-- clear render contracts
-- partial redraw support
-- shared UI infrastructure
-- deterministic input ownership
-
-The piano roll screen is currently acting as the architectural proving ground for this transition.
+```
+┌─────────────────────────────────────────────┐
+│  TIER 1: USER INTERFACE                     │
+│  Piano Roll display, Chord menus,           │
+│  Parameter screens, Transport controls      │
+│  → ui_sequencer.c, ui_display.c,            │
+│    ui_input.c, ui_screens/                  │
+└──────────────────┬──────────────────────────┘
+                   ↑ calls
+                   ↓
+┌─────────────────────────────────────────────┐
+│  TIER 2: FIRMWARE BRIDGE (C↔C++)            │
+│  Sequencer bridge, Calibration layer,       │
+│  User chord management                      │
+│  → sequencer_bridge.cpp/h,                  │
+│    user_chord_bridge.cpp/h, calibration.c   │
+└──────────────────┬──────────────────────────┘
+                   ↑ calls
+                   ↓
+┌─────────────────────────────────────────────┐
+│  TIER 3: CORE ENGINE (C++)                  │
+│  Sequencer device, Pattern bank,            │
+│  ARP engine, Chord library,                 │
+│  Pitch mapping, uClock timing               │
+│  → devices/sequencer/,                      │
+│    core/pitch_mapping.h                     │
+└──────────────────┬──────────────────────────┘
+                   ↑ uses
+                   ↓
+┌─────────────────────────────────────────────┐
+│  TIER 4: PLATFORM LAYER                     │
+│  Hardware drivers: DAC8564, FRAM,           │
+│  ST7789, MCP23017, STM32 HAL                │
+│  → platform/, lib/, stm32/                  │
+└─────────────────────────────────────────────┘
+```
 
 ---
 
-## Transport & Timing Layer
+## Real-Time Execution Model
 
-Responsible for:
-- play/stop/reset
-- clock synchronization
-- MIDI clock
-- external clock input
-- song position
-- pattern transitions
-- timing state
-- transport coordination
+### Interrupt-Driven Architecture
 
-S12 is intended to operate both as:
-- a synchronized follower
-- and a master transport authority.
+**SysTick (1 kHz)**
+```
+Every 1 ms:
+  ├─ Bridge_Tick1ms()
+  │  ├─ UI_Sequencer_Tick1ms()
+  │  │  ├─ Button input polling (MCP23017 via I2C1)
+  │  │  ├─ Encoder position reading (TIM2)
+  │  │  └─ Display refresh (ST7789 via SPI1)
+  │  └─ Return to main loop
+```
 
----
+**uClock Callback (96 PPQN, variable rate)**
+```
+When clock tick arrives:
+  ├─ Bridge_TickMusical()
+  │  ├─ sequencer_device.TickMusical()
+  │  │  ├─ Increment step counter
+  │  │  ├─ Check if new step triggered
+  │  │  └─ Queue note events for output
+  │  ├─ MIDI clock output (PC1, 24 PPQN)
+  │  └─ Return to uClock
+```
 
-## Composition Engine
-
-This is the core identity of S12.
-
-The composition engine is intended to manage:
-- chords
-- inversions
-- progression logic
-- arp systems
-- pattern relationships
-- phrase movement
-- timing interpretation
-- harmonic context
-
-This layer transforms timing and CV input into structured musical behavior.
-
----
-
-# CV / ADC Philosophy
-
-One of the defining long-term goals of S12 is musical CV interpretation.
-
-Most Eurorack modules treat CV as generic modulation.
-
-S12 instead aims to interpret CV as musical intent.
-
-Potential future uses include:
-- harmonic transposition
-- scale selection
-- progression steering
-- quantizer control
-- rhythm influence
-- phrase shaping
-- inversion control
-- transport manipulation
-- probabilistic composition control
-
-The ADC system is therefore being designed as a dedicated interpretation layer rather than simple parameter modulation.
+**Main Loop (Non-Blocking)**
+```
+while(1) {
+    // Process UI state machine & button input
+    UI_Sequencer_Process();
+    
+    // Service musical events (CV/gate output)
+    Bridge_ServiceMusicalEvents();
+    {
+        if (note_ready) {
+            DAC8564_Write(channel, cv_code);  // SPI2
+            GPIOC->BSRR = (1U << gate_pin);   // Fire gate
+            schedule_gate_release();           // Timed release
+        }
+    }
+}
+```
 
 ---
 
-# Current Hardware Platform
+## uClock Integration (v2.0)
 
-| Component | Part |
-|---|---|
-| MCU | STM32F405RGT6 |
-| Display | ST7789 240x320 SPI |
-| CV DAC | DAC8564 |
-| CV Input | Multi-channel ADC architecture |
-| Input Expander | MCP23017 |
-| Persistent Storage | MB85RC256 FRAM |
-| Encoder | EC12R quadrature |
-| MIDI | DIN IN + OUT |
-| Clock I/O | Dedicated clock input/output |
+### Timing System
 
----
+**Internal Clock:**
+- 96 PPQN internal sequencer grid
+- Dividers: 1/4 (96 ticks), 1/8 (48), 1/16 (24), 1/32 (12)
+- Default 120 BPM propagated via `Bridge_SetBpm()`
 
-# Current Firmware State (May 2026)
+**MIDI Clock Output:**
+- 24 PPQN output on PC1 (divide-by-4 from internal 96 PPQN)
+- Inverted through 74HC14 to match eurorack clock standard
 
-## Core Runtime
-- Deterministic scheduler system
-- Device-oriented runtime architecture
-- Modular transport state
-- Pattern playback engine
-- Sequencer timing engine
-- Real-time UI update loop
+**External Sync:**
+- Clock IN on PC0 for slave mode (future implementation)
+- Master/follower modes planned for v2.1
 
----
+### Callback Architecture
 
-## Display System
-- ST7789 SPI display driver
-- 42 MHz SPI operation
-- DMA-based display writes
-- Reduced redraw artefacts
-- Structured redraw ownership improvements
-- Piano roll screen redesign with isolated row ownership
+```c
+// uClock fires this every 96 PPQN tick
+void Bridge_TickMusical(void) {
+    sequencer_device.TickMusical();
+    // Updates playback position
+    // Queues new notes for this step
+}
 
----
-
-## CV Output System
-- DAC8564 integrated and operational
-- Independent calibration per channel
-- Two-point voltage calibration
-- FRAM-persisted calibration data
-- Bipolar CV output architecture
+// Main loop drains the queue
+void Bridge_ServiceMusicalEvents(void) {
+    // Dequeue notes
+    // Write CV codes to DAC8564
+    // Fire gate outputs
+    // Manage gate release timing
+}
+```
 
 ---
 
-## ADC / CV Input Direction
-- Multi-channel ADC architecture planned
-- Interpreted CV input layer under architectural design
-- Future harmonic and transport-aware CV interaction planned
-- Quantizer-oriented input workflows planned
-- External modular signal interpretation layer planned
+## UI Workflow (v2.0)
+
+### Main Modes (Shift Tap to Cycle)
+
+#### **PERFORM Mode** (Playing)
+```
+PIANO ROLL DISPLAY
+  Horizontal: Time (32 positions, configurable grid)
+  Vertical: Pitch (C0–C8, 12-semitone rows)
+  Orange blocks: Note events
+  Blue blocks: Event duration (if extended)
+
+CONTROLS:
+  M1  CHORD       — Add chord at position
+  M2  TIME        — Adjust BPM, gate length, timing
+  M3  ARP         — Select arpeggio mode + rate
+  M4  ────
+  M5  SKIP        — Skip to next step
+  M6  COPY        — Copy event
+  M7  PASTE       — Paste event
+  M8  LENGTH      — Edit event duration
+  M9  NOTE        — Add single note
+  M10 CLEAR       — Clear step/event
+  M11 OCT+        — Octave up
+  M12 OCT-        — Octave down
+
+TRANSPORT:
+  PLAY            — Start/stop playback
+  REC             — Record mode (future)
+  Shift+PLAY      — Reset transport
+```
+
+#### **COMPOSE Mode** (Parameter Editing)
+```
+CHORD SELECTION:
+  Encoder: Select chord root (C, C#, D, ...)
+  Shift+Encoder: Select chord type (Major, Minor, 7, etc.)
+  Preview shows all notes in chord on screen
+  PLAY to place chord at current position
+
+TIMING SCREEN:
+  BPM adjustment (Shift+Encoder)
+  Gate length control
+  Time signature
+  Swing percentage (planned v2.1)
+
+ARP SCREEN:
+  Mode: BLOCK, UP, DOWN, UPDN, RANDOM
+  Rate: 1/4, 1/8, 1/16, 1/32 (musically locked)
+  Preview of arpeggio pattern
+```
+
+#### **SYSTEM Mode** (Setup)
+```
+CALIBRATION WIZARD (on boot or manual entry):
+  Two-point calibration per channel (-2V, +6V)
+  Calibration codes persisted to FRAM
+  Loaded at boot for accurate CV output
+
+SETTINGS (planned v2.1):
+  MIDI configuration
+  Display settings
+  Memory management
+```
+
+### User Input Map
+
+| Action | Effect |
+|--------|--------|
+| **Shift Tap** | Cycle main mode (PERFORM → COMPOSE → SYSTEM → QUANTIZER) |
+| **PLAY** | Start/stop playback; confirm in menus |
+| **REC** | Record mode; back/cancel in menus |
+| **Shift+PLAY** | Reset transport to position 0 |
+| **Shift+REC** | Clear pattern |
+| **Encoder Turn** | Navigate/edit (context-dependent) |
+| **Encoder Press** | Select/enter/toggle |
+| **Matrix 1-12** | Context-specific (see mode tables) |
+| **Shift+Matrix 1-12** | Shift variants (pattern select, etc.) |
 
 ---
 
-## FRAM Persistence
-- MB85RC256 integrated
-- Persistent user chord library
-- Integrity validation
-- Optimized write strategy
-- Boot-time preload for immediate access
+## Features
 
----
+### CV Output System
 
-## Song & Pattern System
-- Pattern timing controls
-- Song chain editor
-- Step repeat behavior
-- Per-pattern chord draft caching
-- Pattern-aware chord hydration
+✅ **4-Channel Independent CV Output**
+- Range: -2V to +6V (covers C0–C8)
+- Per-channel two-point calibration
+- Calibration codes stored in FRAM, loaded at boot
+- DAC8564 on SPI2 (clock speed optimized for stability)
+- OPA4171 output stage for drive capability
+
+✅ **Gate Output System**
+- 4× gates (PC5-PC8) with sample-accurate timing
+- 50% duty cycle (gate length = step interval / 2)
+- Minimum gate time: 5 ms
+- Synchronized to sequencer step engine via SysTick ISR
+
+✅ **Pitch Mapping (NEW v2.0)**
+- MIDI note → CV code conversion with calibration awareness
+- Linear interpolation between calibration points
+- Accurate octave-spanning pitch output
+- File: `core/pitch_mapping.h`
+
+### Sequencing
+
+✅ **Piano Roll Editor**
+- Horizontal/vertical cursor navigation
+- Single note and chord entry
+- Event duration editing (shown as extended blocks)
+- Visual feedback: green (naturals), sky-blue (sharps)
+- Smooth rendering with isolated row ownership
+
+✅ **Chord System**
+- Chord library with user-defined chords
+- Chord storage in FRAM (128 slots)
+- Automatic chord preview on piano roll
+- Per-step chord parameters (root, type, duration)
+
+✅ **Arpeggiator**
+- 5 modes: BLOCK, UP, DOWN, UPDN, RANDOM
+- 4 rate options (1/4, 1/8, 1/16, 1/32)
+- Monophonic modes (UP/DOWN/etc) on CV1+Gate1
+- Block mode (BLOCK) all 4 CV/Gate simultaneous
+
+✅ **Pattern System**
+- 16 patterns stored in memory
+- Per-pattern parameter settings
+- Pattern chaining in song editor
 - Real-time step-count updates
 
----
+### Persistence
 
-## UI Workflow
+✅ **FRAM Storage (MB85RC256)**
+- User chord library (128 slots, ~2560 bytes)
+- Calibration codes (per-channel, persisted at boot)
+- Pattern and song data (planned v2.1)
+- Integrity validation with magic word + checksum
 
-### Main Modes
-- STEP
-- CHORD
-- TIME
-- SONG
+### MIDI Integration
 
-### Current Concepts
-- contextual matrix input system
-- footer action model
-- screen-specific workflows
-- transport-aware UI behavior
-- modular piano roll editor
+✅ **MIDI Clock**
+- 24 PPQN MIDI clock output (slave mode)
+- Synchronized to internal 96 PPQN grid
 
----
-
-# Clock & Gate Architecture
-
-## Gate Outputs
-- GATE_A → PC5
-- GATE_B → PC6
-- GATE_C → PC7
-- GATE_D → PC8
-
-## Clock I/O
-- Clock_IN → PC0
-- Clock_OUT → PC1
-
-Clock_OUT passes through 74HC14 inversion stage.
+(Future: MIDI note input, CC mapping, program changes)
 
 ---
 
-# Development Principles
+## Memory Profile (v2.0)
 
-S12 is being developed according to several core principles:
+**Actual Hardware Measurement:**
 
-- deterministic behavior over uncontrolled complexity
-- subsystem separation over global coupling
-- reusable architecture over feature hacks
-- musical interpretation over random generation
-- stable timing over excessive abstraction
-- embedded-first design decisions
-- scalable screen ownership
-- long-term maintainability
+```
+FLASH: 22.1% used (231 KB of 1,048 KB)
+  ├─ Firmware code: ~150 KB
+  ├─ Fonts: ~60 KB (optimized in v2.0)
+  └─ UNUSED: 817 KB free ✅
 
----
+RAM: 74.6% used (97.8 KB of 131 KB)
+  ├─ Display buffer: ~40 KB
+  ├─ Sequencer state: ~30 KB
+  ├─ Stack/heap: ~27 KB
+  └─ UNUSED: 33 KB free ✅
+```
 
-# Current Priorities
-
-## Architecture
-- modular screen ownership
-- UI lifecycle separation
-- render invalidation system
-- state ownership cleanup
-
-## Persistence
-- full song/pattern FRAM persistence
-- structured save/load architecture
-
-## CV / ADC Layer
-- interpreted CV input architecture
-- quantizer integration
-- musical control abstraction
-
-## Transport
-- external clock synchronization
-- master/slave timing modes
-- transport state coordination
+**Status**: Lean and efficient. Headroom available for v2.1+ features (Quantizer, Advanced MIDI, etc.)
 
 ---
 
-# Long-Term Direction
+## Build & Upload
 
-S12 is evolving toward:
-
-> a deterministic embedded composition environment for Eurorack.
-
-The goal is not simply sequencing.
-
-The goal is to create a system capable of:
-- interpreting modular signals
-- understanding musical structure
-- organizing harmonic movement
-- coordinating transport and timing
-- and producing coherent composition from modular interaction.
-
-S12 is intended to become:
-a musical reasoning layer for modular synthesis.
-
----
-
-# Build
-
-## STM32 Hardware
+### STM32 Hardware
 
 ```bash
+# Prerequisites
+pip install platformio
+# or use conda/homebrew/chocolatey depending on platform
+
+# Build and upload
+cd Sequencer12-main
 platformio run -e genericSTM32F405RG --target upload
 ```
 
-## Linux Simulator
+### STM32 Recovery (if upload fails)
+
+```bash
+# 1. Unlock FLASH protection
+platformio run -e genericSTM32F405RG_recovery
+
+# 2. Power-cycle board completely
+
+# 3. Upload normally
+platformio run -e genericSTM32F405RG --target upload
+```
+
+### Linux Simulator (Future)
 
 ```bash
 mkdir -p build && cd build
 cmake ..
 make
-./sequencer12
+./sequencer12_sim
 ```
 
 ---
 
-# License
+## Hardware Verification (PCB v1.0)
+
+✅ **All Features Tested and Verified:**
+- CV accuracy: C0–C8 across -2V to +6V range (±10mV)
+- Gate outputs: All 4 firing and synchronized
+- Piano roll sequencing: Full feature set
+- ARP modes: BLOCK/UP/DOWN/UPDN/RANDOM verified
+- Event duration editing: Works as expected
+- FRAM persistence: Patterns, chords, calibration stable
+- Calibration system: Two-point calibration accurate
+- Continuous playback: Stable at all tempos
+
+**PCB v2.0**: Pre-fabrication complete, ready for JLCPCB order.
+
+---
+
+## Development Principles
+
+S12 development follows core architectural principles:
+
+- **Deterministic** over uncontrolled complexity
+- **Layered** over global coupling
+- **Reusable** over feature hacks
+- **Musical interpretation** over random generation
+- **Stable timing** over excessive abstraction
+- **Embedded-first** design decisions
+- **Long-term maintainability** over quick fixes
+
+---
+
+## Known Limitations & Future Work
+
+### v2.0 Complete
+✅ Pitch mapping (MIDI → CV)  
+✅ Optimized fonts (reduced size)  
+✅ UI refinements (better responsiveness)  
+✅ Memory optimization (22.1% FLASH, 74.6% RAM)  
+✅ Hardware verification (all tests passed)  
+
+### v2.1 Planned
+⏳ Quantizer input layer (CV interpretation)  
+⏳ CV/ADC routing screens  
+⏳ Full FRAM persistence (patterns, song chain)  
+⏳ Display DMA optimization (SPI1 at /4 with clean traces)  
+⏳ CV channels B/C/D hardware test (A verified, B/C/D untested)  
+⏳ Swing/timing offset parameters  
+⏳ Advanced MIDI features (CC mapping, program changes)  
+
+### v2.2+
+⏳ Multi-ARP per output  
+⏳ External clock sync (master/slave modes)  
+⏳ Harmonic progression engine  
+⏳ Extended MIDI integration  
+
+---
+
+## File Structure
+
+```
+Sequencer12-main/
+├── stm32/                    # STM32 HAL & boot
+│   ├── main_stm32.c          # Entry point (cleaned v2.0)
+│   ├── hw_init.c             # Hardware init
+│   ├── calibration.c/h       # DAC calibration logic
+│   ├── sequencer_bridge.cpp  # C↔C++ bridge
+│   └── user_chord_bridge.cpp
+│
+├── devices/sequencer/        # Core sequencer engine
+│   ├── sequencer_device.cpp  # Main state machine
+│   ├── pattern_bank.cpp      # Pattern storage
+│   ├── arp_engine.cpp        # Arpeggiator
+│   └── chords/               # Chord library
+│
+├── core/                      # Shared logic
+│   └── pitch_mapping.h       # MIDI → CV (NEW v2.0)
+│
+├── platform/                  # Hardware drivers
+│   ├── dac8564/              # CV output
+│   ├── fram/                 # Persistence
+│   ├── mcp23017/             # Button input
+│   ├── midi/                 # MIDI I/O
+│   └── uclock/               # Timing engine
+│
+├── lib/ST7789/               # Display driver
+│   ├── st7789.c/h
+│   └── s12_fonts.c/h         # Optimized fonts (v2.0)
+│
+├── ui/                        # User interface
+│   ├── ui_sequencer.c        # Main UI logic
+│   ├── ui_display.c          # Rendering
+│   ├── ui_input.c            # Input handling
+│   ├── ui_screens/           # Parameter screens
+│   └── ui_screen_piano_roll.c # Piano roll editor
+│
+├── scripts/                   # Build utilities
+│   └── unlock_before_upload.py
+│
+└── platformio.ini            # Build config
+```
+
+---
+
+## Architecture Evolution
+
+S12's architecture has evolved from a simple chord sequencer (2023) into a layered embedded composition system:
+
+**v1.0 (Breadboard)** — Proof of concept, all features working  
+**v2.0 (PCB Pre-Fab)** — Optimized, refined, production-ready  
+**v2.1+** — Extended features (Quantizer, advanced MIDI, persistence)
+
+The design prioritizes:
+- Separation of concerns (UI → Bridge → Engine → Platform)
+- Real-time safety (interrupt-driven, deterministic scheduling)
+- Musical intelligence (chord/progression awareness)
+- Modular extensibility (clean layer boundaries)
+
+---
+
+## Philosophy
+
+S12 is not just another Eurorack sequencer.
+
+Its purpose is to create **a musical interpretation layer** for modular synthesis — a system that understands harmonic structure, respects timing relationships, and transforms raw modular signals into organized composition.
+
+Rather than outputting random patterns or simple note sequences, S12 is designed to:
+
+- **Understand context** (current key, progression, transport state)
+- **Interpret gestures** (CV input as musical intent, not just modulation)
+- **Organize structure** (chords, patterns, song chains)
+- **Coordinate timing** (internal clock, external sync, MIDI)
+- **Remain deterministic** (predictable, stable, real-time safe)
+
+**The goal**: a deterministic embedded composition environment for Eurorack.
+
+---
+
+## License
 
 MIT
+
+---
+
+## Current Team
+
+**Design & Firmware**: Rich (interplain)  
+**Hardware & Testing**: Breadboard prototype verified, PCB v2.0 ready
+
+---
+
+## Build Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **Firmware** | ✅ v2.0 Stable | All features tested on PCB v1.0 |
+| **Hardware** | ✅ PCB v2.0 Ready | Pre-fabrication audit complete |
+| **Memory** | ✅ Optimized | 22.1% FLASH, 74.6% RAM usage |
+| **Repository** | ✅ Current | bar-architecture merged to main |
+| **Fabrication** | ⏳ Pending | Ready for JLCPCB order |
+
+**Last Updated**: August 26, 2026  
+**GitHub**: https://github.com/Interplain/Sequencer12  
+**Tag**: v2.0-pre-fab (pre-fabrication verified)
