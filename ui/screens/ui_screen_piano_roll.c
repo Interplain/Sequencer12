@@ -8,6 +8,7 @@
 #include "core/pitch_mapping.h"
 #include "st7789.h"
 #include "s12_fonts.h"
+#include "stm32/timing_probe.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -1482,6 +1483,8 @@ static void OnDraw(void)
 {
     if (!s_piano_roll.needs_redraw) return;
 
+    uint32_t _tp_draw = TIMING_PROBE_BEGIN();
+
     if (s_piano_roll.view_mode == PIANO_VIEW_KEYBOARD)
     {
         DrawPianoKeyboardScreen();
@@ -1492,6 +1495,7 @@ static void OnDraw(void)
     }
 
     s_piano_roll.needs_redraw = 0;
+    TIMING_PROBE_END(g_timing_max_on_draw_us, _tp_draw);
 }
 
 /* ── UiScreen Instance ──────────────────────────────────────────────────– */

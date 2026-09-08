@@ -4,15 +4,20 @@
 #include "platform/fram/mb85rc1mt.h"
 #include "platform/fram/fram_layout.h"
 #include "platform/fram/fram_settings.h"
+#include "platform/fram/pattern_store.h"
 #include "platform/dac8564/dac8564.h"
 #include "core/pitch_mapping.h"
 #include "uClock.h"
+#include "stm32/timing_probe.h"
 #include <cstdio>
 #include <cstring>
 
 static SequencerDevice g_sequencer;
 static uint8_t s_persist_depth = 0u;
-static uint8_t s_persist_dirty = 0u;
+static uint8_t s_persist_dirty = 0u; /* an edit occurred while nested inside Begin/End */
+static uint8_t s_ps_dirty = 0u;      /* current pattern needs a PatternStore chunked (re)write */
+static uint32_t s_v3_dirty_since_ms = 0u; /* 0 = V3 snapshot not dirty; else tick of last edit */
+static constexpr uint32_t kV3IdleCheckpointMs = 1500u;
 static uint8_t s_tick_enabled = 1u;
 static uint8_t s_last_substep_index = 0xFFu;
 
@@ -1186,6 +1191,7 @@ static uint32_t SongChecksum(const uint8_t* data, uint32_t len)
 
 static uint8_t __attribute__((optimize("Os"), noinline)) SaveSongToFram(void)
 {
+    uint32_t _tp_save = TIMING_PROBE_BEGIN();
     const sequencer::Song& song = g_sequencer.GetSongView();
 
     uint32_t payload_size = 0u;
@@ -1193,6 +1199,7 @@ static uint8_t __attribute__((optimize("Os"), noinline)) SaveSongToFram(void)
     if (!EncodeSongV3Core(song, preflight, &payload_size))
     {
         printf("S12: song too large for FRAM V3\n");
+        TIMING_PROBE_END(g_timing_max_save_song_us, _tp_save);
         return 0u;
     }
 
@@ -1200,6 +1207,7 @@ static uint8_t __attribute__((optimize("Os"), noinline)) SaveSongToFram(void)
     if ((uint32_t)hdr_size + payload_size > FRAM_SONGDATA_SIZE)
     {
         printf("S12: song too large for FRAM V3 (%lu bytes)\n", (unsigned long)(payload_size + hdr_size));
+        TIMING_PROBE_END(g_timing_max_save_song_us, _tp_save);
         return 0u;
     }
 
@@ -1214,15 +1222,26 @@ static uint8_t __attribute__((optimize("Os"), noinline)) SaveSongToFram(void)
     uint32_t streamed_size = 0u;
     if (!EncodeSongV3Core(song, stream_writer, &streamed_size))
     {
+        TIMING_PROBE_END(g_timing_max_save_song_us, _tp_save);
         return 0u;
     }
-    if (streamed_size != payload_size) return 0u;
-    if (stream_writer.checksum() != hdr.checksum) return 0u;
+    if (streamed_size != payload_size)
+    {
+        TIMING_PROBE_END(g_timing_max_save_song_us, _tp_save);
+        return 0u;
+    }
+    if (stream_writer.checksum() != hdr.checksum)
+    {
+        TIMING_PROBE_END(g_timing_max_save_song_us, _tp_save);
+        return 0u;
+    }
 
     if (!MB85RC1MT_WriteAndVerify(FRAM_SONGDATA_ADDR, reinterpret_cast<const uint8_t*>(&hdr), hdr_size))
     {
+        TIMING_PROBE_END(g_timing_max_save_song_us, _tp_save);
         return 0u;
     }
+    TIMING_PROBE_END(g_timing_max_save_song_us, _tp_save);
     return 1u;
 }
 
@@ -1252,16 +1271,6 @@ static uint8_t __attribute__((unused, optimize("Os"), noinline)) LoadSongFromFra
     if (!DecodeSongPayload(payload, hdr.payload_size, song)) return 0u;
     g_sequencer.FinalizeImportedSong();
     return 1u;
-}
-
-static void PersistSong(void)
-{
-    if (s_persist_depth > 0u)
-    {
-        s_persist_dirty = 1u;
-        return;
-    }
-    (void)SaveSongToFram();
 }
 
 static void LoadCvRouterModeSetting(void)
@@ -1334,6 +1343,67 @@ static void RefreshCvZeroCodes(void)
 }
 
 } // namespace
+
+/* ── Stage 2: FRAM Pattern Store shadow-write (burn-in only) ──────────────
+ * Resident song_.patterns[32] remains fully authoritative for every read,
+ * playback, edit, pattern change, chain and V3 persistence path. These
+ * globals exist purely so hardware testing can confirm the shadow copy
+ * matches the resident Pattern after each edit, read over SWD. */
+extern "C"
+{
+    volatile uint8_t g_patternstore_shadow_last_index = 0xFFu;
+    volatile uint8_t g_patternstore_shadow_write_ok = 0u;
+    volatile uint8_t g_patternstore_shadow_verify_ok = 0u;
+}
+
+/* Pumps the chunked PatternStore writer: at most one small I2C transaction
+ * (a PATTERNSTORE_CHUNK_BYTES payload chunk, or the final 12-byte header)
+ * per call, so this is always safe to run every main-loop pass regardless
+ * of playback state. If the current pattern changes again while a write is
+ * already in progress, that write is left to finish untouched (it's a
+ * self-consistent snapshot); s_ps_dirty simply stays/becomes set so a fresh
+ * request starts on the next call once the writer goes idle again -- never
+ * a torn mix of old/new bytes, never a lost edit. */
+static void ServicePatternStoreAsync(void)
+{
+#if defined(S12_DISABLE_SHADOW_PERSIST)
+    s_ps_dirty = 0u; /* A/B diagnostic: PatternStore chunked writer fully disabled */
+#else
+    if (s_ps_dirty && !PatternStore_WriteAsyncBusy())
+    {
+        const uint8_t index = (uint8_t)g_sequencer.GetCurrentPatternIndex();
+        if (index < sequencer::kPatternCount)
+        {
+            const sequencer::Song& song = g_sequencer.GetSongView();
+            g_patternstore_shadow_last_index = index;
+            (void)PatternStore_WriteAsyncBegin(index, &song.patterns[index]);
+        }
+        s_ps_dirty = 0u;
+    }
+
+    uint32_t _tp_pw = TIMING_PROBE_BEGIN();
+    const PatternStoreAsyncStatus st = PatternStore_WriteAsyncService();
+    TIMING_PROBE_END(g_timing_max_pattern_write_us, _tp_pw);
+
+    if (st == PATTERNSTORE_ASYNC_DONE) { g_patternstore_shadow_write_ok = 1u; }
+    else if (st == PATTERNSTORE_ASYNC_FAILED) { g_patternstore_shadow_write_ok = 0u; }
+#endif
+}
+
+static void PersistSong(void)
+{
+    if (s_persist_depth > 0u)
+    {
+        s_persist_dirty = 1u;
+        return;
+    }
+    /* PatternStore chunked write is the live, real-time-safe persistence
+     * path (pumped a few bytes per main-loop pass by Bridge_ServicePersistence).
+     * The full legacy V3 snapshot is far slower (~200ms) and is only taken at
+     * deliberate checkpoints -- see Bridge_ServicePersistence()/Bridge_FlushPersistence(). */
+    s_ps_dirty = 1u;
+    s_v3_dirty_since_ms = HAL_GetTick();
+}
 
 extern "C"
 {
@@ -1537,6 +1607,10 @@ extern "C"
      * reference pitch here — gate-less CV-tracking synths audibly play that
      * reference note the instant it's written. Leave CV wherever it was. */
     Bridge_InvalidateCvTrackingState();
+
+    /* Transport-stop checkpoint: flush any pending full V3 snapshot now
+     * instead of waiting for the idle timer, since we're already stopped. */
+    Bridge_FlushPersistence();
     }
 
     void     Bridge_Reset(void)
@@ -1573,8 +1647,43 @@ extern "C"
         if (s_persist_depth == 0u && s_persist_dirty)
         {
             s_persist_dirty = 0u;
-            (void)SaveSongToFram();
+            s_ps_dirty = 1u;
+            s_v3_dirty_since_ms = HAL_GetTick();
         }
+    }
+    void     Bridge_ServicePersistence(void)
+    {
+        ServicePatternStoreAsync();
+
+        /* Full legacy V3 song snapshot: never runs while playing, and only
+         * once editing has gone idle for kV3IdleCheckpointMs while stopped.
+         * Bridge_Stop()/Bridge_FlushPersistence() force it immediately. */
+        if (s_v3_dirty_since_ms != 0u && !g_sequencer.IsPlaying())
+        {
+            if ((uint32_t)(HAL_GetTick() - s_v3_dirty_since_ms) >= kV3IdleCheckpointMs)
+            {
+                (void)SaveSongToFram();
+                s_v3_dirty_since_ms = 0u;
+            }
+        }
+    }
+    void     Bridge_FlushPersistence(void)
+    {
+        if (s_v3_dirty_since_ms != 0u)
+        {
+            (void)SaveSongToFram();
+            s_v3_dirty_since_ms = 0u;
+        }
+    }
+    uint8_t  Bridge_PatternStoreVerify(uint8_t pattern_index)
+    {
+        if (pattern_index >= sequencer::kPatternCount) return 0u;
+
+        sequencer::Pattern readback{};
+        if (!PatternStore_Read(pattern_index, &readback)) return 0u;
+
+        const sequencer::Song& song = g_sequencer.GetSongView();
+        return (memcmp(&readback, &song.patterns[pattern_index], sizeof(sequencer::Pattern)) == 0) ? 1u : 0u;
     }
     void     Bridge_SetPatternStepCount(uint8_t step_count) { g_sequencer.SetPatternStepCount(step_count); PersistSong(); }
     uint8_t  Bridge_GetPatternStepCount(void) { return g_sequencer.GetPatternStepCount(); }

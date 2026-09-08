@@ -1,5 +1,6 @@
 #include "st7789.h"
 #include "s12_fonts.h"
+#include "stm32/timing_probe.h"
 #include <stdio.h>
 #include <string.h>
 /* ------------------------------------------------------------------------- */
@@ -657,6 +658,7 @@ void ST7789_DrawRGB565Buffer(uint16_t x, uint16_t y,
                              const uint8_t* buffer,
                              uint32_t buffer_size)
 {
+    uint32_t _tp_rgb = TIMING_PROBE_BEGIN();
     const uint16_t req_x = x;
     const uint16_t req_y = y;
     const uint16_t req_w = w;
@@ -736,6 +738,7 @@ void ST7789_DrawRGB565Buffer(uint16_t x, uint16_t y,
     }
 
     CS_RELEASE();
+    TIMING_PROBE_END(g_timing_max_draw_rgb565_us, _tp_rgb);
 }
 
 void ST7789_DrawPixel(uint16_t x, uint16_t y, uint16_t color)

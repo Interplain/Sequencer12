@@ -25,6 +25,12 @@
 #include "platform/fram/fram_restore_migrate.h"
 #endif
 
+#if defined(S12_PATTERNSTORE_TEST_MODE)
+#include "platform/fram/pattern_store_test.h"
+#endif
+
+#include "stm32/timing_probe.h"
+
 #define UI_LOOP_MIN_MS 1
 
 #ifndef MCP_MINIMAL_DEBUG
@@ -34,6 +40,9 @@
 int main(void)
 {
     HW_Init();
+#if defined(S12_TIMING_PROBE_ENABLE)
+    TimingProbe_Init();
+#endif
 
 #if defined(S12_FRAM_BACKUP_MODE)
     /* Isolated, read-only backup path: read FRAM, compute CRC32, halt.
@@ -67,6 +76,18 @@ int main(void)
      * path can touch FRAM before this explicit, operator-triggered restore. */
     MB85RC1MT_Init(&hi2c3);
     FramRestoreMigrate_Run();
+    while (1)
+    {
+        __NOP();
+    }
+#endif
+
+#if defined(S12_PATTERNSTORE_TEST_MODE)
+    /* Isolated pattern-store round-trip test: writes/reads/verifies ONE slot
+     * in the new 0x8000+ region only, never touches the legacy 0x0000-0x7FFF
+     * image. Returns before calibration/display/MCP23017/DAC/UI init. */
+    MB85RC1MT_Init(&hi2c3);
+    PatternStoreTest_Run();
     while (1)
     {
         __NOP();
@@ -139,7 +160,19 @@ int main(void)
         uint32_t t0 = HAL_GetTick();
         Bridge_ServiceMusicalEvents();
         UI_Input_Poll();
-        UI_Sequencer_Update();
+        {
+            uint32_t _tp_ui = TIMING_PROBE_BEGIN();
+            UI_Sequencer_Update();
+            TIMING_PROBE_END(g_timing_max_ui_update_us, _tp_ui);
+        }
+        /* After the screen has already redrawn: any deferred FRAM write
+         * (V3 save + Pattern Store shadow-write) happens here, not inside
+         * the modal-confirm call path itself. */
+        {
+            uint32_t _tp_persist = TIMING_PROBE_BEGIN();
+            Bridge_ServicePersistence();
+            TIMING_PROBE_END(g_timing_max_service_persistence_us, _tp_persist);
+        }
         uint32_t elapsed = HAL_GetTick() - t0;
         if (elapsed < UI_LOOP_MIN_MS)
             HAL_Delay(UI_LOOP_MIN_MS - elapsed);

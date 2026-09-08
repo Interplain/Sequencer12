@@ -28,6 +28,21 @@ void     Bridge_Reset(void);
 void     Bridge_SetBpm(uint32_t bpm);
 void     Bridge_PersistBegin(void);
 void     Bridge_PersistEnd(void);
+/* Pumps the real-time-safe persistence engine. Call exactly once per
+ * main-loop pass, after UI_Sequencer_Update(). Performs at most one small
+ * PatternStore chunk write (bounded, always safe during playback) plus,
+ * only once editing has gone idle while transport is stopped, the slower
+ * full legacy V3 song snapshot. Never blocks for the full V3 save while
+ * playing -- see Bridge_FlushPersistence() for that. */
+void     Bridge_ServicePersistence(void);
+/* Forces an immediate full legacy V3 song snapshot if one is pending,
+ * bypassing the idle-checkpoint wait. Safe to call only when it is
+ * acceptable to block for ~200ms (e.g. transport stop, explicit save). */
+void     Bridge_FlushPersistence(void);
+/* Stage 2 FRAM Pattern Store debug/verification path: byte-for-byte compares
+ * the resident SRAM Pattern at `pattern_index` against its FRAM shadow slot.
+ * Not called anywhere in production yet -- diagnostic only. */
+uint8_t  Bridge_PatternStoreVerify(uint8_t pattern_index);
 void     Bridge_SetPatternStepCount(uint8_t step_count);
 uint8_t  Bridge_GetPatternStepCount(void);
 uint8_t  Bridge_SetPatternTiming(uint8_t step_division, uint8_t numerator, uint8_t denominator);
