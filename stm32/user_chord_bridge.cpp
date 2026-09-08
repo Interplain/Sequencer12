@@ -1,6 +1,6 @@
 #include "user_chord_bridge.h"
 #include "devices/sequencer/chords/user_chords.h"
-#include "platform/fram/mb85rc256.h"
+#include "platform/fram/mb85rc1mt.h"
 #include "platform/fram/fram_layout.h"
 #include <cstring>
 
@@ -16,7 +16,6 @@ static const uint8_t kFramEnabled = 1;
 static uint8_t s_fram_ready = 0;
 static uint8_t s_loaded_from_fram = 0;
 static uint8_t s_last_io_ok = 1;
-static uint8_t s_fram_work_buf[kUserChordBlockSize];
 
 static uint32_t OrdinalToSlot(uint8_t ordinal)
 {
@@ -49,7 +48,7 @@ static void FramLoadAll(void)
 
     if (!kFramEnabled) return;
 
-    s_fram_ready = MB85RC256_IsReady() ? 1u : 0u;
+    s_fram_ready = MB85RC1MT_IsReady() ? 1u : 0u;
     if (!s_fram_ready)
     {
         g_user_chords.Init();   /* ensure clean state even when FRAM absent */
@@ -58,7 +57,7 @@ static void FramLoadAll(void)
 
     // Read magic - if not present, no chords saved yet
     uint8_t magic[4] = {0};
-    if (!MB85RC256_Read(FRAM_MAGIC_ADDR, magic, sizeof(magic)))
+    if (!MB85RC1MT_Read(FRAM_MAGIC_ADDR, magic, sizeof(magic)))
     {
         s_last_io_ok = 0;
         g_user_chords.Init();   /* read failed — reset to empty so count is 0 */
@@ -72,10 +71,10 @@ static void FramLoadAll(void)
         return;
     }
 
-    // Magic found - read chord data
-    if (MB85RC256_Read(FRAM_USERCHORDS_ADDR, s_fram_work_buf, (uint16_t)kUserChordBlockSize))
+    // Magic found - read chord data directly into g_user_chords' own storage
+    // (no staging buffer needed).
+    if (MB85RC1MT_Read(FRAM_USERCHORDS_ADDR, g_user_chords.RawBlock(), (uint16_t)UserChords::RawBlockSize()))
     {
-        g_user_chords.Load(s_fram_work_buf, kUserChordBlockSize);
         s_loaded_from_fram = 1;
         s_last_io_ok = 1;
     }
@@ -89,23 +88,24 @@ static void FramLoadAll(void)
 static void FramWriteSlot(uint8_t index, uint8_t* out_ok)
 {
     if (out_ok) *out_ok = 0;
-    
+
     if (!kFramEnabled) return;
 
-    // Step 1: Write chord block
-    g_user_chords.Save(s_fram_work_buf, kUserChordBlockSize);
-    uint8_t ok_block = MB85RC256_Write(FRAM_USERCHORDS_ADDR, s_fram_work_buf, (uint16_t)kUserChordBlockSize);
-    
+    // Step 1: write only the changed 22-byte slot, not the whole 2816-byte block.
+    const uint16_t slot_addr = (uint16_t)(FRAM_USERCHORDS_ADDR + (uint32_t)index * sizeof(UserChord));
+    const UserChord& chord = g_user_chords.GetChord(index);
+    uint8_t ok_block = MB85RC1MT_Write(slot_addr, reinterpret_cast<const uint8_t*>(&chord), (uint16_t)sizeof(UserChord));
+
     if (!ok_block)
     {
         s_last_io_ok = 0;
         if (out_ok) *out_ok = 0;
         return;
     }
-    
-    // Step 2: Write magic (this marks chords as valid)
-    uint8_t ok_magic = MB85RC256_Write(FRAM_MAGIC_ADDR, kFramMagic, sizeof(kFramMagic));
-    
+
+    // Step 2: write magic (this marks chords as valid)
+    uint8_t ok_magic = MB85RC1MT_Write(FRAM_MAGIC_ADDR, kFramMagic, sizeof(kFramMagic));
+
     s_last_io_ok = ok_magic ? 1u : 0u;
     if (out_ok) *out_ok = s_last_io_ok;
 }

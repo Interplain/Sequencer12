@@ -1,5 +1,6 @@
 #include "ui_input.h"
 #include "ui_display.h"
+#include "ui_screensaver.h"
 #include "mcp23017.h"
 #include "hw_init.h"
 #include "stm32f4xx_hal.h"
@@ -45,6 +46,7 @@ static uint32_t s_last_matrix_scan_ms = 0;
 static uint8_t  s_direct_armed = 0;
 static uint32_t s_direct_all_released_ms = 0;
 static uint32_t s_last_mcp_recovery_ms = 0;
+static uint32_t s_last_activity_ms = 0;
 
 #define MATRIX_DEBOUNCE_MS 12u
 #define MATRIX_SETTLE_US 40u
@@ -262,6 +264,7 @@ void UI_Input_Poll(void)
             detents++;
         }
         if (s_shift_held) s_shift_consumed = 1;
+        s_last_activity_ms = HAL_GetTick();
     }
 
     /* ── Encoder button — PC12 ────────────────────────────────────────── */
@@ -276,6 +279,7 @@ void UI_Input_Poll(void)
             s_enc_btn_long_fired = 0u;
             s_enc_btn_down_ms = now_btn_ms;
             if (s_shift_held) s_shift_consumed = 1;
+            s_last_activity_ms = now_btn_ms;
         }
         else if (s_enc_btn_prev == 0u && enc_btn == 0u)
         {
@@ -352,6 +356,11 @@ void UI_Input_Poll(void)
     s_prev_raw = raw;
     s_direct_prev_debounced = s_direct_debounced;
 
+    if (direct_falling != 0u || shift_now_held != shift_was_held)
+    {
+        s_last_activity_ms = now_ms;
+    }
+
     if (!s_direct_armed)
     {
         if (s_direct_debounced == 0u)
@@ -369,7 +378,13 @@ void UI_Input_Poll(void)
 
     /* Shift — level, active LOW */
     s_shift_held = shift_now_held;
-    UI_Display_SetShiftIndicator(s_shift_held);
+    /* Repaints a 1px header separator every poll regardless of screen content;
+     * skip while the screensaver owns the display so it doesn't punch a hole
+     * through the black background. */
+    if (!UI_Screensaver_IsActive())
+    {
+        UI_Display_SetShiftIndicator(s_shift_held);
+    }
 
     /* Button 1 — Play/Stop or Reset */
     if (s_direct_armed && !suppress_mcp_events && (direct_falling & (1u << 0)))
@@ -421,6 +436,11 @@ void UI_Input_Poll(void)
             s_matrix_debounced_pressed = s_matrix_candidate;
 
             uint16_t step_falling = (uint16_t)(s_matrix_debounced_pressed & (uint16_t)(~s_prev_matrix_pressed));
+
+            if (step_falling != 0u)
+            {
+                s_last_activity_ms = matrix_now;
+            }
 
             if (s_direct_armed && !suppress_mcp_events && step_falling != 0u)
             {
@@ -603,4 +623,19 @@ uint8_t UI_Input_GetMcpOkStreak(void)
 uint8_t UI_Input_GetMcpFailStreak(void)
 {
     return s_mcp_fail_streak;
+}
+
+uint32_t UI_Input_GetIdleMs(void)
+{
+    return (uint32_t)(HAL_GetTick() - s_last_activity_ms);
+}
+
+void UI_Input_ConsumeWakeEvent(void)
+{
+    ClearPendingMcpEvents();
+    s_encoder_delta = 0;
+    s_enc_btn_pressed = 0;
+    s_enc_btn_short_pressed = 0;
+    s_enc_btn_long_pressed = 0;
+    s_last_activity_ms = HAL_GetTick();
 }

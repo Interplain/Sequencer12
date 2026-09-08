@@ -857,6 +857,15 @@ void SequencerDevice::SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, 
     const uint8_t canonical_positions = CanonicalPositionsPerBar(bank_.GetSong().time_sig);
     const uint8_t was_event_start = IsCanonicalEventStart(slot, ledger_index);
 
+    /* Preserve each surviving note's explicit lane across this rebuild (keyed by note value,
+     * not array index, since the final sort below may reorder array positions). New notes get
+     * the lowest currently-unused lane. Inert unless this position already has an explicit
+     * lane assignment (StepSlotHasExplicitLane) -- Phase 1 ships no UI that sets it, so existing
+     * behaviour is unchanged until a future lane-edit UI opts a position in. */
+    const LedgerSlot previous          = slot.note_ledger[ledger_index];
+    const uint8_t    previous_lane_byte = slot.lane_slots[ledger_index];
+    const bool       has_explicit_lanes = StepSlotHasExplicitLane(slot, ledger_index);
+
     LedgerSlot normalized{};
     LedgerSlotClear(normalized);
     for (uint8_t i = 0u; i < slot_notes.notes.size(); ++i)
@@ -864,10 +873,49 @@ void SequencerDevice::SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, 
         const uint8_t note = slot_notes.notes[i];
         if (!IsMidiNoteValid(note)) continue;
         if (LedgerSlotCount(normalized) >= 4u) break;
-        (void)LedgerSlotAdd(normalized, note);
+        if (LedgerSlotContains(normalized, note)) continue;
+        normalized.notes[LedgerSlotCount(normalized)] = note;
     }
 
+    uint8_t new_lane_byte = 0u;
+    if (has_explicit_lanes)
+    {
+        const uint8_t count = LedgerSlotCount(normalized);
+        uint8_t used_mask = 0u;
+        bool carried[4] = {false, false, false, false};
+
+        /* Pass 1: every surviving note (matched by value, not array index) keeps its
+         * previous lane, and claims that lane so pass 2 cannot hand it to a new note. */
+        for (uint8_t idx = 0u; idx < count; ++idx)
+        {
+            const uint8_t note = normalized.notes[idx];
+            for (uint8_t k = 0u; k < previous.notes.size(); ++k)
+            {
+                if (previous.notes[k] != note) continue;
+                const uint8_t lane = LedgerLaneGet(previous_lane_byte, k);
+                LedgerLaneSet(new_lane_byte, idx, lane);
+                used_mask |= (uint8_t)(1u << lane);
+                carried[idx] = true;
+                break;
+            }
+        }
+        /* Pass 2: only genuinely new notes get the lowest lane not already claimed above. */
+        for (uint8_t idx = 0u; idx < count; ++idx)
+        {
+            if (carried[idx]) continue;
+            uint8_t lane = 0u;
+            for (uint8_t l = 0u; l < 4u; ++l)
+            {
+                if ((used_mask & (uint8_t)(1u << l)) == 0u) { lane = l; break; }
+            }
+            LedgerLaneSet(new_lane_byte, idx, lane);
+            used_mask |= (uint8_t)(1u << lane);
+        }
+    }
+    LedgerSlotSortWithLane(normalized, new_lane_byte);
+
     slot.note_ledger[ledger_index] = normalized;
+    slot.lane_slots[ledger_index] = new_lane_byte;
     const uint8_t is_event_start = IsCanonicalEventStart(slot, ledger_index);
 
     if (!was_event_start && is_event_start)
@@ -1040,6 +1088,8 @@ void SequencerDevice::ClearStepLedger(uint8_t step_index)
     {
         LedgerSlotClear(slot.note_ledger[i]);
     }
+    slot.lane_slots.fill(0u);
+    slot.lane_override_mask.fill(0u);
     slot.repeat_count = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
     RefreshSlotSummary(slot);
     UpdateLegacyStepTypeProjection(slot);
@@ -1181,6 +1231,130 @@ uint8_t SequencerDevice::GetCurrentStepNotesForPlayback(uint8_t out_notes[4]) co
                                   current_step_in_bar_ :
                                   (uint8_t)(steps_in_bar - 1u);
     return ResolveEventNotesForPlayback((uint8_t)current_bar_, grid_position, out_notes);
+}
+
+/* Index-preserving transpose sibling of ApplyTransposeToLedgerSlot: a uniform semitone shift
+ * never changes the relative pitch order of already-sorted notes, so this keeps each note at
+ * its original array index (unlike ApplyTransposeToLedgerSlot, which reinserts via
+ * LedgerSlotAdd) -- required so a note's explicit lane (keyed by array index) stays attached
+ * to the correct note through transpose. */
+static LedgerSlot ApplyTransposeToLedgerSlotPreserveOrder(const LedgerSlot& slot, int8_t transpose)
+{
+    LedgerSlot result{};
+    LedgerSlotClear(result);
+    for (uint8_t i = 0u; i < slot.notes.size(); ++i)
+    {
+        const uint8_t note = slot.notes[i];
+        if (note == kMidiNoteNone) continue;
+
+        uint8_t shifted = kMidiNoteNone;
+        if (ApplyTransposeToMidiNote(note, transpose, &shifted))
+        {
+            result.notes[i] = shifted;
+        }
+    }
+    return result;
+}
+
+uint8_t SequencerDevice::GetStepNotesForPlaybackWithLanes(uint8_t step_index,
+                                                          uint8_t slot_index,
+                                                          uint8_t out_notes[4],
+                                                          uint8_t out_lanes[4]) const
+{
+    if (!out_notes || !out_lanes) return 0u;
+    for (uint8_t i = 0u; i < 4u; ++i) { out_notes[i] = kMidiNoteNone; out_lanes[i] = i; }
+
+    if (step_index >= kStepCount) return 0u;
+
+    const StepSlot& slot = CurrentPattern().steps[step_index];
+    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    if (steps_in_bar == 0u || slot_index >= steps_in_bar) return 0u;
+    const uint8_t ledger_index = GridPositionToLedgerIndex(CurrentPattern().step_division, slot_index);
+    if (ledger_index >= kStepLedgerMax) return 0u;
+
+    LedgerSlot resolved{};
+    LedgerSlotClear(resolved);
+    bool has_explicit_lanes = false;
+    uint8_t lane_byte = 0u;
+
+    if (HasLedgerData(slot))
+    {
+        resolved = slot.note_ledger[ledger_index];
+        has_explicit_lanes = StepSlotHasExplicitLane(slot, ledger_index);
+        lane_byte = slot.lane_slots[ledger_index];
+    }
+    else
+    {
+        constexpr uint8_t kDefaultMidiBase = (uint8_t)kLegacyPitchClassFallbackMidiBase;
+        for (uint8_t note = 0u; note < 12u; ++note)
+        {
+            if ((slot.note_mask & (uint16_t)(1u << note)) != 0u)
+            {
+                (void)LedgerSlotAdd(resolved, (uint8_t)(kDefaultMidiBase + note));
+            }
+        }
+    }
+
+    const LedgerSlot transposed = ApplyTransposeToLedgerSlotPreserveOrder(resolved, bank_.GetSong().transpose);
+
+    uint8_t count = 0u;
+    for (uint8_t i = 0u; i < transposed.notes.size() && count < 4u; ++i)
+    {
+        const uint8_t note = transposed.notes[i];
+        if (note == kMidiNoteNone) continue;
+        out_notes[count] = note;
+        out_lanes[count] = has_explicit_lanes ? LedgerLaneGet(lane_byte, i) : count;
+        ++count;
+    }
+    return count;
+}
+
+uint8_t SequencerDevice::ResolveEventNotesForPlaybackWithLanes(uint8_t step_index,
+                                                               uint8_t slot_index,
+                                                               uint8_t out_notes[4],
+                                                               uint8_t out_lanes[4]) const
+{
+    if (!out_notes || !out_lanes) return 0u;
+    for (uint8_t i = 0u; i < 4u; ++i) { out_notes[i] = kMidiNoteNone; out_lanes[i] = i; }
+
+    if (step_index >= kStepCount) return 0u;
+
+    const StepSlot& slot = CurrentPattern().steps[step_index];
+    const uint8_t division = CurrentPattern().step_division;
+    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, division);
+    if (steps_in_bar == 0u || slot_index >= steps_in_bar) return 0u;
+
+    const uint8_t canonical_positions = CanonicalPositionsPerBar(bank_.GetSong().time_sig);
+    const uint8_t canonical_pos = GridPositionToLedgerIndex(division, slot_index);
+    if (canonical_pos >= canonical_positions) return 0u;
+
+    uint8_t event_start = 0u;
+    if (!ResolveEventStartCanonicalForPosition(slot, canonical_pos, canonical_positions, &event_start))
+    {
+        return 0u;
+    }
+
+    const uint8_t stride = CanonicalStrideForDivision(division);
+    if ((event_start % stride) != 0u)
+    {
+        return 0u;
+    }
+
+    const uint8_t start_slot = (uint8_t)(event_start / stride);
+    return GetStepNotesForPlaybackWithLanes(step_index, start_slot, out_notes, out_lanes);
+}
+
+uint8_t SequencerDevice::GetCurrentStepNotesForPlaybackWithLanes(uint8_t out_notes[4], uint8_t out_lanes[4]) const
+{
+    if (current_bar_ >= kStepCount || !out_notes || !out_lanes) return 0u;
+
+    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    if (steps_in_bar == 0u) return 0u;
+
+    const uint8_t grid_position = (current_step_in_bar_ < steps_in_bar) ?
+                                  current_step_in_bar_ :
+                                  (uint8_t)(steps_in_bar - 1u);
+    return ResolveEventNotesForPlaybackWithLanes((uint8_t)current_bar_, grid_position, out_notes, out_lanes);
 }
 
 void SequencerDevice::ExportSong(sequencer::Song* out_song) const

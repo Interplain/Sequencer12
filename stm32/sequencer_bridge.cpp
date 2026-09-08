@@ -1,7 +1,7 @@
 #include "sequencer_bridge.h"
 #include "devices/sequencer/sequencer_device.h"
 #include "devices/sequencer/chords/chord_library.h"
-#include "platform/fram/mb85rc256.h"
+#include "platform/fram/mb85rc1mt.h"
 #include "platform/fram/fram_layout.h"
 #include "platform/fram/fram_settings.h"
 #include "platform/dac8564/dac8564.h"
@@ -123,6 +123,7 @@ static constexpr uint8_t kV2PositionsPerStep = 32u;
 static constexpr uint8_t kV2ChainCapacity = 32u;
 static constexpr uint8_t kV2FlagHasBarStateBitstream = 0x01u;
 static constexpr uint8_t kV3FlagHasEventLengths = 0x02u;
+static constexpr uint8_t kV3FlagHasLaneAssignment = 0x04u; /* 6 of 8 flag bits remain unused */
 static constexpr uint16_t kV2TotalBars = (uint16_t)kV2PatternCount * (uint16_t)kV2StepsPerPattern;
 static constexpr char kNameAlphabet[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
 
@@ -364,7 +365,7 @@ private:
             return false;
         }
 
-        if (!MB85RC256_Write((uint16_t)addr32, chunk_, chunk_len_))
+        if (!MB85RC1MT_Write(addr32, chunk_, chunk_len_))
         {
             ok_ = false;
             return false;
@@ -663,7 +664,8 @@ static bool EncodeSongCore(const sequencer::Song& song,
                            uint32_t* out_payload_size,
                            uint8_t format_id,
                            uint8_t flags,
-                           bool include_event_lengths)
+                           bool include_event_lengths,
+                           bool include_lane_assignment)
 {
     if (!out_payload_size) return false;
 
@@ -758,6 +760,36 @@ static bool EncodeSongCore(const sequencer::Song& song,
         }
     }
 
+    /* Explicit A/B/C/D lane assignment (ARP Block/Off mode). 1 override bit per event-start
+     * position; only when set, followed by one 2-bit lane per populated note. Songs that never
+     * use an explicit lane (all current songs) cost exactly 1 bit per event-start here. */
+    if (include_lane_assignment)
+    {
+        for (uint8_t p = 0u; p < kV2PatternCount; ++p)
+        {
+            const sequencer::Pattern& pat = song.patterns[p];
+            for (uint8_t s = 0u; s < kV2StepsPerPattern; ++s)
+            {
+                const sequencer::StepSlot& step = pat.steps[s];
+                for (uint8_t pos = 0u; pos < kV2PositionsPerStep; ++pos)
+                {
+                    if (!PersistIsEventStart(step, pos)) continue;
+
+                    const uint8_t has_lane = sequencer::StepSlotHasExplicitLane(step, pos) ? 1u : 0u;
+                    if (!w.WriteBits(has_lane, 1u)) return false;
+                    if (!has_lane) continue;
+
+                    const uint8_t count = sequencer::LedgerSlotCount(step.note_ledger[pos]);
+                    const uint8_t lane_byte = step.lane_slots[pos];
+                    for (uint8_t i = 0u; i < count; ++i)
+                    {
+                        if (!w.WriteBits(sequencer::LedgerLaneGet(lane_byte, i), 2u)) return false;
+                    }
+                }
+            }
+        }
+    }
+
     for (uint8_t p = 0u; p < kV2PatternCount; ++p)
     {
         const sequencer::Pattern& pat = song.patterns[p];
@@ -845,6 +877,7 @@ static bool EncodeSongV2Core(const sequencer::Song& song, WriterT& w, uint32_t* 
                           out_payload_size,
                           kSongFormatIdV2,
                           kV2FlagHasBarStateBitstream,
+                          false,
                           false);
 }
 
@@ -855,7 +888,8 @@ static bool EncodeSongV3Core(const sequencer::Song& song, WriterT& w, uint32_t* 
                           w,
                           out_payload_size,
                           kSongFormatIdV3,
-                          (uint8_t)(kV2FlagHasBarStateBitstream | kV3FlagHasEventLengths),
+                          (uint8_t)(kV2FlagHasBarStateBitstream | kV3FlagHasEventLengths | kV3FlagHasLaneAssignment),
+                          true,
                           true);
 }
 
@@ -1094,6 +1128,40 @@ static bool __attribute__((optimize("Os"), noinline)) DecodeSongPayload(const ui
         }
     }
 
+    /* Absent flag (all pre-existing V3 songs, and any V2 song) leaves lane_override_mask
+     * clear everywhere -- playback then derives lane == sorted array index, i.e. today's
+     * lowest-note->A, next->B, next->C, next->D behaviour, automatically and unconditionally. */
+    if (format_id == kSongFormatIdV3 && (flags & kV3FlagHasLaneAssignment) != 0u)
+    {
+        for (uint8_t p = 0u; p < kV2PatternCount; ++p)
+        {
+            sequencer::Pattern& pat = song.patterns[p];
+            for (uint8_t s = 0u; s < kV2StepsPerPattern; ++s)
+            {
+                sequencer::StepSlot& step = pat.steps[s];
+                for (uint8_t pos = 0u; pos < kV2PositionsPerStep; ++pos)
+                {
+                    if (!PersistIsEventStart(step, pos)) continue;
+
+                    uint32_t has_lane = 0u;
+                    if (!r.ReadBits(1u, &has_lane)) return false;
+                    if (!has_lane) continue;
+
+                    const uint8_t count = sequencer::LedgerSlotCount(step.note_ledger[pos]);
+                    uint8_t lane_byte = 0u;
+                    for (uint8_t i = 0u; i < count; ++i)
+                    {
+                        uint32_t lane = 0u;
+                        if (!r.ReadBits(2u, &lane)) return false;
+                        sequencer::LedgerLaneSet(lane_byte, i, (uint8_t)lane);
+                    }
+                    step.lane_slots[pos] = lane_byte;
+                    sequencer::StepSlotSetExplicitLaneFlag(step, pos, true);
+                }
+            }
+        }
+    }
+
     if (!r.ReadU8(&song.chain.length)) return false;
     if (!r.ReadU8(&song.chain.position)) return false;
     for (uint8_t i = 0u; i < kV2ChainCapacity; ++i)
@@ -1151,7 +1219,7 @@ static uint8_t __attribute__((optimize("Os"), noinline)) SaveSongToFram(void)
     if (streamed_size != payload_size) return 0u;
     if (stream_writer.checksum() != hdr.checksum) return 0u;
 
-    if (!MB85RC256_WriteAndVerify(FRAM_SONGDATA_ADDR, reinterpret_cast<const uint8_t*>(&hdr), hdr_size))
+    if (!MB85RC1MT_WriteAndVerify(FRAM_SONGDATA_ADDR, reinterpret_cast<const uint8_t*>(&hdr), hdr_size))
     {
         return 0u;
     }
@@ -1161,15 +1229,15 @@ static uint8_t __attribute__((optimize("Os"), noinline)) SaveSongToFram(void)
 static uint8_t __attribute__((unused, optimize("Os"), noinline)) LoadSongFromFram(void)
 {
     SongBlobHeader hdr{};
-    if (!MB85RC256_IsReady()) return 0u;
-    if (!MB85RC256_Read(FRAM_SONGDATA_ADDR, reinterpret_cast<uint8_t*>(&hdr), (uint16_t)sizeof(hdr))) return 0u;
+    if (!MB85RC1MT_IsReady()) return 0u;
+    if (!MB85RC1MT_Read(FRAM_SONGDATA_ADDR, reinterpret_cast<uint8_t*>(&hdr), (uint16_t)sizeof(hdr))) return 0u;
 
     if (memcmp(hdr.magic, kSongMagic, sizeof(kSongMagic)) != 0) return 0u;
     if (hdr.version != 2u && hdr.version != 3u) return 0u;
     if ((uint32_t)sizeof(SongBlobHeader) + hdr.payload_size > FRAM_SONGDATA_SIZE) return 0u;
 
     static uint8_t payload[FRAM_SONGDATA_SIZE];
-    if (!MB85RC256_Read((uint16_t)(FRAM_SONGDATA_ADDR + (uint16_t)sizeof(SongBlobHeader)),
+    if (!MB85RC1MT_Read((uint32_t)(FRAM_SONGDATA_ADDR + (uint16_t)sizeof(SongBlobHeader)),
                         payload,
                         (uint16_t)hdr.payload_size))
     {
@@ -1299,10 +1367,8 @@ extern "C"
 
         Bridge_ApplyZeroOutputCodes();
     }
-    void     Bridge_ApplyZeroOutputCodes(void)
+    void     Bridge_InvalidateCvTrackingState(void)
     {
-        RefreshCvZeroCodes();
-        Bridge_WriteLogicalLanes(s_cv_zero_code);
         s_cv_init_done = false;
         s_last_step_index = 0xFFFFFFFFu;
         s_last_step_mask = 0xFFFFu;
@@ -1315,6 +1381,12 @@ extern "C"
         s_gate_prev_step = 0xFFFFFFFFu;
         s_gate_prev_loops = 0xFFFFFFFFu;
         s_gate_prev_substep = 0xFFu;
+    }
+    void     Bridge_ApplyZeroOutputCodes(void)
+    {
+        RefreshCvZeroCodes();
+        Bridge_WriteLogicalLanes(s_cv_zero_code);
+        Bridge_InvalidateCvTrackingState();
     }
     void     Bridge_SetTickEnabled(uint8_t enabled)
     {
@@ -1461,7 +1533,10 @@ extern "C"
     s_gate_prev_loops = 0xFFFFFFFFu;
     s_gate_prev_substep = 0xFFu;
 
-    Bridge_ApplyZeroOutputCodes();
+    /* Gate is already off above; deliberately do NOT snap CV to the 0V
+     * reference pitch here — gate-less CV-tracking synths audibly play that
+     * reference note the instant it's written. Leave CV wherever it was. */
+    Bridge_InvalidateCvTrackingState();
     }
 
     void     Bridge_Reset(void)
@@ -1822,7 +1897,13 @@ extern "C"
                                 sequencer::kMidiNoteNone,
                                 sequencer::kMidiNoteNone,
                                 sequencer::kMidiNoteNone};
-            uint8_t note_count = g_sequencer.GetCurrentStepNotesForPlayback(notes);
+            /* lanes[i] is the explicit A/B/C/D (0..3) output lane for notes[i]; falls back to
+             * sorted array index (today's lowest-note->A behaviour) when no explicit lane
+             * assignment exists for the active ledger position. ARP Up/Down/UpDn/Random/AsPlayed
+             * never reach this branch (arp_mode == Off only), so their CV1/Gate1-only output is
+             * unaffected. */
+            uint8_t lanes[4] = {0u, 1u, 2u, 3u};
+            uint8_t note_count = g_sequencer.GetCurrentStepNotesForPlaybackWithLanes(notes, lanes);
 
             uint16_t out[4] = {s_cv_zero_code[0], s_cv_zero_code[1], s_cv_zero_code[2], s_cv_zero_code[3]};
             if (s_cv_router_mode == kCvRouterUnison)
@@ -1846,9 +1927,10 @@ extern "C"
                     if (ch >= note_count) continue;
                     if (!sequencer::IsMidiNoteValid(notes[ch])) continue;
 
+                    const uint8_t lane = (lanes[ch] < 4u) ? lanes[ch] : ch;
                     const float volts = NoteToPitchVolts(notes[ch]);
-                    out[ch] = DAC8564_PitchVoltsToCodeForChannel(kLaneToDac[ch], volts);
-                    active_lane_mask = (uint8_t)(active_lane_mask | (uint8_t)(1u << ch));
+                    out[lane] = DAC8564_PitchVoltsToCodeForChannel(kLaneToDac[lane], volts);
+                    active_lane_mask = (uint8_t)(active_lane_mask | (uint8_t)(1u << lane));
                 }
 
                 if (active_lane_mask != 0u)

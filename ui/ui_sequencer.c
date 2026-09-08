@@ -2,6 +2,7 @@
 #include "ui_display.h"
 #include "ui_input.h"
 #include "ui_screen_router.h"
+#include "ui_screensaver.h"
 #include "ui_transport.h"
 #include "screens/ui_chord_menu_screen.h"
 #include "screens/ui_chord_params_screen.h"
@@ -3531,6 +3532,7 @@ void UI_Sequencer_Init(void)
     UI_Display_SetRepeatFlash(0, 0);
     UI_Sequencer_SetMainMode(s_main_mode);
     UI_Transport_Init();
+    UI_Screensaver_Init();
 
     UI_MainGridScreen_SetContext(s_selected_step, s_active_step, NULL);
     UI_Sequencer_SetActiveScreen(UI_MainGridScreen_Get());
@@ -4366,6 +4368,29 @@ static void UI_Sequencer_UpdateStatusRowTick(uint32_t now)
 /* ── Update — called every 10ms from main loop ───────────────────────────── */
 void UI_Sequencer_Update(void)
 {
+    UiScreensaverResult ss = UI_Screensaver_Tick();
+    if (ss == UI_SCREENSAVER_JUST_WOKE)
+    {
+        /* Screensaver painted over the whole display; force one full, state-
+         * preserving repaint of whatever screen was already active. Does not
+         * reset s_ui_mode, cursor position, or any navigation state. */
+        if (s_ui_mode == UI_MODE_STEP_PIANO)
+        {
+            UI_PianoRollScreen_ResetCache();
+            UI_PianoRollScreen_ForceRedraw();
+        }
+        UiScreen* active = UI_ScreenRouter_GetActive();
+        if (active && active->on_draw)
+        {
+            active->on_draw();
+        }
+        return;
+    }
+    if (ss == UI_SCREENSAVER_ACTIVE)
+    {
+        return;
+    }
+
     ST7789_DebugSetStepPianoActive((s_ui_mode == UI_MODE_STEP_PIANO) ? 1u : 0u);
 
     uint8_t current_pattern = Bridge_GetCurrentPattern();

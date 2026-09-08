@@ -96,6 +96,12 @@ public:
     uint16_t GetCurrentStepNoteMaskForPlayback() const;
     uint8_t  GetStepNotesForPlayback(uint8_t step_index, uint8_t slot_index, uint8_t out_notes[4]) const;
     uint8_t  GetCurrentStepNotesForPlayback(uint8_t out_notes[4]) const;
+    /* Lane-aware siblings used only by ARP Block/Off-mode CV/gate routing; ARP Up/Down/UpDn/
+     * Random/AsPlayed continue to use the plain accessors above and are unaffected. out_lanes
+     * values are 0=A,1=B,2=C,3=D, falling back to sorted array index when no explicit lane
+     * assignment exists for that ledger position (today's behaviour). */
+    uint8_t  GetStepNotesForPlaybackWithLanes(uint8_t step_index, uint8_t slot_index, uint8_t out_notes[4], uint8_t out_lanes[4]) const;
+    uint8_t  GetCurrentStepNotesForPlaybackWithLanes(uint8_t out_notes[4], uint8_t out_lanes[4]) const;
     void     ExportSong(sequencer::Song* out_song) const;
     void     ImportSong(const sequencer::Song& song);
     const sequencer::Song& GetSongView() const;
@@ -122,6 +128,7 @@ private:
     void RecalculateStepIntervalMs();
     void RecalculateStepTicks();
     uint8_t ResolveEventNotesForPlayback(uint8_t step_index, uint8_t slot_index, uint8_t out_notes[4]) const;
+    uint8_t ResolveEventNotesForPlaybackWithLanes(uint8_t step_index, uint8_t slot_index, uint8_t out_notes[4], uint8_t out_lanes[4]) const;
     void AdvanceStep();
     void GateOn();
     void GateOff();
@@ -147,7 +154,6 @@ private:
 private:
     /* ── Core ────────────────────────────────────────────────────────── */
     sequencer::PatternBank  bank_{};
-    sequencer::UserChords   user_chords_{};
     sequencer::ArpEngine    arp_{};
     midi::MidiClock         midi_clock_{};
 

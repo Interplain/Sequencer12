@@ -3,7 +3,7 @@
 #include "hw_init.h"
 #include "mcp23017.h"
 #include "platform/dac8564/dac8564.h"
-#include "platform/fram/mb85rc256.h"
+#include "platform/fram/mb85rc1mt.h"
 #include "calibration.h"
 #include "sequencer_bridge.h"
 #include "user_chord_bridge.h"
@@ -11,6 +11,19 @@
 #include "ui/ui_sequencer.h"
 #include "ui/ui_input.h"
 #include <stdio.h>
+
+#if defined(S12_FRAM_BACKUP_MODE)
+#include "platform/fram/mb85rc256.h"
+#include "platform/fram/fram_backup_dump.h"
+#endif
+
+#if defined(S12_FRAM_NEWCHIP_TEST_MODE)
+#include "platform/fram/fram_newchip_test.h"
+#endif
+
+#if defined(S12_FRAM_RESTORE_MODE)
+#include "platform/fram/fram_restore_migrate.h"
+#endif
 
 #define UI_LOOP_MIN_MS 1
 
@@ -21,6 +34,44 @@
 int main(void)
 {
     HW_Init();
+
+#if defined(S12_FRAM_BACKUP_MODE)
+    /* Isolated, read-only backup path: read FRAM, compute CRC32, halt.
+     * Deliberately returns before any calibration/display/MCP23017/DAC/UI
+     * init below, so none of that code (including the calibration future-
+     * partition write/restore self-test) ever runs in this build. */
+    MB85RC256_Init(&hi2c3);
+    FramBackupDump_Run();
+    while (1)
+    {
+        __NOP();
+    }
+#endif
+
+#if defined(S12_FRAM_NEWCHIP_TEST_MODE)
+    /* Isolated, read-only MB85RC1MT probe: read-only on both banks, halt.
+     * Returns before calibration/display/MCP23017/DAC/UI init, so nothing
+     * else in the boot path can touch FRAM before this probe runs. */
+    MB85RC1MT_Init(&hi2c3);
+    FramNewchipTest_Run();
+    while (1)
+    {
+        __NOP();
+    }
+#endif
+
+#if defined(S12_FRAM_RESTORE_MODE)
+    /* Isolated MB85RC1MT restore path: writes/verifies only 0x0000-0x7FFF
+     * from a buffer pre-loaded by OpenOCD, then halts. Returns before
+     * calibration/display/MCP23017/DAC/UI init, so nothing else in the boot
+     * path can touch FRAM before this explicit, operator-triggered restore. */
+    MB85RC1MT_Init(&hi2c3);
+    FramRestoreMigrate_Run();
+    while (1)
+    {
+        __NOP();
+    }
+#endif
 
     /* Assert display RST low immediately and hold it throughout all early init.
      * The panel controller stays in hardware reset — its backlight may still
@@ -35,7 +86,7 @@ int main(void)
 
     /* Init FRAM on dedicated I2C3 bus (PA8=SCL / PC9=SDA) */
 #if !MCP_MINIMAL_DEBUG
-    MB85RC256_Init(&hi2c3);
+    MB85RC1MT_Init(&hi2c3);
 #endif
 
     /* Init DAC8564 */
@@ -79,6 +130,20 @@ int main(void)
 
     /* UI_Sequencer_Init performs the first full UI draw. */
     UI_Sequencer_Init();
+
+    while (1)
+    {
+        /* Keep display reset line asserted high to avoid transient blanking. */
+        GPIOA->BSRR = (1U << 9);
+
+        uint32_t t0 = HAL_GetTick();
+        Bridge_ServiceMusicalEvents();
+        UI_Input_Poll();
+        UI_Sequencer_Update();
+        uint32_t elapsed = HAL_GetTick() - t0;
+        if (elapsed < UI_LOOP_MIN_MS)
+            HAL_Delay(UI_LOOP_MIN_MS - elapsed);
+    }
 #endif
 
     return 0;

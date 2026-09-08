@@ -29,6 +29,10 @@ struct UserChord
 constexpr uint32_t kUserChordBlockSize =
     sizeof(UserChord) * kUserChordCount;
 
+static_assert(sizeof(UserChord) == 22u,
+              "UserChord layout changed — existing FRAM chord data would be misread");
+static_assert(kUserChordBlockSize == 2816u,
+              "UserChord block size changed — existing FRAM chord data would be misread");
 static_assert(kUserChordBlockSize == FRAM_USERCHORDS_SIZE,
               "FRAM_USERCHORDS_SIZE must match UserChord storage footprint");
 
@@ -45,6 +49,11 @@ public:
     // FRAM stub — load/save entire block
     void Load(const uint8_t* src, uint32_t len);
     void Save(uint8_t* dst, uint32_t len) const;
+
+    // Direct access to the backing storage (kUserChordBlockSize bytes), so callers can
+    // read/write FRAM straight into place without an intermediate staging buffer.
+    uint8_t* RawBlock() { return reinterpret_cast<uint8_t*>(slots_.data()); }
+    static constexpr uint32_t RawBlockSize() { return kUserChordBlockSize; }
 
     // Slot access
     bool             IsSlotUsed(uint32_t index) const;

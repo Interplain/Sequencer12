@@ -128,6 +128,60 @@ inline bool LedgerSlotToggle(LedgerSlot& slot, uint8_t note)
     return LedgerSlotAdd(slot, note);
 }
 
+// ─────────────────────────────────────────────
+// Explicit per-note output-lane (A/B/C/D) bookkeeping
+//
+// Lane data for one LedgerSlot is packed into a single byte: four 2-bit
+// fields, one per `notes[]` array index (0=A, 1=B, 2=C, 3=D). Whether that
+// byte is meaningful for a given ledger position is tracked separately
+// (StepSlot::lane_override_mask) so that positions with no explicit lane
+// assignment continue to derive lane == sorted array index, exactly as
+// today. The *_WithLane variants below keep a note's lane tag attached to
+// the note value itself across sort/add/remove instead of to its array
+// index, since LedgerSlotSort freely permutes array indices.
+// ─────────────────────────────────────────────
+
+inline uint8_t LedgerLaneGet(uint8_t lane_byte, uint8_t slot_index)
+{
+    const uint8_t shift = (uint8_t)((slot_index & 0x3u) * 2u);
+    return (uint8_t)((lane_byte >> shift) & 0x3u);
+}
+
+inline void LedgerLaneSet(uint8_t& lane_byte, uint8_t slot_index, uint8_t lane)
+{
+    const uint8_t shift = (uint8_t)((slot_index & 0x3u) * 2u);
+    lane_byte = (uint8_t)((lane_byte & ~(uint8_t)(0x3u << shift)) | (uint8_t)((lane & 0x3u) << shift));
+}
+
+// Same swap pattern as LedgerSlotSort, but moves each note's lane field
+// along with it so an already-assigned note never changes lane merely
+// because it changed array position.
+inline void LedgerSlotSortWithLane(LedgerSlot& slot, uint8_t& lane_byte)
+{
+    for (uint8_t i = 0u; i < slot.notes.size(); ++i)
+    {
+        for (uint8_t j = (uint8_t)(i + 1u); j < slot.notes.size(); ++j)
+        {
+            const uint8_t a = slot.notes[i];
+            const uint8_t b = slot.notes[j];
+            const bool a_empty = (a == kMidiNoteNone);
+            const bool b_empty = (b == kMidiNoteNone);
+
+            const bool swap_needed = (a_empty && !b_empty) ||
+                                     (!a_empty && !b_empty && b < a);
+            if (swap_needed)
+            {
+                slot.notes[i] = b;
+                slot.notes[j] = a;
+                const uint8_t lane_i = LedgerLaneGet(lane_byte, i);
+                const uint8_t lane_j = LedgerLaneGet(lane_byte, j);
+                LedgerLaneSet(lane_byte, i, lane_j);
+                LedgerLaneSet(lane_byte, j, lane_i);
+            }
+        }
+    }
+}
+
 inline uint16_t LedgerSlotToPitchClassMask(const LedgerSlot& slot)
 {
     uint16_t mask = 0u;
@@ -295,6 +349,9 @@ enum class BarState : uint8_t
     Skip
 };
 
+constexpr uint8_t kStepLaneOverrideMaskBytes = (uint8_t)((kStepLedgerMax + 7u) / 8u);
+static_assert(kStepLedgerMax == 32u, "kStepLaneOverrideMaskBytes assumes 32 ledger positions");
+
 struct StepSlot
 {
     StepType type                = StepType::Empty;
@@ -306,10 +363,33 @@ struct StepSlot
     /* Canonical event lengths in 1/32 units packed as 32 x 5-bit length_minus_1 values.
      * Values at non-event-start positions are ignored. */
     std::array<uint8_t, kStepEventLengthPackedBytes> event_length_packed{};
+    /* Explicit A/B/C/D output-lane assignment (ARP Block/Off mode only). One packed byte
+     * per ledger position: four 2-bit lane fields (0=A,1=B,2=C,3=D), one per note_ledger[pos]
+     * array index. Meaningful only where lane_override_mask's matching bit is set; otherwise
+     * playback derives lane == sorted array index (today's lowest-note->A behaviour). */
+    std::array<uint8_t, kStepLedgerMax> lane_slots{};
+    std::array<uint8_t, kStepLaneOverrideMaskBytes> lane_override_mask{};
     char     custom_chord_name[17] = {0};
     uint8_t  velocity            = 100;   // 0-127 MIDI standard
     uint8_t  probability         = 100;   // 0-100 percent chance of firing
 };
+
+inline bool StepSlotHasExplicitLane(const StepSlot& slot, uint8_t ledger_index)
+{
+    if (ledger_index >= kStepLedgerMax) return false;
+    const uint8_t byte_index = (uint8_t)(ledger_index >> 3u);
+    const uint8_t bit_index  = (uint8_t)(ledger_index & 0x7u);
+    return (slot.lane_override_mask[byte_index] & (uint8_t)(1u << bit_index)) != 0u;
+}
+
+inline void StepSlotSetExplicitLaneFlag(StepSlot& slot, uint8_t ledger_index, bool has_explicit_lane)
+{
+    if (ledger_index >= kStepLedgerMax) return;
+    const uint8_t byte_index = (uint8_t)(ledger_index >> 3u);
+    const uint8_t bit_index  = (uint8_t)(ledger_index & 0x7u);
+    if (has_explicit_lane) slot.lane_override_mask[byte_index] |= (uint8_t)(1u << bit_index);
+    else                   slot.lane_override_mask[byte_index] &= (uint8_t)~(1u << bit_index);
+}
 
 // ─────────────────────────────────────────────
 // Playback mode  — must be before Pattern

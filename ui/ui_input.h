@@ -30,6 +30,15 @@ void UI_Input_GetMcpDebug(uint8_t* online, uint8_t* read_ok, uint8_t* gpio_a, ui
 uint8_t UI_Input_GetMcpOkStreak(void);
 uint8_t UI_Input_GetMcpFailStreak(void);
 
+/* ── Activity / screensaver support ──────────────────────────────────────── */
+/* Milliseconds since the last physical input activity (encoder move/press,
+ * matrix step, Play/Rec/Shift). Non-consuming; safe to poll repeatedly. */
+uint32_t UI_Input_GetIdleMs(void);
+/* Clears every pending "consumable" input event and resets the idle timer.
+ * Used by the screensaver so the input that wakes the display is swallowed
+ * instead of also being delivered to the normal UI on the next update. */
+void UI_Input_ConsumeWakeEvent(void);
+
 #ifdef __cplusplus
 }
 #endif

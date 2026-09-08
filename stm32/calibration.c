@@ -6,7 +6,7 @@
 #include "s12_fonts.h"
 #include "hw_init.h"
 #include "platform/dac8564/dac8564.h"
-#include "platform/fram/mb85rc256.h"
+#include "platform/fram/mb85rc1mt.h"
 #include "platform/fram/fram_layout.h"
 #include "sequencer_bridge.h"
 #include "ui/ui_input.h"
@@ -53,20 +53,20 @@ typedef struct
 } CalBlob;
 
 static uint8_t s_fram_ready_dbg = 0u;
-static uint8_t s_fram_addr_dbg = MB85RC256_ADDR_7BIT;
+static uint8_t s_fram_addr_dbg = MB85RC1MT_ADDR_7BIT_BASE;
 static uint32_t s_cal_save_count = 0u;
 
-static const char* CalFramResultText(Mb85rc256Result result)
+static const char* CalFramResultText(Mb85rc1mtResult result)
 {
     switch (result)
     {
-    case MB85RC256_RESULT_OK: return "OK";
-    case MB85RC256_RESULT_NOT_INITIALIZED: return "NOINIT";
-    case MB85RC256_RESULT_RANGE: return "RANGE";
-    case MB85RC256_RESULT_NOT_READY: return "NORDY";
-    case MB85RC256_RESULT_WRITE_FAILED: return "WRITE";
-    case MB85RC256_RESULT_READ_FAILED: return "READ";
-    case MB85RC256_RESULT_VERIFY_MISMATCH: return "VERIFY";
+    case MB85RC1MT_RESULT_OK: return "OK";
+    case MB85RC1MT_RESULT_NOT_INITIALIZED: return "NOINIT";
+    case MB85RC1MT_RESULT_RANGE: return "RANGE";
+    case MB85RC1MT_RESULT_NOT_READY: return "NORDY";
+    case MB85RC1MT_RESULT_WRITE_FAILED: return "WRITE";
+    case MB85RC1MT_RESULT_READ_FAILED: return "READ";
+    case MB85RC1MT_RESULT_VERIFY_MISMATCH: return "VERIFY";
     default: return "?";
     }
 }
@@ -74,7 +74,7 @@ static const char* CalFramResultText(Mb85rc256Result result)
 static void CalUpdateFramDebug(uint8_t ready)
 {
     s_fram_ready_dbg = ready;
-    s_fram_addr_dbg = MB85RC256_GetAddress7bit();
+    s_fram_addr_dbg = MB85RC1MT_GetAddr7BitBase();
 }
 
 static uint32_t CalChecksum(const CalBlob* b)
@@ -85,7 +85,7 @@ static uint32_t CalChecksum(const CalBlob* b)
 static uint8_t CalReadSaveCount(uint32_t* count)
 {
     uint32_t value = 0u;
-    if (!MB85RC256_Read(FRAM_CALIB_SAVECOUNT_ADDR, (uint8_t*)&value, sizeof(value)))
+    if (!MB85RC1MT_Read(FRAM_CALIB_SAVECOUNT_ADDR, (uint8_t*)&value, sizeof(value)))
     {
         return 0u;
     }
@@ -98,13 +98,13 @@ static uint8_t CalReadSaveCount(uint32_t* count)
 
 static uint8_t CalWriteSaveCount(uint32_t count)
 {
-    return MB85RC256_WriteAndVerify(FRAM_CALIB_SAVECOUNT_ADDR, (const uint8_t*)&count, sizeof(count));
+    return MB85RC1MT_WriteAndVerify(FRAM_CALIB_SAVECOUNT_ADDR, (const uint8_t*)&count, sizeof(count));
 }
 
 static uint8_t CalRead(uint16_t neg1[4], uint16_t pos2[4])
 {
     CalBlob b;
-    if (!MB85RC256_Read(FRAM_CALIBRATION_ADDR, (uint8_t*)&b, sizeof(CalBlob)))
+    if (!MB85RC1MT_Read(FRAM_CALIBRATION_ADDR, (uint8_t*)&b, sizeof(CalBlob)))
     {
         CalUpdateFramDebug(0u);
         return 0;
@@ -146,7 +146,7 @@ static uint8_t CalWrite(const uint16_t neg1[4], const uint16_t pos2[4])
     b.ch_c = ((uint32_t)pos2[2] << 16) | neg1[2];
     b.ch_d = ((uint32_t)pos2[3] << 16) | neg1[3];
     b.checksum = CalChecksum(&b);
-    ok = MB85RC256_WriteAndVerify(FRAM_CALIBRATION_ADDR, (const uint8_t*)&b, sizeof(CalBlob));
+    ok = MB85RC1MT_WriteAndVerify(FRAM_CALIBRATION_ADDR, (const uint8_t*)&b, sizeof(CalBlob));
     CalUpdateFramDebug((uint8_t)(ok ? 1u : 0u));
     return ok;
 }
@@ -446,7 +446,7 @@ static void StageDacOnly(void)
 static void StageFramReadOnly(void)
 {
     uint8_t byte = 0u;
-    uint8_t ok = MB85RC256_Read(FRAM_CALIBRATION_ADDR, &byte, 1u);
+    uint8_t ok = MB85RC1MT_Read(FRAM_CALIBRATION_ADDR, &byte, 1u);
     char line[48];
 
     snprintf(line, sizeof(line), "READ:%s VAL:%02X   ", ok ? "OK" : "FAIL", (unsigned)byte);
@@ -460,12 +460,12 @@ static void StageFramWriteOnly(void)
     uint8_t pattern[8] = {0xA5u, 0x5Au, 0x11u, 0xEEu, 0x33u, 0xCCu, 0x77u, 0x88u};
     uint8_t ok = 0u;
 
-    if (MB85RC256_Read(FRAM_FUTURE_ADDR, backup, sizeof(backup)))
+    if (MB85RC1MT_Read(FRAM_FUTURE_ADDR, backup, sizeof(backup)))
     {
-        ok = MB85RC256_WriteAndVerify(FRAM_FUTURE_ADDR, pattern, sizeof(pattern));
+        ok = MB85RC1MT_WriteAndVerify(FRAM_FUTURE_ADDR, pattern, sizeof(pattern));
         if (ok)
         {
-            (void)MB85RC256_WriteAndVerify(FRAM_FUTURE_ADDR, backup, sizeof(backup));
+            (void)MB85RC1MT_WriteAndVerify(FRAM_FUTURE_ADDR, backup, sizeof(backup));
         }
     }
 
@@ -683,9 +683,9 @@ void Calibration_RunWizard(void)
         snprintf(line,
                  sizeof(line),
                  "FRAM:%s HAL:%ld @%02X",
-                 CalFramResultText(MB85RC256_GetLastResult()),
-                 (long)MB85RC256_GetLastHalStatus(),
-                 (unsigned)MB85RC256_GetAddress7bit());
+                 CalFramResultText(MB85RC1MT_GetLastResult()),
+                 (long)MB85RC1MT_GetLastHalStatus(),
+                 (unsigned)MB85RC1MT_GetAddr7BitBase());
         ST7789_DrawString(8, 88, line, &Font8x12, YELLOW, BLACK);
         ST7789_DrawString(8, 104, "stage: READ / WRITE / VERIFY", &Font8x12, GRAY, BLACK);
     }

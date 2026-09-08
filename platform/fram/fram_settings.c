@@ -1,5 +1,5 @@
 #include "platform/fram/fram_settings.h"
-#include "platform/fram/mb85rc256.h"
+#include "platform/fram/mb85rc1mt.h"
 #include <string.h>
 
 static uint32_t Fnv1a32(const uint8_t* data, uint16_t len)
@@ -66,7 +66,7 @@ uint8_t FramSettings_Read(FramSettingsBlob* out_blob)
 {
     if (!out_blob) return 0u;
 
-    if (!MB85RC256_Read(FRAM_SETTINGS_ADDR, (uint8_t*)out_blob, (uint16_t)sizeof(*out_blob)))
+    if (!MB85RC1MT_Read(FRAM_SETTINGS_ADDR, (uint8_t*)out_blob, (uint16_t)sizeof(*out_blob)))
     {
         return 0u;
     }
@@ -86,7 +86,7 @@ uint8_t FramSettings_Write(const FramSettingsBlob* blob)
     tmp.version = (uint16_t)FRAM_SETTINGS_VERSION;
     tmp.checksum = FramSettings_CalcChecksum(&tmp);
 
-    return MB85RC256_WriteAndVerify(FRAM_SETTINGS_ADDR,
+    return MB85RC1MT_WriteAndVerify(FRAM_SETTINGS_ADDR,
                                     (const uint8_t*)&tmp,
                                     (uint16_t)sizeof(tmp));
 }
