@@ -229,3 +229,81 @@ uint8_t PatternStore_WriteAsyncBusy(void)
     return (s_async_phase != AsyncPhase::Idle) ? 1u : 0u;
 }
 
+namespace
+{
+
+enum class ReadAsyncPhase : uint8_t { Idle, ReadingPayload };
+
+ReadAsyncPhase s_read_phase = ReadAsyncPhase::Idle;
+uint8_t s_read_index = 0xFFu;
+uint16_t s_read_offset = 0u;
+uint32_t s_read_expected_crc = 0u;
+sequencer::Pattern* s_read_target = nullptr;
+
+} // namespace
+
+uint8_t PatternStore_ReadAsyncBegin(uint8_t index, sequencer::Pattern* out_pattern)
+{
+    if (index >= FRAM_PATTERNSTORE_SLOT_COUNT || out_pattern == nullptr)
+    {
+        return 0u;
+    }
+    if (s_read_phase != ReadAsyncPhase::Idle)
+    {
+        return 0u; /* already busy -- caller must wait for Busy() to clear first */
+    }
+
+    const uint32_t base = SlotAddress(index);
+    PatternStoreHeader hdr{};
+    if (!MB85RC1MT_Read(base, reinterpret_cast<uint8_t*>(&hdr), (uint16_t)sizeof(hdr)))
+    {
+        return 0u;
+    }
+    if (hdr.magic != kPatternStoreMagic) return 0u;
+    if (hdr.version != kPatternStoreVersion) return 0u;
+    if (hdr.payload_size != (uint16_t)sizeof(sequencer::Pattern)) return 0u;
+
+    s_read_index = index;
+    s_read_offset = 0u;
+    s_read_expected_crc = hdr.crc32;
+    s_read_target = out_pattern;
+    s_read_phase = ReadAsyncPhase::ReadingPayload;
+    return 1u;
+}
+
+PatternStoreAsyncStatus PatternStore_ReadAsyncService(void)
+{
+    if (s_read_phase == ReadAsyncPhase::Idle)
+    {
+        return PATTERNSTORE_ASYNC_IDLE;
+    }
+
+    const uint32_t base = SlotAddress(s_read_index);
+    const uint16_t payload_size = (uint16_t)sizeof(sequencer::Pattern);
+    const uint16_t remaining = (uint16_t)(payload_size - s_read_offset);
+    const uint16_t chunk = (remaining < PATTERNSTORE_CHUNK_BYTES) ? remaining : (uint16_t)PATTERNSTORE_CHUNK_BYTES;
+
+    uint8_t* dst = reinterpret_cast<uint8_t*>(s_read_target) + s_read_offset;
+    if (!MB85RC1MT_Read(base + (uint32_t)sizeof(PatternStoreHeader) + s_read_offset, dst, chunk))
+    {
+        s_read_phase = ReadAsyncPhase::Idle;
+        s_read_target = nullptr;
+        return PATTERNSTORE_ASYNC_FAILED;
+    }
+
+    s_read_offset = (uint16_t)(s_read_offset + chunk);
+    if (s_read_offset >= payload_size)
+    {
+        const uint32_t actual_crc = Crc32Compute(reinterpret_cast<const uint8_t*>(s_read_target), payload_size);
+        s_read_phase = ReadAsyncPhase::Idle;
+        s_read_target = nullptr;
+        return (actual_crc == s_read_expected_crc) ? PATTERNSTORE_ASYNC_DONE : PATTERNSTORE_ASYNC_FAILED;
+    }
+    return PATTERNSTORE_ASYNC_BUSY;
+}
+
+uint8_t PatternStore_ReadAsyncBusy(void)
+{
+    return (s_read_phase != ReadAsyncPhase::Idle) ? 1u : 0u;
+}
+

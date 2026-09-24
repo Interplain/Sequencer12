@@ -1356,6 +1356,272 @@ extern "C"
     volatile uint8_t g_patternstore_shadow_verify_ok = 0u;
 }
 
+/* ── PatternStore read-side verification (Stage 2.5, diagnostic/read-only) ──
+ * Per-slot result codes:
+ *   0 = not yet checked this pass
+ *   1 = valid header, byte-for-byte match against resident SRAM Pattern
+ *   2 = valid header, mismatch (see g_ps_verify_first_diff_offset[index])
+ *   3 = PatternStore_IsValid() false -- NOT necessarily corruption, just
+ *       means this slot has never been shadow-written this power cycle
+ *   4 = valid header but PatternStore_Read() failed (unexpected)
+ * Never writes to PatternStore or V3 FRAM, never touches SRAM Song/Pattern
+ * contents; reuses one static Pattern-sized scratch buffer for all 32 slots. */
+extern "C"
+{
+    volatile uint8_t g_ps_verify_trigger = 0u; /* main loop clears this after running a pass */
+    volatile uint8_t g_ps_verify_done = 0u;
+    volatile uint8_t g_ps_verify_result[sequencer::kPatternCount] = {0};
+    volatile int16_t g_ps_verify_first_diff_offset[sequencer::kPatternCount] = {0};
+    volatile uint8_t g_ps_verify_count_valid = 0u;
+    volatile uint8_t g_ps_verify_count_match = 0u;
+    volatile uint8_t g_ps_verify_count_mismatch = 0u;
+    volatile uint8_t g_ps_verify_count_unreadable = 0u;
+    volatile uint8_t g_ps_verify_count_never_persisted = 0u;
+}
+
+extern "C" void Bridge_PatternStoreVerifyAll(void)
+{
+    static sequencer::Pattern s_verify_scratch; /* single reused buffer, not 32 */
+    const sequencer::Song& song = g_sequencer.GetSongView();
+
+    g_ps_verify_count_valid = 0u;
+    g_ps_verify_count_match = 0u;
+    g_ps_verify_count_mismatch = 0u;
+    g_ps_verify_count_unreadable = 0u;
+    g_ps_verify_count_never_persisted = 0u;
+
+    for (uint8_t i = 0u; i < sequencer::kPatternCount; ++i)
+    {
+        g_ps_verify_first_diff_offset[i] = -1;
+
+        if (!PatternStore_IsValid(i))
+        {
+            g_ps_verify_result[i] = 3u;
+            g_ps_verify_count_never_persisted++;
+            continue;
+        }
+        g_ps_verify_count_valid++;
+
+        memset(&s_verify_scratch, 0, sizeof(s_verify_scratch));
+        if (!PatternStore_Read(i, &s_verify_scratch))
+        {
+            g_ps_verify_result[i] = 4u;
+            g_ps_verify_count_unreadable++;
+            continue;
+        }
+
+        const uint8_t* a = reinterpret_cast<const uint8_t*>(&s_verify_scratch);
+        const uint8_t* b = reinterpret_cast<const uint8_t*>(&song.patterns[i]);
+        int16_t diff_offset = -1;
+        for (uint32_t off = 0u; off < sizeof(sequencer::Pattern); ++off)
+        {
+            if (a[off] != b[off]) { diff_offset = (int16_t)off; break; }
+        }
+
+        if (diff_offset < 0)
+        {
+            g_ps_verify_result[i] = 1u;
+            g_ps_verify_count_match++;
+        }
+        else
+        {
+            g_ps_verify_result[i] = 2u;
+            g_ps_verify_first_diff_offset[i] = diff_offset;
+            g_ps_verify_count_mismatch++;
+        }
+    }
+
+    g_ps_verify_done = 1u;
+}
+
+/* ── Boot-time PatternStore restore (DISABLED) ──────────────────────────────
+ * Deliberately not called from Bridge_Init(): boot always starts from the
+ * default Song so nothing is fetched from saved FRAM data at startup.
+ * Kept for diagnostic/on-demand use only. */
+extern "C"
+{
+    volatile uint8_t g_pattern0_restored_from_store = 0u; /* 1 = restored, 0 = left at default */
+    volatile uint32_t g_pattern0_restore_boot_ms = 0u;     /* HAL_GetTick() elapsed for this check */
+}
+
+__attribute__((unused)) static void RestorePattern0FromStoreIfValid(void)
+{
+    const uint32_t t0 = HAL_GetTick();
+    g_pattern0_restored_from_store = 0u;
+
+    if (PatternStore_IsValid(0u))
+    {
+        sequencer::Pattern restored{};
+        if (PatternStore_Read(0u, &restored))
+        {
+            sequencer::Song* song = g_sequencer.GetMutableSongForImport();
+            if (song)
+            {
+                song->patterns[0] = restored;
+                g_pattern0_restored_from_store = 1u;
+            }
+        }
+    }
+
+    g_pattern0_restore_boot_ms = HAL_GetTick() - t0;
+}
+
+/* ── Current+Next Pattern cache validation pilot (diagnostic/shadow only) ───
+ * Resident song_.patterns[32] remains fully authoritative for every real
+ * read/playback/edit/persistence path -- nothing here is consulted by
+ * uClock's ISR or any playback code yet; this only rehearses the exact
+ * double-buffer discipline a future cache cutover would need.
+ *
+ * Two physically distinct Pattern buffers live in CCM RAM: CPU/I2C-polling
+ * only ever touches them (no DMA reaches CCM on this part, and FRAM I2C here
+ * is polling-mode, confirmed in mb85rc1mt.c), but CCM is NOT startup-zeroed
+ * on this target (stock STM32F405 linker script only copies/zeros .data/
+ * .bss) -- so both buffers start as garbage and must be fully populated via
+ * the chunked, CRC-verified reader before their valid flag is ever set.
+ * The "active" selector only ever flips to a buffer already fully valid;
+ * only the INACTIVE buffer is ever written to -- the active one is never
+ * overwritten. */
+__attribute__((section(".ccmram"))) static sequencer::Pattern s_pc_buf[2];
+
+extern "C"
+{
+    volatile uint8_t g_pc_buf_valid[2] = {0u, 0u};
+    volatile uint8_t g_pc_buf_pattern_index[2] = {0xFFu, 0xFFu};
+    volatile uint8_t g_pc_active_buf = 0u;
+    volatile uint32_t g_pc_stat_loads_started = 0u;
+    volatile uint32_t g_pc_stat_loads_completed = 0u;
+    volatile uint32_t g_pc_stat_hits = 0u;
+    volatile uint32_t g_pc_stat_misses = 0u;
+    volatile uint32_t g_pc_stat_mismatches = 0u;
+    volatile uint8_t g_pc_last_mismatch_pattern_index = 0xFFu;
+    volatile int16_t g_pc_last_mismatch_offset = -1;
+}
+
+namespace
+{
+uint8_t s_pc_last_expected_current = 0xFFu;
+uint8_t s_pc_loading_buf = 0xFFu;
+uint8_t s_pc_loading_index = 0xFFu;
+uint8_t s_pc_loading_is_current = 0u;
+
+uint8_t PcInactiveBuf(void) { return (uint8_t)(1u - g_pc_active_buf); }
+
+void PcStartLoad(uint8_t buf_index, uint8_t pattern_index, uint8_t is_current)
+{
+    g_pc_buf_valid[buf_index] = 0u; /* invalidate before touching -- never expose partial data */
+    g_pc_buf_pattern_index[buf_index] = 0xFFu;
+    if (PatternStore_ReadAsyncBegin(pattern_index, &s_pc_buf[buf_index]))
+    {
+        s_pc_loading_buf = buf_index;
+        s_pc_loading_index = pattern_index;
+        s_pc_loading_is_current = is_current;
+        g_pc_stat_loads_started++;
+    }
+    else
+    {
+        g_pc_stat_misses++; /* invalid/never-persisted slot -- not corruption, just not cached yet */
+    }
+}
+} // namespace
+
+static void ServicePatternCachePilot(void)
+{
+    const uint8_t expected_current = Bridge_GetPlayPattern();
+    const uint8_t chain_len = Bridge_GetChainLength();
+    uint8_t expected_next = expected_current;
+    if (chain_len > 1u)
+    {
+        const uint8_t pos = Bridge_GetChainCurrentPosition();
+        const uint8_t next_pos = (uint8_t)((pos + 1u) % chain_len);
+        expected_next = Bridge_GetChainPatternAt(next_pos);
+    }
+
+    /* Pump any in-flight chunked read first -- at most one small I2C chunk
+     * per call, matching the Stage 2 writer's real-time-safety discipline. */
+    if (s_pc_loading_buf != 0xFFu)
+    {
+        const PatternStoreAsyncStatus st = PatternStore_ReadAsyncService();
+        if (st == PATTERNSTORE_ASYNC_BUSY)
+        {
+            return;
+        }
+
+        if (st == PATTERNSTORE_ASYNC_DONE)
+        {
+            g_pc_buf_pattern_index[s_pc_loading_buf] = s_pc_loading_index;
+            g_pc_buf_valid[s_pc_loading_buf] = 1u; /* only set once fully populated + CRC-verified */
+            g_pc_stat_loads_completed++;
+
+            /* Diagnostic-only compare against resident SRAM -- read-only,
+             * never writes PatternStore/V3, never alters SRAM. */
+            if (s_pc_loading_index < sequencer::kPatternCount)
+            {
+                const sequencer::Song& song = g_sequencer.GetSongView();
+                const uint8_t* a = reinterpret_cast<const uint8_t*>(&s_pc_buf[s_pc_loading_buf]);
+                const uint8_t* b = reinterpret_cast<const uint8_t*>(&song.patterns[s_pc_loading_index]);
+                int16_t diff_offset = -1;
+                for (uint32_t off = 0u; off < sizeof(sequencer::Pattern); ++off)
+                {
+                    if (a[off] != b[off]) { diff_offset = (int16_t)off; break; }
+                }
+                if (diff_offset < 0)
+                {
+                    g_pc_stat_hits++;
+                }
+                else
+                {
+                    g_pc_stat_mismatches++;
+                    g_pc_last_mismatch_pattern_index = s_pc_loading_index;
+                    g_pc_last_mismatch_offset = diff_offset;
+                }
+            }
+
+            if (s_pc_loading_is_current && s_pc_loading_index == expected_current)
+            {
+                g_pc_active_buf = s_pc_loading_buf; /* atomic single-store selector flip */
+            }
+        }
+        else /* PATTERNSTORE_ASYNC_FAILED: invalid/never-persisted slot, or CRC mismatch */
+        {
+            g_pc_buf_valid[s_pc_loading_buf] = 0u;
+            g_pc_buf_pattern_index[s_pc_loading_buf] = 0xFFu;
+            g_pc_stat_misses++;
+        }
+        s_pc_loading_buf = 0xFFu;
+        return;
+    }
+
+    if (expected_current != s_pc_last_expected_current)
+    {
+        s_pc_last_expected_current = expected_current;
+        /* Instant role-swap: if the inactive buffer already holds a fully
+         * valid load for the new current index (a successful prefetch),
+         * promote it with a single atomic selector flip -- no data copy,
+         * no re-read. */
+        const uint8_t inactive = PcInactiveBuf();
+        if (g_pc_buf_valid[inactive] && g_pc_buf_pattern_index[inactive] == expected_current)
+        {
+            g_pc_active_buf = inactive;
+        }
+    }
+
+    const uint8_t active = g_pc_active_buf;
+    const uint8_t inactive = PcInactiveBuf();
+
+    if (!(g_pc_buf_valid[active] && g_pc_buf_pattern_index[active] == expected_current))
+    {
+        /* Current isn't cached at all yet -- load it into the inactive
+         * buffer; the active buffer is never overwritten. */
+        PcStartLoad(inactive, expected_current, 1u);
+        return;
+    }
+
+    if (!(g_pc_buf_valid[inactive] && g_pc_buf_pattern_index[inactive] == expected_next))
+    {
+        PcStartLoad(inactive, expected_next, 0u);
+    }
+}
+
 /* Pumps the chunked PatternStore writer: at most one small I2C transaction
  * (a PATTERNSTORE_CHUNK_BYTES payload chunk, or the final 12-byte header)
  * per call, so this is always safe to run every main-loop pass regardless
@@ -1433,7 +1699,8 @@ extern "C"
     uClock.setTempo(120.0f);
     uClock.start();
 #endif
-        /* Keep runtime step state volatile: do not restore song step data on boot. */
+        /* Runtime step/transport state (current_bar_, playing_, etc.) stays
+         * volatile across boot; only Pattern 0's content is restored above. */
 
         Bridge_ApplyZeroOutputCodes();
     }
@@ -1675,6 +1942,10 @@ extern "C"
             s_v3_dirty_since_ms = 0u;
         }
     }
+    void     Bridge_ServicePatternCache(void)
+    {
+        ServicePatternCachePilot();
+    }
     uint8_t  Bridge_PatternStoreVerify(uint8_t pattern_index)
     {
         if (pattern_index >= sequencer::kPatternCount) return 0u;
@@ -1738,7 +2009,7 @@ extern "C"
     }
     uint8_t Bridge_GetPatternArpRate(void)
     {
-        return static_cast<uint8_t>(g_sequencer.GetCurrentArpRate());
+        return static_cast<uint8_t>(g_sequencer.GetPatternArpRate());
     }
     void     Bridge_SetTimeSignature(uint8_t numerator, uint8_t denominator) { g_sequencer.SetTimeSignature(numerator, denominator); PersistSong(); }
     uint8_t  Bridge_GetTimeSigNumerator(void) { return g_sequencer.GetTimeSigNumerator(); }
@@ -1848,6 +2119,14 @@ extern "C"
         g_sequencer.SetCurrentPatternIndex(pattern_index);
         PersistSong();
     }
+    void     Bridge_SetPlaybackSource(uint8_t source)
+    {
+        g_sequencer.SetPlaybackSource(source == 1u ? sequencer::PlaybackSource::SongChain : sequencer::PlaybackSource::Pattern);
+    }
+    uint8_t  Bridge_GetPlaybackSource(void)
+    {
+        return g_sequencer.GetPlaybackSource() == sequencer::PlaybackSource::SongChain ? 1u : 0u;
+    }
     void     Bridge_SetChainLength(uint8_t length)
     {
         g_sequencer.SetChainLength(length);
@@ -1888,7 +2167,7 @@ extern "C"
     }
     uint8_t Bridge_GetCurrentPatternArpMode(void)
     {
-        return static_cast<uint8_t>(g_sequencer.GetCurrentArpMode());
+        return static_cast<uint8_t>(g_sequencer.GetPatternArpMode());
     }
     uint16_t Bridge_GetChordMaskForUiParams(uint8_t root_key, uint8_t chord_type)
     {
@@ -2143,6 +2422,11 @@ extern "C"
 uint8_t Bridge_GetCurrentPattern(void)
 {
     return static_cast<uint8_t>(g_sequencer.GetCurrentPatternIndex());
+}
+
+uint8_t Bridge_GetPlayPattern(void)
+{
+    return static_cast<uint8_t>(g_sequencer.GetPlayPatternIndex());
 }
 
 uint32_t Bridge_GetRunTimeMs(void)

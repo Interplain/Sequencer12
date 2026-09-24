@@ -39,10 +39,22 @@ void     Bridge_ServicePersistence(void);
  * bypassing the idle-checkpoint wait. Safe to call only when it is
  * acceptable to block for ~200ms (e.g. transport stop, explicit save). */
 void     Bridge_FlushPersistence(void);
+/* Current+Next Pattern cache validation pilot (diagnostic/shadow only):
+ * pumps at most one small chunked PatternStore read per call, comparing
+ * completed loads against the resident SRAM Song. Does not affect
+ * playback -- resident song_.patterns[] remains fully authoritative.
+ * Results reported via the g_pc_* globals (see sequencer_bridge.cpp). */
+void     Bridge_ServicePatternCache(void);
 /* Stage 2 FRAM Pattern Store debug/verification path: byte-for-byte compares
  * the resident SRAM Pattern at `pattern_index` against its FRAM shadow slot.
  * Not called anywhere in production yet -- diagnostic only. */
 uint8_t  Bridge_PatternStoreVerify(uint8_t pattern_index);
+/* Diagnostic/read-only: checks all 32 PatternStore slots against the
+ * resident SRAM Song, byte-for-byte. Never writes to PatternStore or V3
+ * FRAM, never alters SRAM contents. Blocks for the duration of the check
+ * (~32 slots worth of FRAM reads) -- only call when idle/stopped. Results
+ * are reported via the g_ps_verify_* globals (see sequencer_bridge.cpp). */
+void     Bridge_PatternStoreVerifyAll(void);
 void     Bridge_SetPatternStepCount(uint8_t step_count);
 uint8_t  Bridge_GetPatternStepCount(void);
 uint8_t  Bridge_SetPatternTiming(uint8_t step_division, uint8_t numerator, uint8_t denominator);
@@ -81,6 +93,8 @@ uint8_t  Bridge_GetStepBarState(uint8_t step_index);
 void     Bridge_SetPatternRepeatCount(uint8_t repeat_count);
 uint8_t  Bridge_GetPatternRepeatCount(void);
 void     Bridge_SetCurrentPattern(uint8_t pattern_index);
+void     Bridge_SetPlaybackSource(uint8_t source);
+uint8_t  Bridge_GetPlaybackSource(void);
 void     Bridge_SetChainLength(uint8_t length);
 uint8_t  Bridge_GetChainLength(void);
 void     Bridge_SetChainPatternAt(uint8_t pos, uint8_t pattern_index);
@@ -107,6 +121,7 @@ uint8_t  Bridge_GetCurrentStepSubIndex(void);
 uint8_t  Bridge_IsPlaying(void);
 uint32_t Bridge_GetElapsedMs(void);
 uint8_t  Bridge_GetCurrentPattern(void);
+uint8_t  Bridge_GetPlayPattern(void);
 uint32_t Bridge_GetRunTimeMs(void);
 uint32_t Bridge_GetCompletedLoops(void);
 uint32_t Bridge_GetUClockMusicalCallbackCount(void);

@@ -76,4 +76,26 @@ PatternStoreAsyncStatus PatternStore_WriteAsyncService(void);
 /* True while a chunked write is in progress (between Begin and Done/Failed). */
 uint8_t PatternStore_WriteAsyncBusy(void);
 
+/* ── Non-blocking chunked reader (real-time-safe path) ──────────────────────
+ * Symmetric to the writer above: streams the payload directly into
+ * *out_pattern in PATTERNSTORE_CHUNK_BYTES pieces (no extra scratch buffer --
+ * writes straight into the caller's destination), validating the header and
+ * checking the CRC32 only once every chunk has landed. *out_pattern is left
+ * PARTIALLY WRITTEN between Begin and a DONE/FAILED result -- callers must
+ * never treat it as valid (e.g. never expose it / flip a "ready" flag) until
+ * PatternStore_ReadAsyncService() returns PATTERNSTORE_ASYNC_DONE. */
+
+/* Validates the slot's header (magic/version/payload_size) and reads it up
+ * front (12 bytes, one small transfer) before starting the chunked payload
+ * read. Returns 0 immediately (no state changed) if the header is invalid or
+ * a read is already in progress -- *out_pattern is untouched in that case. */
+uint8_t PatternStore_ReadAsyncBegin(uint8_t index, sequencer::Pattern* out_pattern);
+
+/* Call once per main-loop pass. Reads at most one PATTERNSTORE_CHUNK_BYTES
+ * chunk into the destination given to Begin(), then returns. */
+PatternStoreAsyncStatus PatternStore_ReadAsyncService(void);
+
+/* True while a chunked read is in progress. */
+uint8_t PatternStore_ReadAsyncBusy(void);
+
 #endif

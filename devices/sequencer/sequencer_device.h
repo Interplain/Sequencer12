@@ -18,7 +18,8 @@ public:
     void Tick10ms() override;
     void Tick20ms() override;
     void Process()  override;
-    uint8_t  GetCurrentPatternIndex() const;
+    uint8_t  GetCurrentPatternIndex() const;   /* edit/view target (sidebar, UI, persistence) */
+    uint8_t  GetPlayPatternIndex() const;      /* chain-driven playback target */
     uint32_t GetRunTimeMs() const;
     uint32_t GetCompletedLoops() const;
 
@@ -51,7 +52,8 @@ public:
     uint8_t  GetPatternStepDivision() const;
     void     SetPatternArpMode(sequencer::ArpMode mode);
     void     SetPatternArpRate(sequencer::ArpRate rate);
-    sequencer::ArpRate GetCurrentArpRate() const;
+    sequencer::ArpMode GetPatternArpMode() const;
+    sequencer::ArpRate GetPatternArpRate() const;
     void     SetTimeSignature(uint8_t numerator, uint8_t denominator);
     uint8_t  GetTimeSigNumerator() const;
     uint8_t  GetTimeSigDenominator() const;
@@ -84,6 +86,8 @@ public:
     void     SetPatternRepeatCount(uint8_t repeat_count);
     uint8_t  GetPatternRepeatCount() const;
     void     SetCurrentPatternIndex(uint8_t pattern_index);
+    void     SetPlaybackSource(sequencer::PlaybackSource source);
+    sequencer::PlaybackSource GetPlaybackSource() const;
     void     SetChainLength(uint8_t length);
     uint8_t  GetChainLength() const;
     void     SetChainPatternAt(uint8_t pos, uint8_t pattern_index);
@@ -148,8 +152,12 @@ private:
     const sequencer::StepSlot& GetStep(uint32_t step_index) const;
 
     /* ── Pattern accessors ───────────────────────────────────────────── */
-    sequencer::Pattern&        CurrentPattern();
-    const sequencer::Pattern&  CurrentPattern() const;
+    /* Edit target: what the UI views/edits. Never consulted by playback. */
+    sequencer::Pattern&        EditPattern();
+    const sequencer::Pattern&  EditPattern() const;
+    /* Play target: driven by PatternChain. Read from the uClock ISR. */
+    sequencer::Pattern&        PlayPattern();
+    const sequencer::Pattern&  PlayPattern() const;
  
 private:
     /* ── Core ────────────────────────────────────────────────────────── */
@@ -160,9 +168,11 @@ private:
     /* ── Transport ───────────────────────────────────────────────────── */
     bool        playing_                  = false;
     bool        gate_active_              = false;
+    sequencer::PlaybackSource playback_source_ = sequencer::PlaybackSource::Pattern;
 
     /* ── Step engine ─────────────────────────────────────────────────── */
-    uint8_t     current_pattern_index_    = 0;
+    uint8_t     edit_pattern_index_       = 0;  /* UI edit/view target only */
+    uint8_t     play_pattern_index_       = 0;  /* chain-driven playback target */
     uint32_t    current_bar_              = 0;
     uint8_t     current_step_in_bar_      = 0;
     int8_t      step_direction_           = 1;

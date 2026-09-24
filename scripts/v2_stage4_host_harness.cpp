@@ -1246,12 +1246,12 @@ static bool RunArpOwnershipIsolationSequence(SequencerDevice& dev,
 {
     auto check = [&](const char* tag) -> bool
     {
-        if (dev.GetCurrentArpMode() != expect_mode)
+        if (dev.GetPatternArpMode() != expect_mode)
         {
             if (details) *details += std::string(tag) + ": arp_mode changed; ";
             return false;
         }
-        if (dev.GetCurrentArpRate() != expect_rate)
+        if (dev.GetPatternArpRate() != expect_rate)
         {
             if (details) *details += std::string(tag) + ": arp_rate changed; ";
             return false;
@@ -2058,7 +2058,7 @@ int main() {
         if (ok)
         {
             dev.SetPatternArpRate(sequencer::ArpRate::ThirtySecond);
-            if (dev.GetCurrentArpRate() != sequencer::ArpRate::ThirtySecond)
+            if (dev.GetPatternArpRate() != sequencer::ArpRate::ThirtySecond)
             {
                 ok = false;
                 details += "SetPatternArpRate(1/32) did not stick; ";

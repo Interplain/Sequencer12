@@ -448,7 +448,7 @@ struct Pattern
     float       tempo_multiplier  = 1.0f;  // 1.0 = follow global BPM
 
     // Step range
-    uint8_t     step_count        = kStepCount;  // active steps 1-12
+    uint8_t     step_count        = 1;  // active steps 1-12 (Pattern Loop bar count)
     uint8_t     step_division     = 4;           // steps per quarter: 1=1/4, 2=1/8, 4=1/16, 8=1/32
 
     // Playback
@@ -458,6 +458,16 @@ struct Pattern
     // Arp
     ArpMode     arp_mode          = ArpMode::Off;
     ArpRate     arp_rate          = ArpRate::Sixteenth;
+};
+
+// ─────────────────────────────────────────────
+// Playback source
+// ─────────────────────────────────────────────
+
+enum class PlaybackSource : uint8_t
+{
+    Pattern,    // Single pattern playback (anchored to edit_pattern_index_)
+    SongChain   // Multi-pattern chain playback (anchored to PatternChain)
 };
 
 // ─────────────────────────────────────────────

@@ -202,6 +202,8 @@ static uint8_t  s_menu_header_valid = 0;
 static uint8_t  s_sidebar_valid = 0;
 static uint8_t  s_prev_sidebar_div = 0xFF;
 static uint8_t  s_prev_sidebar_swing = 0xFF;
+static uint8_t  s_prev_sidebar_pattern = 0xFF;
+static uint8_t  s_prev_sidebar_chain_len = 0xFF;
 static char     s_menu_header_title[28];
 static char     s_menu_header_indicator[28];
 static uint16_t s_menu_header_indicator_color = COLOR_TEXT_MAIN;
@@ -444,6 +446,8 @@ void UI_Display_DrawMainGridComposed(uint8_t selected_step,
         s_sidebar_valid = 1;
         s_prev_sidebar_div = div;
         s_prev_sidebar_swing = swing;
+        s_prev_sidebar_pattern = Bridge_GetCurrentPattern();
+        s_prev_sidebar_chain_len = Bridge_GetChainLength();
 
         for (uint8_t i = 0; i < 12; i++)
         {
@@ -599,8 +603,11 @@ static void DrawSidebarInfo(void)
 
     uint8_t div   = Bridge_GetPatternStepDivision();
     uint8_t swing = Bridge_GetSwing();
+    uint8_t pattern = Bridge_GetCurrentPattern();
+    uint8_t chain_len = Bridge_GetChainLength();
 
-    if (s_sidebar_valid && div == s_prev_sidebar_div && swing == s_prev_sidebar_swing) return;
+    if (s_sidebar_valid && div == s_prev_sidebar_div && swing == s_prev_sidebar_swing &&
+        pattern == s_prev_sidebar_pattern && chain_len == s_prev_sidebar_chain_len) return;
 
     const uint16_t panel_bg   = COLOR_BG;
  
@@ -626,11 +633,20 @@ static void DrawSidebarInfo(void)
         snprintf(q, sizeof(q), "%u%%", (unsigned)swing);
         ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 100, "SWING", &Font8x12, LIGHTBLUE, panel_bg);
         ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 116, q, &Font12x20, WHITE, panel_bg);
+
+        /* Second number is chain.length, display-only at this stage. */
+        snprintf(q, sizeof(q), "%02u/%02u",
+                 (unsigned)(pattern + 1u),
+                 (unsigned)((chain_len < 1u) ? 1u : chain_len));
+        ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 148, "PAT", &Font8x12, LIGHTBLUE, panel_bg);
+        ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 164, q, &Font12x20, WHITE, panel_bg);
     }
 
-    s_prev_sidebar_div   = div;
-    s_prev_sidebar_swing = swing;
-    s_sidebar_valid      = 1;
+    s_prev_sidebar_div       = div;
+    s_prev_sidebar_swing     = swing;
+    s_prev_sidebar_pattern   = pattern;
+    s_prev_sidebar_chain_len = chain_len;
+    s_sidebar_valid          = 1;
 }
 
 /* ── Internal ────────────────────────────────────────────────────────────── */
@@ -846,7 +862,7 @@ static void MainGridComposeStrip(uint8_t* buffer,
         {
             fill = COLOR8(0, 135, 0);
             text_col = WHITE;
-            label = "SONG";
+            label = "PAT";
         }
         else if (s_main_mode == UI_MAIN_MODE_QUAN)
         {
@@ -878,6 +894,15 @@ static void MainGridComposeStrip(uint8_t* buffer,
         snprintf(text, sizeof(text), "%u%%", (unsigned)swing);
         MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 100u, "SWING", &Font8x12, 1u, LIGHTBLUE, COLOR_BG);
         MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 116u, text, &Font12x20, 1u, WHITE, COLOR_BG);
+
+        {
+            uint8_t pat_chain_len = Bridge_GetChainLength();
+            snprintf(text, sizeof(text), "%02u/%02u",
+                     (unsigned)(Bridge_GetCurrentPattern() + 1u),
+                     (unsigned)((pat_chain_len < 1u) ? 1u : pat_chain_len));
+            MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 148u, "PAT", &Font8x12, 1u, LIGHTBLUE, COLOR_BG);
+            MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 164u, text, &Font12x20, 1u, WHITE, COLOR_BG);
+        }
     }
 
     for (uint8_t step_no = 1u; step_no <= 12u; step_no++)
@@ -1041,7 +1066,7 @@ static void DrawMainModeBox(void)
     {
         fill = COLOR8(0, 135, 0);
         text = WHITE;
-        label = "SONG";
+        label = "PAT";
     }
     else if (s_main_mode == UI_MAIN_MODE_QUAN)
     {
@@ -1848,7 +1873,7 @@ static void DrawTimingRow(uint8_t index,
     {
         char b[12];
         snprintf(b, sizeof(b), "%u", step_count);
-        if (draw_label) ST7789_DrawString(8, y, "Pattern Bars", &Font12x20, label_color, COLOR_BG);
+        if (draw_label) ST7789_DrawString(8, y, "Pattern Loop", &Font12x20, label_color, COLOR_BG);
         ST7789_DrawString(value_x, y, b,      &Font12x20, color, COLOR_BG);
     }
     else if (index == 1)
@@ -2365,8 +2390,8 @@ void UI_Display_DrawSongChainMenu(const uint8_t* chain,
     if (!s_song_footer_valid)
     {
         FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-        ST7789_DrawString(6, FOOTER_TEXT_Y1, "1-4 Slot", &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL);
-        ST7789_DrawString(6, FOOTER_TEXT_Y2, "5 +Slot 6 -Slot", &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL);
+        ST7789_DrawString(6, FOOTER_TEXT_Y1, "9+ 10- Slot", &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL);
+        ST7789_DrawString(6, FOOTER_TEXT_Y2, "11< 12> Slot", &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL);
         ST7789_DrawString(142, MENU_FOOTER_Y + 17, "REC MAIN", &Font12x20, COLOR_ACTIVE, COLOR_PANEL);
         s_song_footer_valid = 1;
     }

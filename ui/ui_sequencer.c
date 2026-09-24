@@ -364,6 +364,7 @@ static void UI_StepRoute_GridPattern(uint8_t step);
 static void UI_StepRoute_GridQuan(uint8_t step);
 static void UI_StepRoute_ShiftGridTiming(uint8_t step);
 static void UI_StepRoute_ShiftGridPattern(uint8_t step);
+static void UI_StepRoute_ShiftGridStep(uint8_t step);
 static void UI_StepRoute_SelectStep(uint8_t step);
 static void UI_StepRoute_StepPianoEditor(uint8_t step);
 static void UI_SelectStep_Grid(uint8_t step);
@@ -831,7 +832,8 @@ static const UiStepInputRoute s_step_routes[] = {
     { UI_MODE_CHORD_MENU,   UI_MAIN_MODE_ANY,         1, UI_StepRoute_SelectStep },
     { UI_MODE_STEP_PIANO,   UI_MAIN_MODE_ANY,         1, UI_StepRoute_StepPianoEditor },
     { UI_MODE_CHORD_PARAMS, UI_MAIN_MODE_ANY,         1, UI_StepRoute_ChordParamsFooterOrSelect },
-    { UI_MODE_GRID,         UI_MAIN_MODE_PATTERN,     1, UI_StepRoute_ShiftGridPattern }
+    { UI_MODE_GRID,         UI_MAIN_MODE_PATTERN,     1, UI_StepRoute_ShiftGridPattern },
+    { UI_MODE_GRID,         UI_MAIN_MODE_STEP,        1, UI_StepRoute_ShiftGridStep }
 };
 
 static const UiStepSelectRoute s_step_select_routes[] = {
@@ -951,6 +953,12 @@ static const UiEncoderDeltaRoute* UI_Sequencer_FindEncoderDeltaRoute(UiMode mode
 
 static void UI_Sequencer_DispatchStepPress(uint8_t step, uint8_t shifted)
 {
+    if (s_ui_mode == UI_MODE_GRID && shifted && step == 9u)
+    {
+        UI_Sequencer_EnterSongChain(0);
+        return;
+    }
+
     const UiStepInputRoute* route = UI_Sequencer_FindStepRoute(s_ui_mode, (uint8_t)s_main_mode, shifted);
 
     if (route && route->on_step)
@@ -1003,7 +1011,7 @@ static void UI_StepRoute_SongChain(uint8_t step)
             UI_Sequencer_DrawSongChainMenu();
         }
     }
-    else if (step == 5)
+    else if (step == 9) /* M9 = Add slot */
     {
         if (s_song_length < 32)
         {
@@ -1016,7 +1024,7 @@ static void UI_StepRoute_SongChain(uint8_t step)
             UI_Sequencer_DrawSongChainMenu();
         }
     }
-    else if (step == 6)
+    else if (step == 10) /* M10 = Delete slot */
     {
         if (s_song_length > 1)
         {
@@ -1027,6 +1035,22 @@ static void UI_StepRoute_SongChain(uint8_t step)
                 s_song_cursor = (uint8_t)(s_song_length - 1);
             }
             UI_Sequencer_LoadSongChainDraft();
+            UI_Sequencer_DrawSongChainMenu();
+        }
+    }
+    else if (step == 11) /* M11 = Previous slot */
+    {
+        if (s_song_cursor > 0)
+        {
+            s_song_cursor--;
+            UI_Sequencer_DrawSongChainMenu();
+        }
+    }
+    else if (step == 12) /* M12 = Next slot */
+    {
+        if ((s_song_cursor + 1u) < s_song_length)
+        {
+            s_song_cursor++;
             UI_Sequencer_DrawSongChainMenu();
         }
     }
@@ -1058,7 +1082,13 @@ static void UI_StepRoute_GridPattern(uint8_t step)
 {
     if (step >= 1 && step <= 12)
     {
-        UI_Sequencer_EnterSongChain((uint8_t)(step - 1));
+        Bridge_SetCurrentPattern((uint8_t)(step - 1));
+        Bridge_SetPlaybackSource(0u); /* PlaybackSource::Pattern */
+        s_last_pattern = 0xFF;
+        s_last_step = 0xFF;
+        s_last_substep = 0xFF;
+        s_last_loops = 0xFFFFFFFF;
+        s_last_run_time = 0xFFFFFFFF;
     }
 }
 
@@ -1175,6 +1205,36 @@ static void UI_StepRoute_ShiftGridTiming(uint8_t step)
 static void UI_StepRoute_ShiftGridPattern(uint8_t step)
 {
     Bridge_SetCurrentPattern((uint8_t)(step - 1));
+    Bridge_SetPlaybackSource(0u); /* PlaybackSource::Pattern */
+    s_last_pattern = 0xFF;
+    s_last_step = 0xFF;
+    s_last_substep = 0xFF;
+    s_last_loops = 0xFFFFFFFF;
+    s_last_run_time = 0xFFFFFFFF;
+}
+
+/* Shift+M11/M12 = previous/next edit Pattern, clamped at 0/31. Changes only
+ * the viewed/edited Pattern; playback chain position is left untouched. */
+static void UI_StepRoute_ShiftGridStep(uint8_t step)
+{
+    if (step != 11u && step != 12u) return;
+
+    const uint8_t current = Bridge_GetCurrentPattern();
+    uint8_t next = current;
+
+    if (step == 11u)
+    {
+        if (current == 0u) return;
+        next = (uint8_t)(current - 1u);
+    }
+    else
+    {
+        if (current >= 31u) return;
+        next = (uint8_t)(current + 1u);
+    }
+
+    Bridge_SetCurrentPattern(next);
+    Bridge_SetPlaybackSource(0u); /* PlaybackSource::Pattern */
     s_last_pattern = 0xFF;
     s_last_step = 0xFF;
     s_last_substep = 0xFF;
@@ -1204,7 +1264,7 @@ static void UI_Route_ShiftRecGrid(void)
 
 static void UI_Route_ShiftTapGrid(void)
 {
-    UI_Sequencer_SetMainMode((UiMainMode)(((uint8_t)s_main_mode + 1u) % 5u));
+    UI_Sequencer_SetMainMode((UiMainMode)(((uint8_t)s_main_mode + 1u) % 4u));
     UI_Display_DrawStatusRow(Bridge_GetCurrentPattern(),
                              Bridge_GetCurrentStep(),
                              Bridge_GetCompletedLoops(),
@@ -1790,6 +1850,7 @@ static void UI_Sequencer_EnterSongChain(uint8_t requested_slot)
     s_ui_mode = UI_MODE_SONG_CHAIN;
     s_song_blink_on = 1;
     s_song_blink_ms = HAL_GetTick();
+    Bridge_SetPlaybackSource(1u); /* PlaybackSource::SongChain */
     UI_Sequencer_LoadSongChainDraft();
 
     if (requested_slot < s_song_length)
@@ -1821,6 +1882,7 @@ static void UI_Sequencer_ExitSongChain(void)
     UiScreen* active = UI_ScreenRouter_GetActive();
 
     s_ui_mode = UI_MODE_GRID;
+    UI_Sequencer_SetMainMode(UI_MAIN_MODE_STEP);
     UI_MainGridScreen_SetContext(s_selected_step,
                                  s_active_step,
                                  NULL);
@@ -3674,7 +3736,7 @@ static void UI_EncoderPress_Grid(void)
             break;
 
         case UI_MAIN_MODE_PATTERN:
-            UI_Sequencer_EnterSongChain((uint8_t)(s_selected_step - 1));
+            /* PAT mode is pattern select/edit context. */
             break;
 
         case UI_MAIN_MODE_QUAN:
@@ -4398,6 +4460,18 @@ void UI_Sequencer_Update(void)
     {
         UI_Sequencer_SaveChordDraftForPattern();
         UI_Sequencer_LoadChordDraftForPattern(current_pattern);
+
+        /* Per-step state belongs to the old Pattern: re-pull it from the
+         * engine and force a full repaint so the grid shows the new one. */
+        if (s_ui_mode == UI_MODE_GRID)
+        {
+            UI_MainGridScreen_SetContext(s_selected_step, s_active_step, NULL);
+            UiScreen* grid = UI_ScreenRouter_GetActive();
+            if (grid && grid->on_draw)
+            {
+                grid->on_draw();
+            }
+        }
     }
 
     UI_Sequencer_HandleShiftTapEvent(UI_Input_GetShiftTap());

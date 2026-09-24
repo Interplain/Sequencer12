@@ -173,6 +173,21 @@ int main(void)
             Bridge_ServicePersistence();
             TIMING_PROBE_END(g_timing_max_service_persistence_us, _tp_persist);
         }
+#if defined(S12_PATTERNSTORE_VERIFYALL_ENABLE)
+        /* Diagnostic/read-only, armed by writing g_ps_verify_trigger=1 over SWD;
+         * never runs otherwise, never writes FRAM, never alters SRAM contents. */
+        extern volatile uint8_t g_ps_verify_trigger;
+        if (g_ps_verify_trigger)
+        {
+            g_ps_verify_trigger = 0u;
+            Bridge_PatternStoreVerifyAll();
+        }
+#endif
+#if defined(S12_PATTERNCACHE_PILOT_ENABLE)
+        /* Diagnostic/shadow current+next Pattern cache: at most one small
+         * chunked PatternStore read per pass, never affects playback. */
+        Bridge_ServicePatternCache();
+#endif
         uint32_t elapsed = HAL_GetTick() - t0;
         if (elapsed < UI_LOOP_MIN_MS)
             HAL_Delay(UI_LOOP_MIN_MS - elapsed);

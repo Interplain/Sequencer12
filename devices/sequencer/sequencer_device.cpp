@@ -406,14 +406,24 @@ static LedgerSlot ApplyTransposeToLedgerSlot(const LedgerSlot& slot, int8_t tran
 
 /* ── Convenience accessors ──────────────────────────────────────────────── */
 
-Pattern& SequencerDevice::CurrentPattern()
+Pattern& SequencerDevice::EditPattern()
 {
-    return bank_.GetPattern(current_pattern_index_);
+    return bank_.GetPattern(edit_pattern_index_);
 }
 
-const Pattern& SequencerDevice::CurrentPattern() const
+const Pattern& SequencerDevice::EditPattern() const
 {
-    return bank_.GetPattern(current_pattern_index_);
+    return bank_.GetPattern(edit_pattern_index_);
+}
+
+Pattern& SequencerDevice::PlayPattern()
+{
+    return bank_.GetPattern(play_pattern_index_);
+}
+
+const Pattern& SequencerDevice::PlayPattern() const
+{
+    return bank_.GetPattern(play_pattern_index_);
 }
 
 uint16_t SequencerDevice::ApplyTranspose(uint16_t note_mask) const
@@ -449,7 +459,9 @@ void SequencerDevice::Init()
     /* Transport state */
     playing_               = false;
     gate_active_           = false;
-    current_pattern_index_ = 0;
+    playback_source_       = PlaybackSource::Pattern;
+    edit_pattern_index_    = 0;
+    play_pattern_index_    = 0;
     current_bar_           = 0;
     current_step_in_bar_   = 0;
     elapsed_step_ms_       = 0;
@@ -461,9 +473,9 @@ void SequencerDevice::Init()
     /* ── Default pattern — 12 steps, all Chord, forward loop ───────── */
     Pattern& p0 = bank_.GetPattern(0);
 
-    /* Playback mode — forward, loop forever, all 12 steps */
+    /* Playback mode — forward, loop forever, matches every other fresh Pattern */
     p0.playback_mode    = PlaybackMode::Loop;
-    p0.step_count       = 12;
+    p0.step_count       = 1;
     p0.repeat_count     = 1;
     p0.tempo_multiplier = 1.0f;
     p0.arp_mode         = ArpMode::Off;
@@ -521,13 +533,13 @@ void SequencerDevice::SetPatternStepCount(uint8_t step_count)
 {
     if (step_count < 1) step_count = 1;
     if (step_count > kStepCount) step_count = kStepCount;
-    CurrentPattern().step_count = step_count;
+    EditPattern().step_count = step_count;
     if (current_bar_ >= step_count) current_bar_ = 0;
 }
 
 uint8_t SequencerDevice::GetPatternStepCount() const
 {
-    return CurrentPattern().step_count;
+    return EditPattern().step_count;
 }
 
 void SequencerDevice::SetPatternStepDivision(uint8_t step_division)
@@ -543,9 +555,9 @@ void SequencerDevice::SetPatternArpMode(sequencer::ArpMode mode)
         mode = sequencer::ArpMode::Off;
     }
 
-    CurrentPattern().arp_mode = mode;
+    EditPattern().arp_mode = mode;
 
-    if (playing_ && current_bar_ < kStepCount)
+    if (playing_ && current_bar_ < kStepCount && edit_pattern_index_ == play_pattern_index_)
     {
         ApplyCurrentStepBehavior();
         step_changed_ = true;
@@ -559,9 +571,12 @@ void SequencerDevice::SetPatternArpRate(sequencer::ArpRate rate)
         rate = sequencer::ArpRate::Sixteenth;
     }
 
-    CurrentPattern().arp_rate = rate;
-    arp_event_ticks_ = sequencer::ArpEngine::TicksPerEvent(rate);
-    arp_ticks_accum_ = 0u;
+    EditPattern().arp_rate = rate;
+    if (edit_pattern_index_ == play_pattern_index_)
+    {
+        arp_event_ticks_ = sequencer::ArpEngine::TicksPerEvent(rate);
+        arp_ticks_accum_ = 0u;
+    }
 }
 
 bool SequencerDevice::SetPatternTiming(uint8_t step_division, uint8_t numerator, uint8_t denominator)
@@ -569,9 +584,9 @@ bool SequencerDevice::SetPatternTiming(uint8_t step_division, uint8_t numerator,
     const TimeSig proposed_time_sig{numerator, denominator};
     if (StepsPerBar(proposed_time_sig, step_division) == 0u) return false;
 
-    if (IsCoarserDivisionChange(CurrentPattern().step_division, step_division))
+    if (IsCoarserDivisionChange(EditPattern().step_division, step_division))
     {
-        if (!PatternCompatibleWithCoarserDivision(CurrentPattern(), step_division))
+        if (!PatternCompatibleWithCoarserDivision(EditPattern(), step_division))
         {
             return false;
         }
@@ -580,20 +595,20 @@ bool SequencerDevice::SetPatternTiming(uint8_t step_division, uint8_t numerator,
     Song& song = bank_.GetSong();
     for (uint8_t i = 0u; i < kPatternCount; ++i)
     {
-        const uint8_t division = (i == current_pattern_index_)
+        const uint8_t division = (i == edit_pattern_index_)
             ? step_division
             : song.patterns[i].step_division;
         if (StepsPerBar(proposed_time_sig, division) == 0u) return false;
     }
 
     song.time_sig = proposed_time_sig;
-    CurrentPattern().step_division = step_division;
+    EditPattern().step_division = step_division;
     for (uint8_t i = 0u; i < kPatternCount; ++i)
     {
         NormalizePatternDivisionCadence(song.patterns[i], song.time_sig);
     }
 
-    const uint8_t steps_in_bar = StepsPerBar(song.time_sig, CurrentPattern().step_division);
+    const uint8_t steps_in_bar = StepsPerBar(song.time_sig, PlayPattern().step_division);
     if (current_step_in_bar_ >= steps_in_bar)
     {
         current_step_in_bar_ = (uint8_t)(steps_in_bar - 1u);
@@ -606,12 +621,12 @@ bool SequencerDevice::SetPatternTiming(uint8_t step_division, uint8_t numerator,
 
 uint8_t SequencerDevice::GetPatternStepDivision() const
 {
-    return CurrentPattern().step_division;
+    return EditPattern().step_division;
 }
 
 void SequencerDevice::SetTimeSignature(uint8_t numerator, uint8_t denominator)
 {
-    (void)SetPatternTiming(CurrentPattern().step_division, numerator, denominator);
+    (void)SetPatternTiming(EditPattern().step_division, numerator, denominator);
 }
 
 uint8_t SequencerDevice::GetTimeSigNumerator() const
@@ -644,11 +659,11 @@ void SequencerDevice::SetStepChordParams(uint8_t step_index,
 {
     if (step_index >= kStepCount) return;
 
-    StepSlot& slot = CurrentPattern().steps[step_index];
+    StepSlot& slot = EditPattern().steps[step_index];
 
     root_key %= 12;
     slot.duration_multiplier = UiDurationToMultiplier(duration);
-    slot.repeat_count = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    slot.repeat_count = StepsPerBar(bank_.GetSong().time_sig, EditPattern().step_division);
     (void)repeat_count;
     (void)arp_pattern;
 
@@ -674,7 +689,7 @@ void SequencerDevice::SetStepChordParams(uint8_t step_index,
 
     UpdateLegacyStepTypeProjection(slot);
 
-    if (step_index == current_bar_)
+    if (step_index == current_bar_ && edit_pattern_index_ == play_pattern_index_)
     {
         ApplyCurrentStepBehavior();
         step_changed_ = true;
@@ -685,15 +700,15 @@ void SequencerDevice::SetStepCustomNoteMask(uint8_t step_index, uint16_t note_ma
 {
     if (step_index >= kStepCount) return;
 
-    StepSlot& slot = CurrentPattern().steps[step_index];
+    StepSlot& slot = EditPattern().steps[step_index];
     const uint16_t clipped = LimitNoteMaskToMaxVoices((uint16_t)(note_mask & 0x0FFFu), 4u);
     slot.note_mask = clipped;
-    slot.repeat_count = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    slot.repeat_count = StepsPerBar(bank_.GetSong().time_sig, EditPattern().step_division);
     InitLedgerFromMask(slot, clipped, slot.repeat_count);
     RefreshSlotSummary(slot);
     UpdateLegacyStepTypeProjection(slot);
     slot.custom_chord_name[0] = '\0';
-    if (step_index == current_bar_)
+    if (step_index == current_bar_ && edit_pattern_index_ == play_pattern_index_)
     {
         ApplyCurrentStepBehavior();
         step_changed_ = true;
@@ -704,10 +719,10 @@ void SequencerDevice::SetStepCustomUserChord(uint8_t step_index, uint16_t note_m
 {
     if (step_index >= kStepCount) return;
 
-    StepSlot& slot = CurrentPattern().steps[step_index];
+    StepSlot& slot = EditPattern().steps[step_index];
     const uint16_t clipped = LimitNoteMaskToMaxVoices((uint16_t)(note_mask & 0x0FFFu), 4u);
     slot.note_mask = clipped;
-    slot.repeat_count = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    slot.repeat_count = StepsPerBar(bank_.GetSong().time_sig, EditPattern().step_division);
     InitLedgerFromMask(slot, clipped, slot.repeat_count);
     RefreshSlotSummary(slot);
     UpdateLegacyStepTypeProjection(slot);
@@ -721,7 +736,7 @@ void SequencerDevice::SetStepCustomUserChord(uint8_t step_index, uint16_t note_m
         slot.custom_chord_name[0] = '\0';
     }
 
-    if (step_index == current_bar_)
+    if (step_index == current_bar_ && edit_pattern_index_ == play_pattern_index_)
     {
         ApplyCurrentStepBehavior();
         step_changed_ = true;
@@ -732,34 +747,33 @@ void SequencerDevice::SetPatternRepeatCount(uint8_t repeat_count)
 {
     if (repeat_count < 1) repeat_count = 1;
     if (repeat_count > 16) repeat_count = 16;
-    CurrentPattern().repeat_count = repeat_count;
+    EditPattern().repeat_count = repeat_count;
 }
 
 uint8_t SequencerDevice::GetPatternRepeatCount() const
 {
-    return CurrentPattern().repeat_count;
+    return EditPattern().repeat_count;
 }
 
 void SequencerDevice::SetCurrentPatternIndex(uint8_t pattern_index)
 {
     if (pattern_index >= kPatternCount) return;
 
-    /* Quick-load behavior: lock chain to selected pattern for now. */
-    bank_.ChainClear();
-    bank_.ChainAppend(pattern_index);
-    bank_.ChainReset();
-
-    current_pattern_index_ = pattern_index;
-    NormalizePatternDivisionCadence(CurrentPattern(), bank_.GetSong().time_sig);
-    current_bar_ = 0;
-    current_step_in_bar_ = 0;
-    repeat_current_ = 0;
-    step_direction_ = 1;
-    elapsed_step_ms_ = 0;
-
-    ApplyCurrentStepBehavior();
-    step_changed_ = true;
+    /* Edit target only: PatternChain and transport/bar/step state are
+     * deliberately left untouched so editing never disturbs playback. */
+    edit_pattern_index_ = pattern_index;
+    NormalizePatternDivisionCadence(EditPattern(), bank_.GetSong().time_sig);
     status_changed_ = true;
+}
+
+void SequencerDevice::SetPlaybackSource(PlaybackSource source)
+{
+    playback_source_ = source;
+}
+
+PlaybackSource SequencerDevice::GetPlaybackSource() const
+{
+    return playback_source_;
 }
 
 void SequencerDevice::SetChainLength(uint8_t length)
@@ -828,8 +842,8 @@ void SequencerDevice::SetStepLedgerLength(uint8_t step_index, uint8_t length)
 {
     if (step_index >= kStepCount) return;
 
-    StepSlot& slot = CurrentPattern().steps[step_index];
-    const uint8_t fixed_len = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    StepSlot& slot = EditPattern().steps[step_index];
+    const uint8_t fixed_len = StepsPerBar(bank_.GetSong().time_sig, EditPattern().step_division);
 
     /* The current grid division defines the runtime cadence for the whole step.
      * Do not let the active note count shorten or lengthen an otherwise identical step. */
@@ -838,7 +852,7 @@ void SequencerDevice::SetStepLedgerLength(uint8_t step_index, uint8_t length)
     UpdateLegacyStepTypeProjection(slot);
     (void)length;
 
-    if (step_index == current_bar_)
+    if (step_index == current_bar_ && edit_pattern_index_ == play_pattern_index_)
     {
         ApplyCurrentStepBehavior();
         step_changed_ = true;
@@ -849,10 +863,10 @@ void SequencerDevice::SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, 
 {
     if (step_index >= kStepCount) return;
 
-    StepSlot& slot = CurrentPattern().steps[step_index];
-    const uint8_t fixed_len = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    StepSlot& slot = EditPattern().steps[step_index];
+    const uint8_t fixed_len = StepsPerBar(bank_.GetSong().time_sig, EditPattern().step_division);
     if (slot_index >= fixed_len) return;
-    const uint8_t ledger_index = GridPositionToLedgerIndex(CurrentPattern().step_division, slot_index);
+    const uint8_t ledger_index = GridPositionToLedgerIndex(EditPattern().step_division, slot_index);
     if (ledger_index >= kStepLedgerMax) return;
     const uint8_t canonical_positions = CanonicalPositionsPerBar(bank_.GetSong().time_sig);
     const uint8_t was_event_start = IsCanonicalEventStart(slot, ledger_index);
@@ -936,14 +950,14 @@ void SequencerDevice::SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, 
 
         PackedEventLengthRawSet(slot,
                                 ledger_index,
-                                (uint8_t)(CanonicalStrideForDivision(CurrentPattern().step_division) - 1u));
+                                (uint8_t)(CanonicalStrideForDivision(EditPattern().step_division) - 1u));
     }
 
     slot.repeat_count = fixed_len;
     RefreshSlotSummary(slot);
     UpdateLegacyStepTypeProjection(slot);
     slot.custom_chord_name[0] = '\0';
-    if (step_index == current_bar_)
+    if (step_index == current_bar_ && edit_pattern_index_ == play_pattern_index_)
     {
         ApplyCurrentStepBehavior();
         step_changed_ = true;
@@ -953,7 +967,7 @@ void SequencerDevice::SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, 
 uint8_t SequencerDevice::GetStepLedgerLength(uint8_t step_index) const
 {
     if (step_index >= kStepCount) return 0u;
-    return StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    return StepsPerBar(bank_.GetSong().time_sig, EditPattern().step_division);
 }
 
 LedgerSlot SequencerDevice::GetStepLedgerSlot(uint8_t step_index, uint8_t slot_index) const
@@ -961,11 +975,11 @@ LedgerSlot SequencerDevice::GetStepLedgerSlot(uint8_t step_index, uint8_t slot_i
     LedgerSlot empty{};
     LedgerSlotClear(empty);
     if (step_index >= kStepCount) return empty;
-    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, EditPattern().step_division);
     if (slot_index >= steps_in_bar) return empty;
-    const uint8_t ledger_index = GridPositionToLedgerIndex(CurrentPattern().step_division, slot_index);
+    const uint8_t ledger_index = GridPositionToLedgerIndex(EditPattern().step_division, slot_index);
     if (ledger_index >= kStepLedgerMax) return empty;
-    return CurrentPattern().steps[step_index].note_ledger[ledger_index];
+    return EditPattern().steps[step_index].note_ledger[ledger_index];
 }
 
 uint8_t SequencerDevice::IsStepEventStartCanonical(uint8_t step_index, uint8_t canonical_index) const
@@ -973,13 +987,13 @@ uint8_t SequencerDevice::IsStepEventStartCanonical(uint8_t step_index, uint8_t c
     if (step_index >= kStepCount) return 0u;
     const uint8_t canonical_positions = CanonicalPositionsPerBar(bank_.GetSong().time_sig);
     if (canonical_index >= canonical_positions) return 0u;
-    return IsCanonicalEventStart(CurrentPattern().steps[step_index], canonical_index);
+    return IsCanonicalEventStart(EditPattern().steps[step_index], canonical_index);
 }
 
 uint8_t SequencerDevice::GetStepEventMaxLengthCanonical(uint8_t step_index, uint8_t canonical_index) const
 {
     if (step_index >= kStepCount) return 0u;
-    const StepSlot& slot = CurrentPattern().steps[step_index];
+    const StepSlot& slot = EditPattern().steps[step_index];
     const uint8_t canonical_positions = CanonicalPositionsPerBar(bank_.GetSong().time_sig);
     if (canonical_index >= canonical_positions) return 0u;
 
@@ -995,7 +1009,7 @@ uint8_t SequencerDevice::GetStepEventLengthCanonical(uint8_t step_index, uint8_t
 {
     if (!IsStepEventStartCanonical(step_index, canonical_index)) return 0u;
 
-    const StepSlot& slot = CurrentPattern().steps[step_index];
+    const StepSlot& slot = EditPattern().steps[step_index];
     const uint8_t canonical_positions = CanonicalPositionsPerBar(bank_.GetSong().time_sig);
     return EventLengthCanonicalForStart(slot, canonical_index, canonical_positions);
 }
@@ -1012,14 +1026,14 @@ void SequencerDevice::SetStepEventLengthCanonical(uint8_t step_index,
     if (length_positions < 1u) length_positions = 1u;
     if (length_positions > max_len) length_positions = max_len;
 
-    StepSlot& slot = CurrentPattern().steps[step_index];
+    StepSlot& slot = EditPattern().steps[step_index];
     PackedEventLengthRawSet(slot, canonical_index, (uint8_t)(length_positions - 1u));
 }
 
 uint8_t SequencerDevice::IsStepEventStartGrid(uint8_t step_index, uint8_t slot_index) const
 {
     if (step_index >= kStepCount) return 0u;
-    const uint8_t division = CurrentPattern().step_division;
+    const uint8_t division = EditPattern().step_division;
     const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, division);
     if (steps_in_bar == 0u || slot_index >= steps_in_bar) return 0u;
 
@@ -1030,7 +1044,7 @@ uint8_t SequencerDevice::IsStepEventStartGrid(uint8_t step_index, uint8_t slot_i
 uint8_t SequencerDevice::GetStepEventMaxLengthGrid(uint8_t step_index, uint8_t slot_index) const
 {
     if (step_index >= kStepCount) return 0u;
-    const uint8_t division = CurrentPattern().step_division;
+    const uint8_t division = EditPattern().step_division;
     const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, division);
     if (steps_in_bar == 0u || slot_index >= steps_in_bar) return 0u;
 
@@ -1045,7 +1059,7 @@ uint8_t SequencerDevice::GetStepEventMaxLengthGrid(uint8_t step_index, uint8_t s
 uint8_t SequencerDevice::GetStepEventLengthGrid(uint8_t step_index, uint8_t slot_index) const
 {
     if (step_index >= kStepCount) return 0u;
-    const uint8_t division = CurrentPattern().step_division;
+    const uint8_t division = EditPattern().step_division;
     const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, division);
     if (steps_in_bar == 0u || slot_index >= steps_in_bar) return 0u;
 
@@ -1062,7 +1076,7 @@ uint8_t SequencerDevice::GetStepEventLengthGrid(uint8_t step_index, uint8_t slot
 void SequencerDevice::SetStepEventLengthGrid(uint8_t step_index, uint8_t slot_index, uint8_t grid_length)
 {
     if (step_index >= kStepCount) return;
-    const uint8_t division = CurrentPattern().step_division;
+    const uint8_t division = EditPattern().step_division;
     const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, division);
     if (steps_in_bar == 0u || slot_index >= steps_in_bar) return;
 
@@ -1083,18 +1097,18 @@ void SequencerDevice::ClearStepLedger(uint8_t step_index)
 {
     if (step_index >= kStepCount) return;
 
-    StepSlot& slot = CurrentPattern().steps[step_index];
+    StepSlot& slot = EditPattern().steps[step_index];
     for (uint8_t i = 0u; i < kStepLedgerMax; ++i)
     {
         LedgerSlotClear(slot.note_ledger[i]);
     }
     slot.lane_slots.fill(0u);
     slot.lane_override_mask.fill(0u);
-    slot.repeat_count = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    slot.repeat_count = StepsPerBar(bank_.GetSong().time_sig, EditPattern().step_division);
     RefreshSlotSummary(slot);
     UpdateLegacyStepTypeProjection(slot);
     slot.custom_chord_name[0] = '\0';
-    if (step_index == current_bar_)
+    if (step_index == current_bar_ && edit_pattern_index_ == play_pattern_index_)
     {
         ApplyCurrentStepBehavior();
         step_changed_ = true;
@@ -1104,7 +1118,7 @@ void SequencerDevice::ClearStepLedger(uint8_t step_index)
 uint16_t SequencerDevice::GetStepNoteMask(uint8_t step_index) const
 {
     if (step_index >= kStepCount) return 0;
-    return CurrentPattern().steps[step_index].note_mask;
+    return EditPattern().steps[step_index].note_mask;
 }
 
 static bool HasLedgerData(const StepSlot& slot)
@@ -1126,8 +1140,8 @@ static uint16_t ResolveLedgerMaskForIndex(const StepSlot& slot, uint8_t ledger_i
 uint16_t SequencerDevice::GetStepNoteMaskForPlayback(uint8_t step_index) const
 {
     if (step_index >= kStepCount) return 0;
-    const StepSlot& slot = CurrentPattern().steps[step_index];
-    const uint8_t ledger_index = GridPositionToLedgerIndex(CurrentPattern().step_division, 0u);
+    const StepSlot& slot = PlayPattern().steps[step_index];
+    const uint8_t ledger_index = GridPositionToLedgerIndex(PlayPattern().step_division, 0u);
     if (!HasLedgerData(slot))
     {
         return ResolveLedgerMaskForIndex(slot, ledger_index);
@@ -1157,10 +1171,10 @@ uint8_t SequencerDevice::GetStepNotesForPlayback(uint8_t step_index, uint8_t slo
 
     if (step_index >= kStepCount) return 0u;
 
-    const StepSlot& slot = CurrentPattern().steps[step_index];
-    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    const StepSlot& slot = PlayPattern().steps[step_index];
+    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, PlayPattern().step_division);
     if (steps_in_bar == 0u || slot_index >= steps_in_bar) return 0u;
-    const uint8_t ledger_index = GridPositionToLedgerIndex(CurrentPattern().step_division, slot_index);
+    const uint8_t ledger_index = GridPositionToLedgerIndex(PlayPattern().step_division, slot_index);
     if (ledger_index >= kStepLedgerMax) return 0u;
 
     LedgerSlot resolved{};
@@ -1195,8 +1209,8 @@ uint8_t SequencerDevice::ResolveEventNotesForPlayback(uint8_t step_index,
 
     if (step_index >= kStepCount) return 0u;
 
-    const StepSlot& slot = CurrentPattern().steps[step_index];
-    const uint8_t division = CurrentPattern().step_division;
+    const StepSlot& slot = PlayPattern().steps[step_index];
+    const uint8_t division = PlayPattern().step_division;
     const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, division);
     if (steps_in_bar == 0u || slot_index >= steps_in_bar) return 0u;
 
@@ -1224,7 +1238,7 @@ uint8_t SequencerDevice::GetCurrentStepNotesForPlayback(uint8_t out_notes[4]) co
 {
     if (current_bar_ >= kStepCount || !out_notes) return 0u;
 
-    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, PlayPattern().step_division);
     if (steps_in_bar == 0u) return 0u;
 
     const uint8_t grid_position = (current_step_in_bar_ < steps_in_bar) ?
@@ -1266,10 +1280,10 @@ uint8_t SequencerDevice::GetStepNotesForPlaybackWithLanes(uint8_t step_index,
 
     if (step_index >= kStepCount) return 0u;
 
-    const StepSlot& slot = CurrentPattern().steps[step_index];
-    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    const StepSlot& slot = PlayPattern().steps[step_index];
+    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, PlayPattern().step_division);
     if (steps_in_bar == 0u || slot_index >= steps_in_bar) return 0u;
-    const uint8_t ledger_index = GridPositionToLedgerIndex(CurrentPattern().step_division, slot_index);
+    const uint8_t ledger_index = GridPositionToLedgerIndex(PlayPattern().step_division, slot_index);
     if (ledger_index >= kStepLedgerMax) return 0u;
 
     LedgerSlot resolved{};
@@ -1319,8 +1333,8 @@ uint8_t SequencerDevice::ResolveEventNotesForPlaybackWithLanes(uint8_t step_inde
 
     if (step_index >= kStepCount) return 0u;
 
-    const StepSlot& slot = CurrentPattern().steps[step_index];
-    const uint8_t division = CurrentPattern().step_division;
+    const StepSlot& slot = PlayPattern().steps[step_index];
+    const uint8_t division = PlayPattern().step_division;
     const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, division);
     if (steps_in_bar == 0u || slot_index >= steps_in_bar) return 0u;
 
@@ -1348,7 +1362,7 @@ uint8_t SequencerDevice::GetCurrentStepNotesForPlaybackWithLanes(uint8_t out_not
 {
     if (current_bar_ >= kStepCount || !out_notes || !out_lanes) return 0u;
 
-    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, CurrentPattern().step_division);
+    const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, PlayPattern().step_division);
     if (steps_in_bar == 0u) return 0u;
 
     const uint8_t grid_position = (current_step_in_bar_ < steps_in_bar) ?
@@ -1382,10 +1396,14 @@ void SequencerDevice::FinalizeImportedSong()
     }
 
     bank_.ChainReset();
-    current_pattern_index_ = bank_.ChainCurrentPatternIndex();
-    if (current_pattern_index_ >= kPatternCount)
+    play_pattern_index_ = bank_.ChainCurrentPatternIndex();
+    if (play_pattern_index_ >= kPatternCount)
     {
-        current_pattern_index_ = 0;
+        play_pattern_index_ = 0;
+    }
+    if (edit_pattern_index_ >= kPatternCount)
+    {
+        edit_pattern_index_ = 0;
     }
 
     Song& loaded_song = bank_.GetSong();
@@ -1426,7 +1444,7 @@ bool SequencerDevice::GetStepChordUiParams(uint8_t step_index,
         return false;
     }
 
-    const StepSlot& slot = CurrentPattern().steps[step_index];
+    const StepSlot& slot = EditPattern().steps[step_index];
 
     *duration = UiMultiplierToDuration(slot.duration_multiplier);
     *repeat_count = slot.repeat_count;
@@ -1467,7 +1485,7 @@ bool SequencerDevice::GetStepCustomChordName(uint8_t step_index, char* buf, size
         return false;
     }
 
-    const StepSlot& slot = CurrentPattern().steps[step_index];
+    const StepSlot& slot = EditPattern().steps[step_index];
     if (slot.custom_chord_name[0] == '\0')
     {
         return false;
@@ -1480,12 +1498,17 @@ bool SequencerDevice::GetStepCustomChordName(uint8_t step_index, char* buf, size
 
 ArpMode SequencerDevice::GetCurrentArpMode() const
 {
-    return CurrentPattern().arp_mode;
+    return PlayPattern().arp_mode;
 }
 
-sequencer::ArpRate SequencerDevice::GetCurrentArpRate() const
+ArpMode SequencerDevice::GetPatternArpMode() const
 {
-    return CurrentPattern().arp_rate;
+    return EditPattern().arp_mode;
+}
+
+sequencer::ArpRate SequencerDevice::GetPatternArpRate() const
+{
+    return EditPattern().arp_rate;
 }
 
 /* ── Tick1ms — called from SysTick ISR every 1ms ───────────────────────── */
@@ -1551,7 +1574,7 @@ void SequencerDevice::TickMusical()
         return;
     }
 
-    if (arp_.HasNotes() && CurrentPattern().arp_mode != sequencer::ArpMode::Off && arp_event_ticks_ > 0u)
+    if (arp_.HasNotes() && PlayPattern().arp_mode != sequencer::ArpMode::Off && arp_event_ticks_ > 0u)
     {
         ++arp_ticks_accum_;
 
@@ -1672,12 +1695,41 @@ void SequencerDevice::Start()
     pending_step_events_ = 0u;
     max_pending_step_events_ = 0u;
     pending_step_backlog_count_ = 0u;
+
+    if (playback_source_ == PlaybackSource::SongChain)
+    {
+        bank_.ChainReset();
+        play_pattern_index_ = bank_.ChainCurrentPatternIndex();
+        if (play_pattern_index_ >= kPatternCount)
+        {
+            play_pattern_index_ = 0;
+        }
+    }
+    else
+    {
+        play_pattern_index_ = edit_pattern_index_;
+        if (play_pattern_index_ >= kPatternCount)
+        {
+            play_pattern_index_ = 0;
+        }
+    }
+
+    current_bar_         = 0;
     current_step_in_bar_ = 0;
+    repeat_current_      = 0;
+    step_direction_      = 1;
     gate_retrigger_pending_  = false;
     gate_retrigger_delay_ms_ = 0u;
+    arp_.Init();
+    arp_ticks_accum_  = 0;
+    arp_event_ticks_  = 0;
+    arp_note_changed_ = false;
+
+    RecalculateStepIntervalMs();
+    RecalculateStepTicks();
     ApplyCurrentStepBehavior();
     step_changed_   = true;
-    status_changed_  = true;
+    status_changed_ = true;
 
     if (midi_clock_enabled_ &&
         midi_clock_.GetMode() == midi::ClockMode::Master)
@@ -1719,11 +1771,28 @@ void SequencerDevice::Reset()
     run_time_ms_           = 0;
     completed_loops_       = 0;
     arp_.Init();
-    bank_.ChainReset();
-    current_pattern_index_ = bank_.ChainCurrentPatternIndex();
+    if (playback_source_ == PlaybackSource::SongChain)
+    {
+        bank_.ChainReset();
+        play_pattern_index_ = bank_.ChainCurrentPatternIndex();
+        if (play_pattern_index_ >= kPatternCount)
+        {
+            play_pattern_index_ = 0;
+        }
+    }
+    else
+    {
+        play_pattern_index_ = edit_pattern_index_;
+        if (play_pattern_index_ >= kPatternCount)
+        {
+            play_pattern_index_ = 0;
+        }
+    }
     gate_retrigger_pending_  = false;
     gate_retrigger_delay_ms_ = 0u;
     GateOff();
+    RecalculateStepIntervalMs();
+    RecalculateStepTicks();
     ApplyCurrentStepBehavior();
     step_changed_   = true;
     status_changed_ = true;
@@ -1785,10 +1854,10 @@ bool SequencerDevice::ConsumeCvEvent(uint8_t* note, bool* gate)
 /*                                                                            */
 void SequencerDevice::RecalculateStepIntervalMs()
 {
-    uint32_t bpm = bank_.GetEffectiveBpm(current_pattern_index_);
+    uint32_t bpm = bank_.GetEffectiveBpm(play_pattern_index_);
     if (bpm == 0) bpm = 1;
 
-    uint8_t division = CurrentPattern().step_division;
+    uint8_t division = PlayPattern().step_division;
     if (division == 0) division = 4;
 
     /* Quarter-note ms divided by pattern step division */
@@ -1803,13 +1872,13 @@ void SequencerDevice::RecalculateStepIntervalMs()
      * remains fixed to the grid subdivision. */
     gate_length_ms_ =
         (base_step_interval_ms_ *
-         CurrentPattern().steps[current_bar_].duration_multiplier) / 4u;
+         PlayPattern().steps[current_bar_].duration_multiplier) / 4u;
     if (gate_length_ms_ < 5u) gate_length_ms_ = 5u;
 }
 
 void SequencerDevice::RecalculateStepTicks()
 {
-    uint8_t division = CurrentPattern().step_division;
+    uint8_t division = PlayPattern().step_division;
     if (division == 0u) division = 4u;
 
     uint32_t base_ticks = 96u / division;
@@ -1822,7 +1891,12 @@ void SequencerDevice::RecalculateStepTicks()
 
 uint8_t SequencerDevice::GetCurrentPatternIndex() const
 {
-    return current_pattern_index_;
+    return edit_pattern_index_;
+}
+
+uint8_t SequencerDevice::GetPlayPatternIndex() const
+{
+    return play_pattern_index_;
 }
 
 uint32_t SequencerDevice::GetPendingStepEvents() const
@@ -1901,8 +1975,11 @@ void SequencerDevice::AdvanceStep()
                 if (repeat_current_ >= completed_pattern.repeat_count)
                 {
                     repeat_current_ = 0;
-                    bank_.ChainAdvance();
-                    current_pattern_index_ = bank_.ChainCurrentPatternIndex();
+                    if (playback_source_ == PlaybackSource::SongChain)
+                    {
+                        bank_.ChainAdvance();
+                        play_pattern_index_ = bank_.ChainCurrentPatternIndex();
+                    }
                     status_changed_ = true;
                 }
                 return true;
@@ -1916,8 +1993,11 @@ void SequencerDevice::AdvanceStep()
                 {
                     repeat_current_ = 0;
                     step_direction_ = 1;
-                    bank_.ChainAdvance();
-                    current_pattern_index_ = bank_.ChainCurrentPatternIndex();
+                    if (playback_source_ == PlaybackSource::SongChain)
+                    {
+                        bank_.ChainAdvance();
+                        play_pattern_index_ = bank_.ChainCurrentPatternIndex();
+                    }
                     status_changed_ = true;
                 }
                 return true;
@@ -1944,7 +2024,7 @@ void SequencerDevice::AdvanceStep()
 
     while (true)
     {
-        const Pattern& pat = CurrentPattern();
+        const Pattern& pat = PlayPattern();
         const uint8_t step_count = clamp_step_count(pat);
         if (current_bar_ >= step_count) current_bar_ = 0u;
 
@@ -2021,7 +2101,7 @@ void SequencerDevice::AdvanceStep()
             }
         }
 
-        const Pattern& scan_pattern = CurrentPattern();
+        const Pattern& scan_pattern = PlayPattern();
         const uint8_t scan_count = clamp_step_count(scan_pattern);
         if (current_bar_ >= scan_count) current_bar_ = 0u;
 
@@ -2080,7 +2160,7 @@ void SequencerDevice::ApplyCurrentStepBehavior()
         return;
     }
 
-    const Pattern&  pat  = CurrentPattern();
+    const Pattern&  pat  = PlayPattern();
     const uint8_t steps_in_bar = StepsPerBar(bank_.GetSong().time_sig, pat.step_division);
     const uint8_t grid_position = (current_step_in_bar_ < steps_in_bar) ? current_step_in_bar_ : (uint8_t)(steps_in_bar - 1u);
     const uint8_t canonical_positions = CanonicalPositionsPerBar(bank_.GetSong().time_sig);
@@ -2160,11 +2240,11 @@ void SequencerDevice::ApplyCurrentStepBehavior()
 void SequencerDevice::SetStepType(uint32_t step_index, StepType type)
 {
     if (step_index >= kStepCount) return;
-    StepSlot& slot = CurrentPattern().steps[step_index];
+    StepSlot& slot = EditPattern().steps[step_index];
     slot.bar_state = LegacyStepTypeToBarState(type);
     RefreshSlotSummary(slot);
     UpdateLegacyStepTypeProjection(slot);
-    if (step_index == current_bar_)
+    if (step_index == current_bar_ && edit_pattern_index_ == play_pattern_index_)
     {
         ApplyCurrentStepBehavior();
         step_changed_ = true;
@@ -2176,8 +2256,8 @@ void SequencerDevice::SetStepDurationMultiplier(uint32_t step_index,
 {
     if (step_index >= kStepCount) return;
     if (multiplier == 0) multiplier = 1;
-    CurrentPattern().steps[step_index].duration_multiplier = multiplier;
-    if (step_index == current_bar_)
+    EditPattern().steps[step_index].duration_multiplier = multiplier;
+    if (step_index == current_bar_ && edit_pattern_index_ == play_pattern_index_)
     {
         RecalculateStepIntervalMs();
         RecalculateStepTicks();
@@ -2188,30 +2268,30 @@ void SequencerDevice::SetStepDurationMultiplier(uint32_t step_index,
 void SequencerDevice::ToggleStepNote(uint32_t step_index, uint8_t note)
 {
     if (step_index >= kStepCount) return;
-    StepSlot& slot = CurrentPattern().steps[step_index];
+    StepSlot& slot = EditPattern().steps[step_index];
     ToggleNote(slot.note_mask, note);
     slot.note_mask = LimitNoteMaskToMaxVoices(slot.note_mask, 4u);
     UpdateLegacyStepTypeProjection(slot);
-    if (step_index == current_bar_) step_changed_ = true;
+    if (step_index == current_bar_ && edit_pattern_index_ == play_pattern_index_) step_changed_ = true;
 }
 
 void SequencerDevice::ClearStepNotes(uint32_t step_index)
 {
     if (step_index >= kStepCount) return;
-    StepSlot& slot = CurrentPattern().steps[step_index];
+    StepSlot& slot = EditPattern().steps[step_index];
     ClearAllNotes(slot.note_mask);
     UpdateLegacyStepTypeProjection(slot);
-    if (step_index == current_bar_) step_changed_ = true;
+    if (step_index == current_bar_ && edit_pattern_index_ == play_pattern_index_) step_changed_ = true;
 }
 
 void SequencerDevice::SetStepBarState(uint8_t step_index, BarState state)
 {
     if (step_index >= kStepCount) return;
-    StepSlot& slot = CurrentPattern().steps[step_index];
+    StepSlot& slot = EditPattern().steps[step_index];
     slot.bar_state = state;
     RefreshSlotSummary(slot);
     UpdateLegacyStepTypeProjection(slot);
-    if (step_index == current_bar_)
+    if (step_index == current_bar_ && edit_pattern_index_ == play_pattern_index_)
     {
         ApplyCurrentStepBehavior();
         step_changed_ = true;
@@ -2221,7 +2301,7 @@ void SequencerDevice::SetStepBarState(uint8_t step_index, BarState state)
 BarState SequencerDevice::GetStepBarState(uint8_t step_index) const
 {
     if (step_index >= kStepCount) return BarState::Active;
-    return CurrentPattern().steps[step_index].bar_state;
+    return EditPattern().steps[step_index].bar_state;
 }
 
 bool SequencerDevice::IsStepSkipped(uint8_t step_index) const
@@ -2233,7 +2313,7 @@ const StepSlot& SequencerDevice::GetStep(uint32_t step_index) const
 {
     static const StepSlot empty_slot{};
     if (step_index >= kStepCount) return empty_slot;
-    return CurrentPattern().steps[step_index];
+    return PlayPattern().steps[step_index];
 }
 
 /* ── MIDI clock listener ─────────────────────────────────────────────────── */
