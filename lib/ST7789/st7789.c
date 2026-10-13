@@ -1,6 +1,7 @@
 #include "st7789.h"
 #include "s12_fonts.h"
 #include "stm32/timing_probe.h"
+#include "stm32/time_commit_probe.h"
 #include <stdio.h>
 #include <string.h>
 /* ------------------------------------------------------------------------- */
@@ -231,6 +232,7 @@ void ST7789_DebugGetPianoTraceSnapshot(ST7789_PianoTraceSnapshot* out)
 /* ------------------------------------------------------------------------- */
 static void WriteCommandData(uint8_t cmd, const uint8_t *buf, uint16_t len)
 {
+    TimeCommitProbe_RecordLcdBytes(1u + ((buf != 0) ? len : 0u));
     CS_ASSERT();
     DC_LOW();
     HAL_SPI_Transmit(&hspi1, &cmd, 1, HAL_MAX_DELAY);
@@ -248,6 +250,7 @@ static void WriteCommand(uint8_t cmd)
 
 static void WriteData(const uint8_t *buf, uint16_t len)
 {
+    TimeCommitProbe_RecordLcdBytes(len);
     CS_ASSERT();
     DC_HIGH();
     HAL_SPI_Transmit(&hspi1, (uint8_t *)buf, len, HAL_MAX_DELAY);
@@ -261,10 +264,12 @@ static void WriteSmallData(uint8_t data)
 
 static void SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
+#if ST7789_PIANO_TRACE
     const uint16_t raw_x0 = x0;
     const uint16_t raw_y0 = y0;
     const uint16_t raw_x1 = x1;
     const uint16_t raw_y1 = y1;
+#endif
     x0 += X_SHIFT;
     x1 += X_SHIFT;
     y0 += Y_SHIFT;
@@ -306,6 +311,7 @@ static void SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 /* ------------------------------------------------------------------------- */
 static void dma_send(uint8_t *buf, uint16_t len)
 {
+    TimeCommitProbe_RecordLcdBytes(len);
 #if ST7789_USE_DMA
     /* DMA only worthwhile for larger transfers; use blocking SPI for small ones */
     if (len >= 64U) {
@@ -523,10 +529,12 @@ void ST7789_Fill_Color(uint16_t color)
 
 void ST7789_FillRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color)
 {
+#if ST7789_PIANO_TRACE
     const uint16_t req_x = x;
     const uint16_t req_y = y;
     const uint16_t req_w = w;
     const uint16_t req_h = h;
+#endif
     if (x >= ST7789_WIDTH || y >= ST7789_HEIGHT)
     {
 #if ST7789_PIANO_TRACE
@@ -659,11 +667,13 @@ void ST7789_DrawRGB565Buffer(uint16_t x, uint16_t y,
                              uint32_t buffer_size)
 {
     uint32_t _tp_rgb = TIMING_PROBE_BEGIN();
+#if ST7789_PIANO_TRACE
     const uint16_t req_x = x;
     const uint16_t req_y = y;
     const uint16_t req_w = w;
     const uint16_t req_h = h;
     const uint32_t req_buffer_size = buffer_size;
+#endif
     const uint32_t min_bytes = (uint32_t)w * (uint32_t)h * 2u;
 
         if (buffer == 0) return;
@@ -853,11 +863,13 @@ void ST7789_DrawStringScaled(uint16_t x, uint16_t y, const char *str,
                              const Font_t *font, uint8_t scale,
                              uint16_t fg, uint16_t bg)
 {
+#if ST7789_PIANO_TRACE
     uint16_t start_x = x;
     uint16_t start_y = y;
     uint16_t max_right = x;
     uint16_t max_bottom = y;
     uint32_t glyph_count = 0u;
+#endif
     if (font == 0 || str == 0 || scale == 0) return;
 
     const uint16_t stepX = (uint16_t)(font->width * scale);

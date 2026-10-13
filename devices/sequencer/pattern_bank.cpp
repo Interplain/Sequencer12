@@ -46,16 +46,14 @@ KeyScale PatternBank::GetKeyScale() const
     return song_.key_scale;
 }
 
-uint32_t PatternBank::GetEffectiveBpm(uint8_t pattern_index) const
+uint32_t PatternBank::GetEffectiveBpm(float tempo_multiplier) const
 {
-    const Pattern& p = PatternAt(pattern_index);
-
-    if (p.tempo_multiplier == 1.0f)
+    if (tempo_multiplier == 1.0f)
     {
         return song_.global_bpm;
     }
 
-    return static_cast<uint32_t>(song_.global_bpm * p.tempo_multiplier);
+    return static_cast<uint32_t>(song_.global_bpm * tempo_multiplier);
 }
 
 bool PatternBank::IsNoteDiatonic(uint8_t note) const
@@ -67,29 +65,6 @@ uint16_t PatternBank::TransposeToKey(uint16_t note_mask) const
 {
     uint8_t semitones = static_cast<uint8_t>(song_.key_root);
     return TransposeNoteMask(note_mask, semitones);
-}
-
-// ── Pattern access ─────────────────────────────────────────────────────────────
-
-Pattern& PatternBank::GetPattern(uint8_t index)
-{
-    return PatternAt(index);
-}
-
-const Pattern& PatternBank::GetPattern(uint8_t index) const
-{
-    return PatternAt(index);
-}
-
-__attribute__((optimize("Os"), noinline)) void PatternBank::ClearPattern(uint8_t index)
-{
-    PatternAt(index) = Pattern{};
-}
-
-void PatternBank::CopyPattern(uint8_t src, uint8_t dst)
-{
-    if (src == dst) return;
-    PatternAt(dst) = PatternAt(src);
 }
 
 // ── Chain management ───────────────────────────────────────────────────────────
@@ -170,6 +145,12 @@ void PatternBank::ChainReset()
     song_.chain.position = 0;
 }
 
+void PatternBank::ChainSetPosition(uint8_t position)
+{
+    if (song_.chain.length == 0u) song_.chain.position = 0u;
+    else song_.chain.position = (position < song_.chain.length) ? position : 0u;
+}
+
 uint8_t PatternBank::ChainCurrentPosition() const
 {
     return song_.chain.position;
@@ -179,11 +160,6 @@ uint8_t PatternBank::ChainCurrentPatternIndex() const
 {
     if (song_.chain.length == 0) return 0;
     return song_.chain.pattern_indices[song_.chain.position];
-}
-
-const Pattern& PatternBank::ChainCurrentPattern() const
-{
-    return PatternAt(ChainCurrentPatternIndex());
 }
 
 void PatternBank::ChainAdvance()
@@ -209,20 +185,6 @@ Song& PatternBank::GetSong()
 void PatternBank::LoadSong(const Song& song)
 {
     song_ = song;
-}
-
-// ── Private ────────────────────────────────────────────────────────────────────
-
-Pattern& PatternBank::PatternAt(uint8_t index)
-{
-    if (index >= kPatternCount) index = 0;
-    return song_.patterns[index];
-}
-
-const Pattern& PatternBank::PatternAt(uint8_t index) const
-{
-    if (index >= kPatternCount) index = 0;
-    return song_.patterns[index];
 }
 
 } // namespace sequencer

@@ -22,6 +22,7 @@ void UI_ScreenRouter_DetachActive(void);
 /* Future stack navigation helpers (not yet used by sequencer routes). */
 uint8_t UI_ScreenRouter_Push(UiScreen* screen);
 uint8_t UI_ScreenRouter_Pop(ScreenExitReason reason);
+uint8_t UI_ScreenRouter_ReturnTo(UiScreen* target, ScreenExitReason reason);
 
 UiScreen* UI_ScreenRouter_GetActive(void);
 uint8_t UI_ScreenRouter_GetDepth(void);

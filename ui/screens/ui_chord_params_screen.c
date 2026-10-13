@@ -7,6 +7,7 @@ static ChordParamsScreenState s_state;
 
 static void ChordParams_OnEnter(void)
 {
+    UI_Display_ResetDirectChordFrame();
     s_state.footer_action = PARAM_ACTION_MAIN;
 }
 
@@ -32,6 +33,7 @@ static void ChordParams_OnInput(InputType input_type, int8_t value)
 
 static void ChordParams_OnExit(ScreenExitReason reason)
 {
+    UI_Display_CancelDirectChordFrame();
     (void)reason;
 }
 

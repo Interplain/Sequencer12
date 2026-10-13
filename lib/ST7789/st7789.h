@@ -156,7 +156,7 @@ extern SPI_HandleTypeDef hspi1;
 
 /* Temporary runtime tracing for Piano Roll render-path debugging. */
 #ifndef ST7789_PIANO_TRACE
-#define ST7789_PIANO_TRACE 1
+#define ST7789_PIANO_TRACE 0
 #endif
 
 enum {

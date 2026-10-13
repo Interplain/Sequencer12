@@ -2,6 +2,7 @@
 #include "devices/sequencer/chords/user_chords.h"
 #include "platform/fram/mb85rc1mt.h"
 #include "platform/fram/fram_layout.h"
+#include "stm32/time_commit_probe.h"
 #include <cstring>
 
 using namespace sequencer;
@@ -124,6 +125,7 @@ void Bridge_UserChord_Init(void)
 
 void Bridge_UserChord_EnsureLoaded(void)
 {
+    PROBE_READ_SOURCE(READ_SOURCE_USER_CHORDS);
     FramLoadAll();
 }
 

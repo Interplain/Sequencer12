@@ -60,5 +60,8 @@ void UI_PianoRollScreen_ForceRedraw(void);
 
 /* ── Reset cached layout/state for guaranteed clean re-entry ────────────── */
 void UI_PianoRollScreen_ResetCache(void);
+uint8_t UI_PianoRollScreen_IsFrameActive(void);
+void UI_PianoRollScreen_ServiceFrame(void);
+void UI_PianoRollScreen_CancelFrame(void);
 
 #endif /* UI_SCREEN_PIANO_ROLL_H */

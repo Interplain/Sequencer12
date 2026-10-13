@@ -1,4 +1,5 @@
 #include "platform/fram/mb85rc1mt.h"
+#include "stm32/time_commit_probe.h"
 #include <string.h>
 
 static I2C_HandleTypeDef* s_i2c = 0;
@@ -10,6 +11,7 @@ static void I2C_Recover(void)
 {
     if (s_i2c == 0) return;
     if (s_i2c->State == HAL_I2C_STATE_READY) return;
+    TimeCommitProbe_RecordI2cRecovery();
     HAL_I2C_DeInit(s_i2c);
     HAL_Delay(2);
     HAL_I2C_Init(s_i2c);
@@ -42,6 +44,7 @@ static HAL_StatusTypeDef FramTransmit(uint8_t addr7, const uint8_t* data, uint16
                                          (uint8_t*)data,
                                          len,
                                          timeout);
+                        TimeCommitProbe_RecordHal(0u, len, timeout, status == HAL_OK ? 1u : 0u);
         s_last_hal_status = status;
         if (status == HAL_OK)
         {
@@ -67,6 +70,7 @@ static HAL_StatusTypeDef FramReceive(uint8_t addr7, uint8_t* data, uint16_t len,
                                         data,
                                         len,
                                         timeout);
+                        TimeCommitProbe_RecordHal(1u, len, timeout, status == HAL_OK ? 1u : 0u);
         s_last_hal_status = status;
         if (status == HAL_OK)
         {
@@ -127,14 +131,17 @@ HAL_StatusTypeDef MB85RC1MT_GetLastHalStatus(void)
 
 uint8_t MB85RC1MT_Read(uint32_t address, uint8_t* dst, uint16_t len)
 {
+    TimeCommitProbe_RecordPatternReadBegin(address, len);
     if (s_i2c == 0 || dst == 0)
     {
         s_last_result = MB85RC1MT_RESULT_NOT_INITIALIZED;
+        TimeCommitProbe_RecordPatternReadEnd(0u);
         return 0;
     }
     if ((uint64_t)address + (uint64_t)len > MB85RC1MT_SIZE_BYTES)
     {
         s_last_result = MB85RC1MT_RESULT_RANGE;
+        TimeCommitProbe_RecordPatternReadEnd(0u);
         return 0;
     }
 
@@ -154,11 +161,13 @@ uint8_t MB85RC1MT_Read(uint32_t address, uint8_t* dst, uint16_t len)
         if (FramTransmit(addr7, addr_bytes, 2u, 20u) != HAL_OK)
         {
             s_last_result = MB85RC1MT_RESULT_WRITE_FAILED;
+            TimeCommitProbe_RecordPatternReadEnd(0u);
             return 0;
         }
         if (FramReceive(addr7, dst + offset, (uint16_t)chunk, chunk + 50u) != HAL_OK)
         {
             s_last_result = MB85RC1MT_RESULT_READ_FAILED;
+            TimeCommitProbe_RecordPatternReadEnd(0u);
             return 0;
         }
 
@@ -167,6 +176,7 @@ uint8_t MB85RC1MT_Read(uint32_t address, uint8_t* dst, uint16_t len)
     }
 
     s_last_result = MB85RC1MT_RESULT_OK;
+    TimeCommitProbe_RecordPatternReadEnd(1u);
     return 1;
 }
 
@@ -175,11 +185,13 @@ uint8_t MB85RC1MT_Write(uint32_t address, const uint8_t* src, uint16_t len)
     if (s_i2c == 0 || src == 0)
     {
         s_last_result = MB85RC1MT_RESULT_NOT_INITIALIZED;
+        TimeCommitProbe_RecordPatternWrite(address, len, 0u);
         return 0;
     }
     if ((uint64_t)address + (uint64_t)len > MB85RC1MT_SIZE_BYTES)
     {
         s_last_result = MB85RC1MT_RESULT_RANGE;
+        TimeCommitProbe_RecordPatternWrite(address, len, 0u);
         return 0;
     }
 
@@ -206,6 +218,7 @@ uint8_t MB85RC1MT_Write(uint32_t address, const uint8_t* src, uint16_t len)
         if (FramTransmit(addr7, frame, (uint16_t)(2u + chunk), 50u) != HAL_OK)
         {
             s_last_result = MB85RC1MT_RESULT_WRITE_FAILED;
+            TimeCommitProbe_RecordPatternWrite(address, len, 0u);
             return 0;
         }
 
@@ -214,6 +227,7 @@ uint8_t MB85RC1MT_Write(uint32_t address, const uint8_t* src, uint16_t len)
     }
 
     s_last_result = MB85RC1MT_RESULT_OK;
+    TimeCommitProbe_RecordPatternWrite(address, len, 1u);
     return 1;
 }
 

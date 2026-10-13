@@ -494,7 +494,6 @@ struct Song
     uint8_t      swing          = 0;
     int8_t       transpose      = 0;   // -24 to +24 semitones
 
-    std::array<Pattern, kPatternCount> patterns{};
     PatternChain chain{};
 };
 

@@ -35,10 +35,21 @@ public:
     void     Reset();
     void     TickMusical();
     void     NotifyUClockMusicalCallback();
+    void     ServicePendingMusicalTicks();
     bool     ServiceOnePendingStep();
+    bool     ConsumeOutputSnapshotRequest(bool* forced_refresh = nullptr);
+    void     CommitOutputSnapshot();
     void     DrainPendingStepEvents();
+    bool     InitializePatternResidency();
+    void     ServicePatternResidency();
+    void     MarkEditPatternMutated();
+    bool     GetEditStepSlot(uint8_t step_index, sequencer::StepSlot* out_step) const;
+    bool     ReplaceEditStepSlot(uint8_t step_index, const sequencer::StepSlot& source);
+    bool     IsPatternResidencyReady() const { return residency_ready_; }
+    bool     IsPatternBoundaryHeld() const { return pattern_boundary_held_; }
     void     SetBpm(uint32_t bpm);
     uint32_t GetPendingStepEvents() const;
+    uint32_t GetPendingMusicalTicks() const;
     uint32_t GetMaxPendingStepEvents() const;
     uint32_t GetPendingStepBacklogCount() const;
     uint32_t GetUClockMusicalCallbackCount() const;
@@ -48,7 +59,8 @@ public:
     void     SetPatternStepCount(uint8_t step_count);
     uint8_t  GetPatternStepCount() const;
     bool     SetPatternTiming(uint8_t step_division, uint8_t numerator, uint8_t denominator);
-    void     SetPatternStepDivision(uint8_t step_division);
+    /* Validates only the EDIT Pattern against the unchanged global time signature. */
+    bool     SetPatternStepDivision(uint8_t step_division);
     uint8_t  GetPatternStepDivision() const;
     void     SetPatternArpMode(sequencer::ArpMode mode);
     void     SetPatternArpRate(sequencer::ArpRate rate);
@@ -121,6 +133,7 @@ public:
     uint32_t GetElapsedMs()   const { return elapsed_step_ms_; }
     bool     IsPlaying()      const { return playing_; }
     bool     IsGateActive()   const { return gate_active_; }
+    bool     IsGateActivationPending() const { return gate_activation_pending_; }
     sequencer::ArpMode GetCurrentArpMode() const;
     /* Returns the absolute MIDI note (0-127) of the current arp note, or 0xFF if no note. */
     uint8_t  GetCurrentNote() const { return arp_.CurrentNote(); }
@@ -138,6 +151,14 @@ private:
     void GateOff();
     void RetriggerGate(uint32_t low_gap_ms = 1u);
     void ApplyCurrentStepBehavior();
+    bool PrepareNextPattern();
+    bool ResumeHeldPatternBoundary();
+    bool PromotePreparedNext();
+    bool ResolveNextPattern(uint8_t* out_pattern_index,
+                            uint8_t* out_chain_position,
+                            uint32_t* out_skipped_loops,
+                            bool* out_stops_transport) const;
+    bool EnsurePlayPattern(uint8_t pattern_index);
 
     const char* StepTypeName(sequencer::StepType type) const;
     static sequencer::BarState LegacyStepTypeToBarState(sequencer::StepType type);
@@ -190,6 +211,7 @@ private:
     uint32_t    musical_ticks_accum_           = 0;
     uint32_t    musical_step_ticks_            = 96;
     uint32_t    pending_step_events_           = 0;
+    uint32_t    pending_musical_ticks_          = 0;
     uint32_t    max_pending_step_events_       = 0;
     uint32_t    pending_step_backlog_count_    = 0;
 
@@ -198,6 +220,7 @@ private:
     uint32_t    gate_length_ms_           = 100;
     bool        gate_retrigger_pending_   = false;
     uint32_t    gate_retrigger_delay_ms_  = 0;
+    bool        gate_activation_pending_  = false;
 
     /* ── Arp ─────────────────────────────────────────────────────────── */
     uint32_t    arp_ticks_accum_          = 0;
@@ -208,6 +231,17 @@ private:
     bool        status_changed_           = false;
     bool        gate_changed_             = false;
     bool        arp_note_changed_         = false;
+    bool        output_snapshot_pending_  = false;
+    bool        output_snapshot_forced_   = false;
+    bool        residency_ready_          = false;
+    bool        pattern_boundary_held_    = false;
+    bool        next_prepare_needed_      = false;
+    uint8_t     requested_next_pattern_   = 0xFFu;
+    uint32_t    requested_next_generation_ = 0u;
+    uint8_t     requested_next_chain_position_ = 0u;
+    uint32_t    requested_next_skipped_loops_ = 0u;
+    bool        requested_next_stops_transport_ = false;
+    uint8_t     pending_edit_pattern_index_ = 0xFFu;
 
     /* ── Timing ──────────────────────────────────────────────────────── */
     uint32_t run_time_ms_    = 0;

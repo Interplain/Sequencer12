@@ -16,6 +16,7 @@ void UI_Input_Poll(void);
 /* ── Encoder state — read by ui_sequencer ───────────────────────────────── */
 int8_t  UI_Input_GetEncoderDelta(void);   /* consume encoder movement        */
 uint8_t UI_Input_IsShiftHeld(void);       /* 1 if shift currently held       */
+uint8_t UI_Input_IsRecHeld(void);         /* 1 if record currently held      */
 uint8_t UI_Input_IsEncoderPressed(void);     /* 1 if encoder button just pressed */
 uint8_t UI_Input_IsEncoderShortPressed(void); /* 1 if encoder short press completed */
 uint8_t UI_Input_IsEncoderLongPressed(void);  /* 1 if encoder long press detected */

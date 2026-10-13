@@ -13,6 +13,18 @@ typedef struct
 } BridgeLedgerSlot;
 
 void     Bridge_Init(void);
+void     Bridge_InitSafe(void);
+uint8_t  Bridge_InspectStorage(void);
+/* Runs schema bootstrap and journal recovery before Pattern residency. Returns 0 (fail closed) on any storage fault. */
+uint8_t  Bridge_ActivateStorageRuntime(void);
+/* PersistenceBootStatus of the last storage activation or factory initialisation. */
+uint8_t  Bridge_GetPersistenceBootStatus(void);
+uint8_t  Bridge_CopyCurrentEditBar(uint8_t zero_based_bar);
+uint8_t  Bridge_CanPasteCurrentEditBar(uint8_t zero_based_bar);
+uint8_t  Bridge_PasteCurrentEditBar(uint8_t zero_based_bar);
+typedef void (*BridgeFactoryProgressCallback)(uint8_t phase, uint8_t index, uint8_t total);
+uint8_t  Bridge_FactoryInitializeStorage(BridgeFactoryProgressCallback progress);
+uint8_t  Bridge_IsPersistenceReady(void);
 void     Bridge_SetTickEnabled(uint8_t enabled);
 void     Bridge_SetCvRouterMode(uint8_t mode);
 uint8_t  Bridge_GetCvRouterMode(void);
@@ -26,6 +38,7 @@ void     Bridge_Start(void);
 void     Bridge_Stop(void);
 void     Bridge_Reset(void);
 void     Bridge_SetBpm(uint32_t bpm);
+/* Nested edits are coalesced: one EDIT Pattern generation and one Song persist at the outermost End. */
 void     Bridge_PersistBegin(void);
 void     Bridge_PersistEnd(void);
 /* Pumps the real-time-safe persistence engine. Call exactly once per
@@ -38,12 +51,9 @@ void     Bridge_ServicePersistence(void);
 /* Forces an immediate full legacy V3 song snapshot if one is pending,
  * bypassing the idle-checkpoint wait. Safe to call only when it is
  * acceptable to block for ~200ms (e.g. transport stop, explicit save). */
-void     Bridge_FlushPersistence(void);
-/* Current+Next Pattern cache validation pilot (diagnostic/shadow only):
- * pumps at most one small chunked PatternStore read per call, comparing
- * completed loads against the resident SRAM Song. Does not affect
- * playback -- resident song_.patterns[] remains fully authoritative.
- * Results reported via the g_pc_* globals (see sequencer_bridge.cpp). */
+uint8_t  Bridge_FlushPersistence(void);
+/* Legacy Pattern cache validation pilot retained for diagnostics only.
+ * Production PLAY/NEXT/EDIT ownership is provided by PatternResidency. */
 void     Bridge_ServicePatternCache(void);
 /* Stage 2 FRAM Pattern Store debug/verification path: byte-for-byte compares
  * the resident SRAM Pattern at `pattern_index` against its FRAM shadow slot.
@@ -57,8 +67,10 @@ uint8_t  Bridge_PatternStoreVerify(uint8_t pattern_index);
 void     Bridge_PatternStoreVerifyAll(void);
 void     Bridge_SetPatternStepCount(uint8_t step_count);
 uint8_t  Bridge_GetPatternStepCount(void);
+/* Global time-signature change: validates every Pattern directory entry. */
 uint8_t  Bridge_SetPatternTiming(uint8_t step_division, uint8_t numerator, uint8_t denominator);
-void     Bridge_SetPatternStepDivision(uint8_t step_division);
+/* Changes only the EDIT Pattern grid; no Pattern directory scan. Returns 0 if rejected. */
+uint8_t  Bridge_SetPatternStepDivision(uint8_t step_division);
 uint8_t  Bridge_GetPatternStepDivision(void);
 void     Bridge_SetPatternArpMode(uint8_t arp_mode);
 void     Bridge_SetPatternArpRate(uint8_t arp_rate);
@@ -119,6 +131,16 @@ uint8_t  Bridge_GetStepChordUiParams(uint8_t step_index,
 uint32_t Bridge_GetCurrentStep(void);
 uint8_t  Bridge_GetCurrentStepSubIndex(void);
 uint8_t  Bridge_IsPlaying(void);
+void     Bridge_TimeCommitProbeBegin(uint32_t flags);
+void     Bridge_TimeCommitProbePhaseBegin(uint8_t phase);
+void     Bridge_TimeCommitProbePhaseEnd(uint8_t phase);
+void     Bridge_TimeCommitProbeEnd(void);
+#if defined(S12_TIME_COMMIT_PROBE)
+void     Bridge_TimeCommitProbeLoopSample(void);
+void     Bridge_TimeCommitProbeLoopPass(uint32_t loop_ms, uint32_t musical_ms,
+                                        uint32_t input_ms, uint32_t ui_ms,
+                                        uint32_t persist_ms);
+#endif
 uint32_t Bridge_GetElapsedMs(void);
 uint8_t  Bridge_GetCurrentPattern(void);
 uint8_t  Bridge_GetPlayPattern(void);

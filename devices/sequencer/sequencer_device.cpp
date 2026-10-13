@@ -1,8 +1,44 @@
 #include "devices/sequencer/sequencer_device.h"
 #include "devices/sequencer/arp_engine.h"
 #include "core/pitch_mapping.h"
+#include "platform/fram/pattern_residency.h"
 #include "stm32f4xx_hal.h"
+#include <cstdlib>
 #include <cstring>
+
+#if defined(S12_TIME_COMMIT_PROBE)
+#include "stm32/time_commit_probe.h"
+namespace
+{
+struct TransportDeviceProbeScope
+{
+    TransportDeviceProbeScope() { TransportProbe_DeviceBegin(); }
+    ~TransportDeviceProbeScope() { TransportProbe_DeviceEnd(); }
+};
+
+/* Closes the EnsurePlayPattern measurement on every return path. */
+struct EnsurePlayProbeScope
+{
+    const uint32_t* pending_ticks;
+    bool ok;
+    bool waiting;
+    ~EnsurePlayProbeScope()
+    {
+        if (waiting) TransportProbe_EnsureWaitEnd();
+        TransportProbe_EnsureEnd(ok ? 1u : 0u,
+                                 PatternResidency_GetRoleEntry(PatternCacheRole::Play),
+                                 *pending_ticks);
+    }
+};
+}
+#define TRANSPORT_DEVICE_PROBE_SCOPE() TransportDeviceProbeScope transport_device_probe_scope
+#else
+#define TRANSPORT_DEVICE_PROBE_SCOPE() ((void)0)
+#endif
+
+#if !defined(PROBE_READ_SOURCE)
+#define PROBE_READ_SOURCE(source) ((void)0)
+#endif
 
 using sequencer::StepSlot;
 using sequencer::StepType;
@@ -321,23 +357,6 @@ static void InitLedgerFromMask(sequencer::StepSlot& slot, uint16_t note_mask, ui
     PackedEventLengthRawSet(slot, 0u, 1u);
 }
 
-static void NormalizePatternDivisionCadence(Pattern& pattern, const TimeSig& time_sig)
-{
-    if (StepsPerBar(time_sig, pattern.step_division) == 0u)
-    {
-        pattern.step_division = 4u;
-    }
-
-    const uint8_t fixed_len = StepsPerBar(time_sig, pattern.step_division);
-    for (uint8_t i = 0u; i < kStepCount; ++i)
-    {
-        StepSlot& slot = pattern.steps[i];
-        slot.repeat_count = ClampLedgerLength(fixed_len);
-        RefreshSlotSummary(slot);
-        UpdateLegacyStepTypeProjection(slot);
-    }
-}
-
 static uint16_t LimitNoteMaskToMaxVoices(uint16_t note_mask, uint8_t max_voices)
 {
     uint16_t limited = 0u;
@@ -408,22 +427,22 @@ static LedgerSlot ApplyTransposeToLedgerSlot(const LedgerSlot& slot, int8_t tran
 
 Pattern& SequencerDevice::EditPattern()
 {
-    return bank_.GetPattern(edit_pattern_index_);
+    return *PatternResidency_GetRolePattern(PatternCacheRole::Edit);
 }
 
 const Pattern& SequencerDevice::EditPattern() const
 {
-    return bank_.GetPattern(edit_pattern_index_);
+    return *PatternResidency_GetRolePatternConst(PatternCacheRole::Edit);
 }
 
 Pattern& SequencerDevice::PlayPattern()
 {
-    return bank_.GetPattern(play_pattern_index_);
+    return *PatternResidency_GetRolePattern(PatternCacheRole::Play);
 }
 
 const Pattern& SequencerDevice::PlayPattern() const
 {
-    return bank_.GetPattern(play_pattern_index_);
+    return *PatternResidency_GetRolePatternConst(PatternCacheRole::Play);
 }
 
 uint16_t SequencerDevice::ApplyTranspose(uint16_t note_mask) const
@@ -470,30 +489,6 @@ void SequencerDevice::Init()
     run_time_ms_           = 0;
     completed_loops_       = 0;
 
-    /* ── Default pattern — 12 steps, all Chord, forward loop ───────── */
-    Pattern& p0 = bank_.GetPattern(0);
-
-    /* Playback mode — forward, loop forever, matches every other fresh Pattern */
-    p0.playback_mode    = PlaybackMode::Loop;
-    p0.step_count       = 1;
-    p0.repeat_count     = 1;
-    p0.tempo_multiplier = 1.0f;
-    p0.arp_mode         = ArpMode::Off;
-
-    /* All steps are Rest (empty) — clean slate for user to build on */
-    const uint8_t initial_subdivision_count =
-        StepsPerBar(bank_.GetSong().time_sig, p0.step_division);
-    for (uint32_t i = 0; i < kStepCount; ++i)
-    {
-        p0.steps[i].duration_multiplier = 1;
-        p0.steps[i].repeat_count        = initial_subdivision_count;
-        p0.steps[i].velocity            = 100;
-        p0.steps[i].probability         = 100;
-        p0.steps[i].bar_state           = BarState::Active;
-        p0.steps[i].note_mask           = 0;
-        UpdateLegacyStepTypeProjection(p0.steps[i]);
-    }
-
     /* No chaining — single pattern loops forever */
     bank_.ChainClear();
     bank_.ChainAppend(0);
@@ -503,9 +498,329 @@ void SequencerDevice::Init()
     status_changed_ = true;
     gate_changed_   = false;
 
+}
+
+bool SequencerDevice::InitializePatternResidency()
+{
+    PROBE_READ_SOURCE(READ_SOURCE_RESIDENCY_INIT);
+    const PatternDirectoryEntry* initial = PatternResidency_GetDirectoryEntry(0u);
+    if (!initial || initial->status == PATTERN_DIRECTORY_INVALID) return false;
+
+    /* Boot may block on Pattern 0 only; an unknown entry is discovered by the same single load. */
+    PatternCacheRequestStatus request = PatternResidency_RequestRole(
+        PatternCacheRole::Play, 0u,
+        initial->status == PATTERN_DIRECTORY_VALID ? initial->generation : 0u);
+    while (request == PATTERN_CACHE_REQUEST_LOAD_STARTED)
+    {
+        const PatternCacheServiceStatus status = PatternResidency_ServiceIo();
+        if (status == PATTERN_CACHE_SERVICE_BUSY) continue;
+        if (status != PATTERN_CACHE_SERVICE_DONE) return false;
+        request = PATTERN_CACHE_REQUEST_READY;
+    }
+    if (request != PATTERN_CACHE_REQUEST_READY) return false;
+
+    const int8_t play_entry = PatternResidency_GetRoleEntry(PatternCacheRole::Play);
+    if (play_entry < 0 ||
+        !PatternResidency_ApplyLazyProjections((uint8_t)play_entry, &bank_.GetSong().time_sig) ||
+        !PatternResidency_AssignRole(PatternCacheRole::Edit, (uint8_t)play_entry)) return false;
+
+    edit_pattern_index_ = 0u;
+    play_pattern_index_ = 0u;
+    residency_ready_ = true;
+    pattern_boundary_held_ = false;
+    next_prepare_needed_ = true;
     RecalculateStepIntervalMs();
     RecalculateStepTicks();
     ApplyCurrentStepBehavior();
+
+    if (!PrepareNextPattern()) return false;
+    while (PatternResidency_GetRoleEntry(PatternCacheRole::Next) < 0)
+    {
+        const PatternCacheServiceStatus status = PatternResidency_ServiceIo();
+        if (status == PATTERN_CACHE_SERVICE_BUSY) continue;
+        if (status != PATTERN_CACHE_SERVICE_DONE) return false;
+        const int8_t next_entry = PatternResidency_GetRoleEntry(PatternCacheRole::Next);
+        if (next_entry >= 0)
+            (void)PatternResidency_ApplyLazyProjections((uint8_t)next_entry, &bank_.GetSong().time_sig);
+        else
+            next_prepare_needed_ = true;
+    }
+    return true;
+}
+
+bool SequencerDevice::ResolveNextPattern(uint8_t* out_pattern_index,
+                                         uint8_t* out_chain_position,
+                                         uint32_t* out_skipped_loops,
+                                         bool* out_stops_transport) const
+{
+    if (!out_pattern_index || !out_chain_position || !out_skipped_loops || !out_stops_transport)
+        return false;
+    *out_skipped_loops = 0u;
+    *out_stops_transport = false;
+    if (playback_source_ == PlaybackSource::Pattern)
+    {
+        *out_pattern_index = play_pattern_index_;
+        *out_chain_position = bank_.ChainCurrentPosition();
+        return true;
+    }
+
+    const uint8_t length = bank_.ChainGetLength();
+    if (length == 0u) return false;
+    uint8_t position = bank_.ChainCurrentPosition();
+    for (uint8_t scanned = 0u; scanned < length; ++scanned)
+    {
+        position = (uint8_t)((position + 1u) % length);
+        const uint8_t index = bank_.ChainGetPatternAt(position);
+        const PatternDirectoryEntry* directory = PatternResidency_GetDirectoryEntry(index);
+        if (directory && directory->status == PATTERN_DIRECTORY_UNKNOWN)
+        {
+            /* Skip decisions need metadata: resolve it in the background and retry later. */
+            (void)PatternResidency_RequestDirectoryDiscovery(index);
+            return false;
+        }
+        if (!directory || directory->status != PATTERN_DIRECTORY_VALID) return false;
+        if (PatternDirectory_IsUsable(directory))
+        {
+            *out_pattern_index = index;
+            *out_chain_position = position;
+            return true;
+        }
+        if (PatternDirectory_GetPlaybackMode(directory) == PlaybackMode::OneShot)
+        {
+            ++(*out_skipped_loops);
+            *out_stops_transport = true;
+            return true;
+        }
+        *out_skipped_loops += PatternDirectory_GetRepeatCount(directory);
+    }
+    *out_stops_transport = true;
+    return true;
+}
+
+bool SequencerDevice::PrepareNextPattern()
+{
+    PROBE_READ_SOURCE(READ_SOURCE_NEXT_PREPARE);
+    if (!residency_ready_) return false;
+    uint8_t next_index = 0u;
+    uint8_t next_position = 0u;
+    uint32_t skipped_loops = 0u;
+    bool stops_transport = false;
+    if (!ResolveNextPattern(&next_index, &next_position, &skipped_loops, &stops_transport)) return false;
+    requested_next_skipped_loops_ = skipped_loops;
+    requested_next_stops_transport_ = stops_transport;
+    if (stops_transport)
+    {
+        (void)PatternResidency_CancelPendingRole(PatternCacheRole::Next);
+        next_prepare_needed_ = false;
+        return true;
+    }
+    const PatternDirectoryEntry* directory = PatternResidency_GetDirectoryEntry(next_index);
+    if (directory && directory->status == PATTERN_DIRECTORY_UNKNOWN)
+    {
+        (void)PatternResidency_RequestDirectoryDiscovery(next_index);
+        return false;
+    }
+    if (!directory || directory->status != PATTERN_DIRECTORY_VALID) return false;
+
+    if (requested_next_pattern_ != next_index ||
+        requested_next_generation_ != directory->generation)
+    {
+        (void)PatternResidency_CancelPendingRole(PatternCacheRole::Next);
+    }
+    requested_next_pattern_ = next_index;
+    requested_next_generation_ = directory->generation;
+    requested_next_chain_position_ = next_position;
+
+    const PatternCacheRequestStatus request = PatternResidency_RequestRole(
+        PatternCacheRole::Next, next_index, directory->generation);
+    next_prepare_needed_ = request == PATTERN_CACHE_REQUEST_WAIT;
+    if (request == PATTERN_CACHE_REQUEST_READY)
+    {
+        const int8_t entry = PatternResidency_GetRoleEntry(PatternCacheRole::Next);
+        return entry >= 0 && PatternResidency_ApplyLazyProjections((uint8_t)entry, &bank_.GetSong().time_sig);
+    }
+    return request == PATTERN_CACHE_REQUEST_LOAD_STARTED || request == PATTERN_CACHE_REQUEST_WAIT;
+}
+
+bool SequencerDevice::PromotePreparedNext()
+{
+    const int8_t next_entry = PatternResidency_GetRoleEntry(PatternCacheRole::Next);
+    if (next_entry < 0) return false;
+    const PatternCacheEntry* entry = PatternResidency_GetCacheEntry((uint8_t)next_entry);
+    if (!entry || entry->residency_state != PATTERN_CACHE_READY ||
+        entry->pattern_index != requested_next_pattern_ ||
+        entry->current_generation != requested_next_generation_) return false;
+
+    if (!PatternResidency_AssignRole(PatternCacheRole::Play, (uint8_t)next_entry)) return false;
+    completed_loops_ += requested_next_skipped_loops_;
+    play_pattern_index_ = requested_next_pattern_;
+    bank_.ChainSetPosition(requested_next_chain_position_);
+    (void)PatternResidency_ClearRole(PatternCacheRole::Next);
+    next_prepare_needed_ = true;
+    return true;
+}
+
+bool SequencerDevice::EnsurePlayPattern(uint8_t pattern_index)
+{
+    PROBE_READ_SOURCE(READ_SOURCE_PLAY_LOAD_SYNC);
+    const PatternDirectoryEntry* directory = PatternResidency_GetDirectoryEntry(pattern_index);
+    if (!directory || directory->status == PATTERN_DIRECTORY_INVALID) return false;
+    /* 0 = unknown directory entry: the load below also discovers its generation. */
+    const uint32_t expected_generation =
+        directory->status == PATTERN_DIRECTORY_VALID ? directory->generation : 0u;
+#if defined(S12_TIME_COMMIT_PROBE)
+    TransportProbe_EnsureBegin(pattern_index, playing_ ? 1u : 0u, expected_generation);
+    EnsurePlayProbeScope ensure_probe{&pending_musical_ticks_, false, false};
+#endif
+    (void)PatternResidency_CancelPendingRole(PatternCacheRole::Next);
+    (void)PatternResidency_ClearRole(PatternCacheRole::Play);
+    PatternCacheRequestStatus request = PatternResidency_RequestRole(
+        PatternCacheRole::Play, pattern_index, expected_generation);
+#if defined(S12_TIME_COMMIT_PROBE)
+    TransportProbe_EnsureRequest((uint8_t)request);
+    if (request == PATTERN_CACHE_REQUEST_LOAD_STARTED)
+    {
+        TransportProbe_EnsureWaitBegin();
+        ensure_probe.waiting = true;
+    }
+#endif
+    while (request == PATTERN_CACHE_REQUEST_LOAD_STARTED)
+    {
+#if defined(S12_TIME_COMMIT_PROBE)
+        TransportProbe_EnsureWaitIteration();
+#endif
+        const PatternCacheServiceStatus status = PatternResidency_ServiceIo();
+        if (status == PATTERN_CACHE_SERVICE_BUSY) continue;
+        if (status != PATTERN_CACHE_SERVICE_DONE) return false;
+        request = PATTERN_CACHE_REQUEST_READY;
+    }
+    if (request != PATTERN_CACHE_REQUEST_READY) return false;
+    const int8_t entry = PatternResidency_GetRoleEntry(PatternCacheRole::Play);
+    if (entry < 0 || !PatternResidency_ApplyLazyProjections((uint8_t)entry, &bank_.GetSong().time_sig))
+        return false;
+    play_pattern_index_ = pattern_index;
+#if defined(S12_TIME_COMMIT_PROBE)
+    ensure_probe.ok = true;
+#endif
+    return true;
+}
+
+bool SequencerDevice::ResumeHeldPatternBoundary()
+{
+    if (!pattern_boundary_held_ || !PromotePreparedNext()) return false;
+    pattern_boundary_held_ = false;
+    current_bar_ = 0u;
+    current_step_in_bar_ = 0u;
+    ApplyCurrentStepBehavior();
+    step_changed_ = true;
+    output_snapshot_pending_ = true;
+    output_snapshot_forced_ = true;
+    return true;
+}
+
+void SequencerDevice::ServicePatternResidency()
+{
+    PROBE_READ_SOURCE(READ_SOURCE_RESIDENCY_SERVICE);
+    const PatternCacheServiceStatus status = PatternResidency_ServiceIo();
+    if (status == PATTERN_CACHE_SERVICE_DONE)
+    {
+        const int8_t next_entry = PatternResidency_GetRoleEntry(PatternCacheRole::Next);
+        if (next_entry >= 0)
+            (void)PatternResidency_ApplyLazyProjections((uint8_t)next_entry, &bank_.GetSong().time_sig);
+        const int8_t edit_entry = PatternResidency_GetRoleEntry(PatternCacheRole::Edit);
+        if (pending_edit_pattern_index_ != 0xFFu && edit_entry >= 0)
+        {
+            const PatternCacheEntry* entry = PatternResidency_GetCacheEntry((uint8_t)edit_entry);
+            if (entry && entry->pattern_index == pending_edit_pattern_index_)
+            {
+                edit_pattern_index_ = pending_edit_pattern_index_;
+                pending_edit_pattern_index_ = 0xFFu;
+                (void)PatternResidency_ApplyLazyProjections((uint8_t)edit_entry, &bank_.GetSong().time_sig);
+                status_changed_ = true;
+            }
+        }
+    }
+    if (pattern_boundary_held_) (void)ResumeHeldPatternBoundary();
+    if (pending_edit_pattern_index_ != 0xFFu &&
+        status != PATTERN_CACHE_SERVICE_FAILED && status != PATTERN_CACHE_SERVICE_STALE)
+    {
+        const PatternDirectoryEntry* directory =
+            PatternResidency_GetDirectoryEntry(pending_edit_pattern_index_);
+        if (directory && directory->status == PATTERN_DIRECTORY_INVALID)
+        {
+            /* Corrupt/unusable selection: keep the current EDIT Pattern. */
+            pending_edit_pattern_index_ = 0xFFu;
+        }
+        else if (directory)
+        {
+            const PatternCacheRequestStatus request = PatternResidency_RequestEdit(
+                pending_edit_pattern_index_,
+                directory->status == PATTERN_DIRECTORY_VALID ? directory->generation : 0u);
+            if (request == PATTERN_CACHE_REQUEST_READY)
+            {
+                edit_pattern_index_ = pending_edit_pattern_index_;
+                pending_edit_pattern_index_ = 0xFFu;
+            }
+        }
+    }
+    if (status != PATTERN_CACHE_SERVICE_BUSY && next_prepare_needed_ &&
+        PatternResidency_GetRoleEntry(PatternCacheRole::Next) < 0)
+        (void)PrepareNextPattern();
+    if (status != PATTERN_CACHE_SERVICE_BUSY && pending_edit_pattern_index_ == 0xFFu &&
+        !(next_prepare_needed_ && PatternResidency_GetRoleEntry(PatternCacheRole::Next) < 0))
+        (void)PatternResidency_ServiceDirectoryWarm();
+}
+
+void SequencerDevice::MarkEditPatternMutated()
+{
+    const int8_t entry = PatternResidency_GetRoleEntry(PatternCacheRole::Edit);
+    if (entry >= 0) (void)PatternResidency_MarkMutated((uint8_t)entry);
+}
+
+bool SequencerDevice::GetEditStepSlot(uint8_t step_index, sequencer::StepSlot* out_step) const
+{
+    if (!out_step || step_index >= kStepCount) return false;
+    const int8_t entry_index = PatternResidency_GetRoleEntry(PatternCacheRole::Edit);
+    if (entry_index < 0) return false;
+    const PatternCacheEntry* entry = PatternResidency_GetCacheEntry((uint8_t)entry_index);
+    if (!entry || entry->residency_state != PATTERN_CACHE_READY) return false;
+    *out_step = entry->pattern.steps[step_index];
+    return true;
+}
+
+bool SequencerDevice::ReplaceEditStepSlot(uint8_t step_index, const sequencer::StepSlot& source)
+{
+    if (playing_ || step_index >= kStepCount) return false;
+    const int8_t entry_index = PatternResidency_GetRoleEntry(PatternCacheRole::Edit);
+    if (entry_index < 0) return false;
+    const PatternCacheEntry* entry = PatternResidency_GetCacheEntry((uint8_t)entry_index);
+    if (!entry || entry->residency_state != PATTERN_CACHE_READY) return false;
+
+    Pattern& edit_pattern = EditPattern();
+    const uint8_t repeat_count = StepsPerBar(bank_.GetSong().time_sig, edit_pattern.step_division);
+    if (repeat_count == 0u) return false;
+
+    const uint8_t destination_length = (uint8_t)(step_index + 1u);
+    if (destination_length > edit_pattern.step_count)
+        edit_pattern.step_count = destination_length;
+
+    StepSlot& destination = edit_pattern.steps[step_index];
+    destination.bar_state = source.bar_state;
+    destination.duration_multiplier = source.duration_multiplier;
+    destination.note_ledger = source.note_ledger;
+    destination.event_length_packed = source.event_length_packed;
+    destination.lane_slots = source.lane_slots;
+    destination.lane_override_mask = source.lane_override_mask;
+    memcpy(destination.custom_chord_name, source.custom_chord_name,
+           sizeof(destination.custom_chord_name));
+    destination.velocity = source.velocity;
+    destination.probability = source.probability;
+
+    destination.repeat_count = repeat_count;
+    RefreshSlotSummary(destination);
+    UpdateLegacyStepTypeProjection(destination);
+    MarkEditPatternMutated();
+    return true;
 }
 
 /* ── SetBpm — public BPM setter for UI layer ────────────────────────────── */
@@ -542,10 +857,28 @@ uint8_t SequencerDevice::GetPatternStepCount() const
     return EditPattern().step_count;
 }
 
-void SequencerDevice::SetPatternStepDivision(uint8_t step_division)
+bool SequencerDevice::SetPatternStepDivision(uint8_t step_division)
 {
+    Pattern& edit_pattern = EditPattern();
+    if (step_division == edit_pattern.step_division) return true;
+
     const TimeSig& time_sig = bank_.GetSong().time_sig;
-    (void)SetPatternTiming(step_division, time_sig.numerator, time_sig.denominator);
+    if (StepsPerBar(time_sig, step_division) == 0u) return false;
+    if (IsCoarserDivisionChange(edit_pattern.step_division, step_division) &&
+        !PatternCompatibleWithCoarserDivision(edit_pattern, step_division))
+        return false;
+
+    edit_pattern.step_division = step_division;
+    const int8_t edit_entry = PatternResidency_GetRoleEntry(PatternCacheRole::Edit);
+    if (edit_entry >= 0)
+        (void)PatternResidency_ApplyLazyProjections((uint8_t)edit_entry, &time_sig);
+
+    const uint8_t steps_in_bar = StepsPerBar(time_sig, PlayPattern().step_division);
+    if (current_step_in_bar_ >= steps_in_bar)
+        current_step_in_bar_ = (uint8_t)(steps_in_bar - 1u);
+    RecalculateStepIntervalMs();
+    RecalculateStepTicks();
+    return true;
 }
 
 void SequencerDevice::SetPatternArpMode(sequencer::ArpMode mode)
@@ -581,6 +914,7 @@ void SequencerDevice::SetPatternArpRate(sequencer::ArpRate rate)
 
 bool SequencerDevice::SetPatternTiming(uint8_t step_division, uint8_t numerator, uint8_t denominator)
 {
+    PROBE_READ_SOURCE(READ_SOURCE_TIME_TS_VALIDATION);
     const TimeSig proposed_time_sig{numerator, denominator};
     if (StepsPerBar(proposed_time_sig, step_division) == 0u) return false;
 
@@ -592,20 +926,25 @@ bool SequencerDevice::SetPatternTiming(uint8_t step_division, uint8_t numerator,
         }
     }
 
-    Song& song = bank_.GetSong();
     for (uint8_t i = 0u; i < kPatternCount; ++i)
     {
+        /* Fail closed without I/O: an entry not yet read since boot cannot be proven compatible. */
+        const PatternDirectoryEntry* directory = PatternResidency_GetDirectoryEntry(i);
+        if (!directory || directory->status != PATTERN_DIRECTORY_VALID) return false;
         const uint8_t division = (i == edit_pattern_index_)
             ? step_division
-            : song.patterns[i].step_division;
+            : PatternDirectory_GetStepDivision(directory);
         if (StepsPerBar(proposed_time_sig, division) == 0u) return false;
     }
 
+    Song& song = bank_.GetSong();
     song.time_sig = proposed_time_sig;
     EditPattern().step_division = step_division;
-    for (uint8_t i = 0u; i < kPatternCount; ++i)
+    for (uint8_t entry = 0u; entry < PATTERN_RESIDENCY_CACHE_ENTRY_COUNT; ++entry)
     {
-        NormalizePatternDivisionCadence(song.patterns[i], song.time_sig);
+        const PatternCacheEntry* cached = PatternResidency_GetCacheEntry(entry);
+        if (cached && cached->residency_state == PATTERN_CACHE_READY)
+            (void)PatternResidency_ApplyLazyProjections(entry, &song.time_sig);
     }
 
     const uint8_t steps_in_bar = StepsPerBar(song.time_sig, PlayPattern().step_division);
@@ -757,18 +1096,33 @@ uint8_t SequencerDevice::GetPatternRepeatCount() const
 
 void SequencerDevice::SetCurrentPatternIndex(uint8_t pattern_index)
 {
+    PROBE_READ_SOURCE(READ_SOURCE_PATTERN_SELECT);
     if (pattern_index >= kPatternCount) return;
-
-    /* Edit target only: PatternChain and transport/bar/step state are
-     * deliberately left untouched so editing never disturbs playback. */
-    edit_pattern_index_ = pattern_index;
-    NormalizePatternDivisionCadence(EditPattern(), bank_.GetSong().time_sig);
-    status_changed_ = true;
+    const PatternDirectoryEntry* directory = PatternResidency_GetDirectoryEntry(pattern_index);
+    if (!directory || directory->status == PATTERN_DIRECTORY_INVALID) return;
+    if (pending_edit_pattern_index_ != 0xFFu && pending_edit_pattern_index_ != pattern_index)
+        (void)PatternResidency_CancelPendingLoad(PatternCacheRole::Edit);
+    /* Unknown entry: start an async discovery load; EDIT switches only after it validates. */
+    const PatternCacheRequestStatus request = PatternResidency_RequestEdit(
+        pattern_index, directory->status == PATTERN_DIRECTORY_VALID ? directory->generation : 0u);
+    if (request == PATTERN_CACHE_REQUEST_READY)
+    {
+        edit_pattern_index_ = pattern_index;
+        const int8_t entry = PatternResidency_GetRoleEntry(PatternCacheRole::Edit);
+        if (entry >= 0) (void)PatternResidency_ApplyLazyProjections((uint8_t)entry, &bank_.GetSong().time_sig);
+        status_changed_ = true;
+    }
+    else if (request == PATTERN_CACHE_REQUEST_LOAD_STARTED || request == PATTERN_CACHE_REQUEST_WAIT)
+    {
+        pending_edit_pattern_index_ = pattern_index;
+    }
 }
 
 void SequencerDevice::SetPlaybackSource(PlaybackSource source)
 {
     playback_source_ = source;
+    (void)PatternResidency_CancelPendingRole(PatternCacheRole::Next);
+    next_prepare_needed_ = true;
 }
 
 PlaybackSource SequencerDevice::GetPlaybackSource() const
@@ -799,6 +1153,8 @@ void SequencerDevice::SetChainLength(uint8_t length)
     {
         chain.position = 0;
     }
+    (void)PatternResidency_CancelPendingRole(PatternCacheRole::Next);
+    next_prepare_needed_ = true;
 }
 
 uint8_t SequencerDevice::GetChainLength() const
@@ -813,6 +1169,8 @@ void SequencerDevice::SetChainPatternAt(uint8_t pos, uint8_t pattern_index)
     if (pattern_index >= kPatternCount) return;
     if (pos >= chain.length) return;
     chain.pattern_indices[pos] = pattern_index;
+    (void)PatternResidency_CancelPendingRole(PatternCacheRole::Next);
+    next_prepare_needed_ = true;
 }
 
 uint8_t SequencerDevice::GetChainPatternAt(uint8_t pos) const
@@ -1411,10 +1769,6 @@ void SequencerDevice::FinalizeImportedSong()
     {
         loaded_song.time_sig = TimeSig{};
     }
-    for (uint8_t i = 0u; i < kPatternCount; ++i)
-    {
-        NormalizePatternDivisionCadence(loaded_song.patterns[i], loaded_song.time_sig);
-    }
     current_bar_ = 0;
     current_step_in_bar_ = 0;
     repeat_current_ = 0;
@@ -1422,7 +1776,7 @@ void SequencerDevice::FinalizeImportedSong()
     elapsed_step_ms_ = 0;
 
     RecalculateStepIntervalMs();
-    ApplyCurrentStepBehavior();
+    if (residency_ready_) ApplyCurrentStepBehavior();
     step_changed_ = true;
     status_changed_ = true;
 }
@@ -1569,31 +1923,43 @@ void SequencerDevice::TickMusical()
 {
     ++tick_musical_count_;
 
-    if (!playing_)
-    {
-        return;
-    }
+    if (!playing_ || pattern_boundary_held_) return;
+    ++pending_musical_ticks_;
+}
 
-    if (arp_.HasNotes() && PlayPattern().arp_mode != sequencer::ArpMode::Off && arp_event_ticks_ > 0u)
-    {
-        ++arp_ticks_accum_;
+void SequencerDevice::ServicePendingMusicalTicks()
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    uint32_t pending = pending_musical_ticks_;
+    pending_musical_ticks_ = 0u;
+    __set_PRIMASK(primask);
 
-        while (arp_ticks_accum_ >= arp_event_ticks_)
+    if (!playing_ || pattern_boundary_held_) return;
+
+    while (pending-- > 0u)
+    {
+        if (arp_.HasNotes() && PlayPattern().arp_mode != sequencer::ArpMode::Off && arp_event_ticks_ > 0u)
         {
-            arp_ticks_accum_ -= arp_event_ticks_;
-            arp_.Advance();
-            arp_note_changed_ = true;
-            RetriggerGate(1u);   /* force a real gate edge on each arp event */
+            ++arp_ticks_accum_;
+
+            while (arp_ticks_accum_ >= arp_event_ticks_)
+            {
+                arp_ticks_accum_ -= arp_event_ticks_;
+                arp_.Advance();
+                arp_note_changed_ = true;
+                output_snapshot_pending_ = true;
+                RetriggerGate(1u);
+            }
         }
-    }
 
-    ++musical_ticks_accum_;
-
-    while (musical_ticks_accum_ >= musical_step_ticks_)
-    {
-        musical_ticks_accum_ -= musical_step_ticks_;
-        ++pending_step_events_;
-        ++pending_step_enqueue_count_;
+        ++musical_ticks_accum_;
+        while (musical_ticks_accum_ >= musical_step_ticks_)
+        {
+            musical_ticks_accum_ -= musical_step_ticks_;
+            ++pending_step_events_;
+            ++pending_step_enqueue_count_;
+        }
     }
 }
 
@@ -1631,7 +1997,26 @@ bool SequencerDevice::ServiceOnePendingStep()
 
     ++service_one_step_count_;
     AdvanceStep();
+    output_snapshot_pending_ = true;
     return true;
+}
+
+bool SequencerDevice::ConsumeOutputSnapshotRequest(bool* forced_refresh)
+{
+    if (!output_snapshot_pending_) return false;
+    if (forced_refresh) *forced_refresh = output_snapshot_forced_;
+    output_snapshot_pending_ = false;
+    output_snapshot_forced_ = false;
+    return true;
+}
+
+void SequencerDevice::CommitOutputSnapshot()
+{
+    if (!gate_activation_pending_) return;
+    gate_activation_pending_ = false;
+    gate_active_ = true;
+    gate_elapsed_ms_ = 0u;
+    gate_changed_ = true;
 }
 
 void SequencerDevice::DrainPendingStepEvents()
@@ -1688,30 +2073,28 @@ void SequencerDevice::Process()
 
 void SequencerDevice::Start()
 {
+    TRANSPORT_DEVICE_PROBE_SCOPE();
     if (playing_) return;
     playing_         = true;
     elapsed_step_ms_ = 0;
     musical_ticks_accum_ = 0u;
     pending_step_events_ = 0u;
+    pending_musical_ticks_ = 0u;
     max_pending_step_events_ = 0u;
     pending_step_backlog_count_ = 0u;
 
     if (playback_source_ == PlaybackSource::SongChain)
     {
         bank_.ChainReset();
-        play_pattern_index_ = bank_.ChainCurrentPatternIndex();
-        if (play_pattern_index_ >= kPatternCount)
-        {
-            play_pattern_index_ = 0;
-        }
+        uint8_t index = bank_.ChainCurrentPatternIndex();
+        if (index >= kPatternCount) index = 0u;
+        if (!EnsurePlayPattern(index)) { playing_ = false; return; }
     }
     else
     {
-        play_pattern_index_ = edit_pattern_index_;
-        if (play_pattern_index_ >= kPatternCount)
-        {
-            play_pattern_index_ = 0;
-        }
+        uint8_t index = edit_pattern_index_;
+        if (index >= kPatternCount) index = 0u;
+        if (!EnsurePlayPattern(index)) { playing_ = false; return; }
     }
 
     current_bar_         = 0;
@@ -1720,6 +2103,7 @@ void SequencerDevice::Start()
     step_direction_      = 1;
     gate_retrigger_pending_  = false;
     gate_retrigger_delay_ms_ = 0u;
+    gate_activation_pending_ = false;
     arp_.Init();
     arp_ticks_accum_  = 0;
     arp_event_ticks_  = 0;
@@ -1728,6 +2112,9 @@ void SequencerDevice::Start()
     RecalculateStepIntervalMs();
     RecalculateStepTicks();
     ApplyCurrentStepBehavior();
+    (void)PatternResidency_CancelPendingRole(PatternCacheRole::Next);
+    next_prepare_needed_ = true;
+    (void)PrepareNextPattern();
     step_changed_   = true;
     status_changed_ = true;
 
@@ -1745,6 +2132,7 @@ void SequencerDevice::Stop()
     elapsed_step_ms_ = 0;
     gate_retrigger_pending_  = false;
     gate_retrigger_delay_ms_ = 0u;
+    gate_activation_pending_ = false;
     GateOff();
     status_changed_  = true;
 
@@ -1757,11 +2145,13 @@ void SequencerDevice::Stop()
 
 void SequencerDevice::Reset()
 {
+    TRANSPORT_DEVICE_PROBE_SCOPE();
     current_bar_           = 0;
     current_step_in_bar_   = 0;
     elapsed_step_ms_       = 0;
     musical_ticks_accum_   = 0u;
     pending_step_events_   = 0u;
+    pending_musical_ticks_ = 0u;
     max_pending_step_events_ = 0u;
     pending_step_backlog_count_ = 0u;
     repeat_current_        = 0;
@@ -1774,22 +2164,19 @@ void SequencerDevice::Reset()
     if (playback_source_ == PlaybackSource::SongChain)
     {
         bank_.ChainReset();
-        play_pattern_index_ = bank_.ChainCurrentPatternIndex();
-        if (play_pattern_index_ >= kPatternCount)
-        {
-            play_pattern_index_ = 0;
-        }
+        uint8_t index = bank_.ChainCurrentPatternIndex();
+        if (index >= kPatternCount) index = 0u;
+        if (!EnsurePlayPattern(index)) return;
     }
     else
     {
-        play_pattern_index_ = edit_pattern_index_;
-        if (play_pattern_index_ >= kPatternCount)
-        {
-            play_pattern_index_ = 0;
-        }
+        uint8_t index = edit_pattern_index_;
+        if (index >= kPatternCount) index = 0u;
+        if (!EnsurePlayPattern(index)) return;
     }
     gate_retrigger_pending_  = false;
     gate_retrigger_delay_ms_ = 0u;
+    gate_activation_pending_ = false;
     GateOff();
     RecalculateStepIntervalMs();
     RecalculateStepTicks();
@@ -1802,13 +2189,13 @@ void SequencerDevice::Reset()
 
 void SequencerDevice::GateOn()
 {
-    gate_active_     = true;
-    gate_elapsed_ms_ = 0;
-    gate_changed_    = true;
+    gate_activation_pending_ = true;
+    output_snapshot_pending_ = true;
 }
 
 void SequencerDevice::GateOff()
 {
+    gate_activation_pending_ = false;
     if (!gate_active_) return;
     gate_active_     = false;
     gate_elapsed_ms_ = 0;
@@ -1854,7 +2241,7 @@ bool SequencerDevice::ConsumeCvEvent(uint8_t* note, bool* gate)
 /*                                                                            */
 void SequencerDevice::RecalculateStepIntervalMs()
 {
-    uint32_t bpm = bank_.GetEffectiveBpm(play_pattern_index_);
+    uint32_t bpm = bank_.GetEffectiveBpm(PlayPattern().tempo_multiplier);
     if (bpm == 0) bpm = 1;
 
     uint8_t division = PlayPattern().step_division;
@@ -1902,6 +2289,11 @@ uint8_t SequencerDevice::GetPlayPatternIndex() const
 uint32_t SequencerDevice::GetPendingStepEvents() const
 {
     return pending_step_events_;
+}
+
+uint32_t SequencerDevice::GetPendingMusicalTicks() const
+{
+    return pending_musical_ticks_;
 }
 
 uint32_t SequencerDevice::GetMaxPendingStepEvents() const
@@ -1977,8 +2369,20 @@ void SequencerDevice::AdvanceStep()
                     repeat_current_ = 0;
                     if (playback_source_ == PlaybackSource::SongChain)
                     {
-                        bank_.ChainAdvance();
-                        play_pattern_index_ = bank_.ChainCurrentPatternIndex();
+                        if (!PromotePreparedNext())
+                        {
+                            if (requested_next_stops_transport_)
+                            {
+                                completed_loops_ += requested_next_skipped_loops_;
+                                Stop();
+                                return false;
+                            }
+                            pattern_boundary_held_ = true;
+                            GateOff();
+                            gate_retrigger_pending_ = false;
+                            arp_.Init();
+                            return false;
+                        }
                     }
                     status_changed_ = true;
                 }
@@ -1995,8 +2399,20 @@ void SequencerDevice::AdvanceStep()
                     step_direction_ = 1;
                     if (playback_source_ == PlaybackSource::SongChain)
                     {
-                        bank_.ChainAdvance();
-                        play_pattern_index_ = bank_.ChainCurrentPatternIndex();
+                        if (!PromotePreparedNext())
+                        {
+                            if (requested_next_stops_transport_)
+                            {
+                                completed_loops_ += requested_next_skipped_loops_;
+                                Stop();
+                                return false;
+                            }
+                            pattern_boundary_held_ = true;
+                            GateOff();
+                            gate_retrigger_pending_ = false;
+                            arp_.Init();
+                            return false;
+                        }
                     }
                     status_changed_ = true;
                 }

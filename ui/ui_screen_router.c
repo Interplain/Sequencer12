@@ -158,6 +158,24 @@ UiScreen* UI_ScreenRouter_GetActive(void)
     return s_router.stack[s_router.depth - 1];
 }
 
+uint8_t UI_ScreenRouter_ReturnTo(UiScreen* target, ScreenExitReason reason)
+{
+    uint8_t target_depth = 0u;
+    for (uint8_t index = 0u; index < s_router.depth; ++index)
+    {
+        if (s_router.stack[index] == target) target_depth = (uint8_t)(index + 1u);
+    }
+    if (!target || target_depth == 0u) return 0u;
+    while (s_router.depth > target_depth)
+    {
+        Router_Deactivate(s_router.stack[s_router.depth - 1u], 1u, reason);
+        s_router.stack[--s_router.depth] = NULL;
+    }
+    target->is_active = 1u;
+    if (target->on_draw) target->on_draw();
+    return 1u;
+}
+
 uint8_t UI_ScreenRouter_GetDepth(void)
 {
     return s_router.depth;

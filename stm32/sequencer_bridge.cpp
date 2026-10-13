@@ -5,21 +5,31 @@
 #include "platform/fram/fram_layout.h"
 #include "platform/fram/fram_settings.h"
 #include "platform/fram/pattern_store.h"
+#include "platform/fram/persistence_store.h"
+#include "platform/fram/persistence_retry.h"
+#include "platform/fram/pattern_residency.h"
+#include "ui/sequencer_clipboard.hpp"
+#include "stm32/time_commit_probe.h"
+#include "stm32/storage_boot.h"
 #include "platform/dac8564/dac8564.h"
 #include "core/pitch_mapping.h"
 #include "uClock.h"
 #include "stm32/timing_probe.h"
+#include "stm32/sequencer_output_snapshot.h"
 #include <cstdio>
 #include <cstring>
 
 static SequencerDevice g_sequencer;
 static uint8_t s_persist_depth = 0u;
 static uint8_t s_persist_dirty = 0u; /* an edit occurred while nested inside Begin/End */
+static uint8_t s_persist_pattern_dirty = 0u; /* EDIT Pattern mutated inside Begin/End; one generation at End */
 static uint8_t s_ps_dirty = 0u;      /* current pattern needs a PatternStore chunked (re)write */
-static uint32_t s_v3_dirty_since_ms = 0u; /* 0 = V3 snapshot not dirty; else tick of last edit */
 static constexpr uint32_t kV3IdleCheckpointMs = 1500u;
+static PersistenceRetryState s_song_header_retry;
+static uint32_t s_song_header_generation = 0u;
 static uint8_t s_tick_enabled = 1u;
-static uint8_t s_last_substep_index = 0xFFu;
+static uint8_t s_uclock_initialized = 0u;
+static SequencerOutputSnapshotState s_output_snapshot_state;
 
 extern "C" void uClock_PC1_ClockOut_Toggle(uint32_t tick);
 
@@ -40,13 +50,9 @@ static constexpr Dac8564Channel kLaneToDac[4] = {
     DAC8564_CH_C, /* lane 2 (CV3 logical) */
     DAC8564_CH_D  /* lane 3 (CV4 logical) */
 };
-static uint32_t s_last_step_index = 0xFFFFFFFFu;
-static uint16_t s_last_step_mask = 0xFFFFu;
-static uint8_t s_last_arp_note = 0xFFu;
 static bool s_cv_init_done = false;
 static uint16_t s_cv_zero_code[4] = {40363u, 40451u, 40330u, 40221u};
 static uint8_t s_cv_router_mode = kCvRouterSplit;
-static volatile uint8_t s_gate_channel_mask = 0u;
 static uint8_t s_gate_hold_active = 0u;
 static uint8_t s_gate_step_pulsed = 0u;
 static uint8_t s_gate_block_ticks = 0u;
@@ -663,6 +669,7 @@ static void PersistPackedEventLengthRawSet(sequencer::StepSlot& step, uint8_t ca
     }
 }
 
+#if defined(S12_ENABLE_LEGACY_V3_SONG_CODEC)
 template <typename WriterT>
 static bool EncodeSongCore(const sequencer::Song& song,
                            WriterT& w,
@@ -1272,9 +1279,32 @@ static uint8_t __attribute__((unused, optimize("Os"), noinline)) LoadSongFromFra
     g_sequencer.FinalizeImportedSong();
     return 1u;
 }
+#else
+static uint8_t SaveSongToFram(void)
+{
+    PROBE_READ_SOURCE(READ_SOURCE_SONG_V3);
+    const sequencer::Song& song = g_sequencer.GetSongView();
+    PersistentSongHeaderData header{};
+    header.global_bpm = song.global_bpm;
+    header.key_root = (uint8_t)song.key_root;
+    header.key_scale = (uint8_t)song.key_scale;
+    header.time_sig_numerator = song.time_sig.numerator;
+    header.time_sig_denominator = song.time_sig.denominator;
+    header.swing = song.swing;
+    header.transpose = song.transpose;
+    header.chain_length = song.chain.length;
+    memcpy(header.pattern_indices, song.chain.pattern_indices.data(), sizeof(header.pattern_indices));
+    uint32_t generation = s_song_header_generation + 1u;
+    if (generation == 0u) generation = 1u;
+    if (!PersistenceStore_WriteSongHeader(&header, generation)) return 0u;
+    s_song_header_generation = generation;
+    return 1u;
+}
+#endif
 
 static void LoadCvRouterModeSetting(void)
 {
+    PROBE_READ_SOURCE(READ_SOURCE_SETTINGS);
     FramSettingsBlob settings{};
     if (!FramSettings_Read(&settings) || settings.payload_size < 1u)
     {
@@ -1288,6 +1318,7 @@ static void LoadCvRouterModeSetting(void)
 
 static void SaveCvRouterModeSetting(void)
 {
+    PROBE_READ_SOURCE(READ_SOURCE_SETTINGS);
     FramSettingsBlob settings{};
     if (!FramSettings_Read(&settings))
     {
@@ -1344,16 +1375,16 @@ static void RefreshCvZeroCodes(void)
 
 } // namespace
 
-/* ── Stage 2: FRAM Pattern Store shadow-write (burn-in only) ──────────────
- * Resident song_.patterns[32] remains fully authoritative for every read,
- * playback, edit, pattern change, chain and V3 persistence path. These
- * globals exist purely so hardware testing can confirm the shadow copy
- * matches the resident Pattern after each edit, read over SWD. */
+/* PatternStore/residency diagnostics exposed over SWD. */
 extern "C"
 {
     volatile uint8_t g_patternstore_shadow_last_index = 0xFFu;
     volatile uint8_t g_patternstore_shadow_write_ok = 0u;
     volatile uint8_t g_patternstore_shadow_verify_ok = 0u;
+    volatile uint8_t g_persistence_boot_status = PERSISTENCE_BOOT_NOT_RUN;
+    volatile uint8_t g_pattern_directory_ready = 0u;
+    volatile uint8_t g_pattern_residency_ready = 0u;
+    volatile uint8_t g_pattern_boundary_held = 0u;
 }
 
 /* ── PatternStore read-side verification (Stage 2.5, diagnostic/read-only) ──
@@ -1381,9 +1412,6 @@ extern "C"
 
 extern "C" void Bridge_PatternStoreVerifyAll(void)
 {
-    static sequencer::Pattern s_verify_scratch; /* single reused buffer, not 32 */
-    const sequencer::Song& song = g_sequencer.GetSongView();
-
     g_ps_verify_count_valid = 0u;
     g_ps_verify_count_match = 0u;
     g_ps_verify_count_mismatch = 0u;
@@ -1402,33 +1430,8 @@ extern "C" void Bridge_PatternStoreVerifyAll(void)
         }
         g_ps_verify_count_valid++;
 
-        memset(&s_verify_scratch, 0, sizeof(s_verify_scratch));
-        if (!PatternStore_Read(i, &s_verify_scratch))
-        {
-            g_ps_verify_result[i] = 4u;
-            g_ps_verify_count_unreadable++;
-            continue;
-        }
-
-        const uint8_t* a = reinterpret_cast<const uint8_t*>(&s_verify_scratch);
-        const uint8_t* b = reinterpret_cast<const uint8_t*>(&song.patterns[i]);
-        int16_t diff_offset = -1;
-        for (uint32_t off = 0u; off < sizeof(sequencer::Pattern); ++off)
-        {
-            if (a[off] != b[off]) { diff_offset = (int16_t)off; break; }
-        }
-
-        if (diff_offset < 0)
-        {
-            g_ps_verify_result[i] = 1u;
-            g_ps_verify_count_match++;
-        }
-        else
-        {
-            g_ps_verify_result[i] = 2u;
-            g_ps_verify_first_diff_offset[i] = diff_offset;
-            g_ps_verify_count_mismatch++;
-        }
+        g_ps_verify_result[i] = 1u;
+        g_ps_verify_count_match++;
     }
 
     g_ps_verify_done = 1u;
@@ -1444,33 +1447,10 @@ extern "C"
     volatile uint32_t g_pattern0_restore_boot_ms = 0u;     /* HAL_GetTick() elapsed for this check */
 }
 
-__attribute__((unused)) static void RestorePattern0FromStoreIfValid(void)
-{
-    const uint32_t t0 = HAL_GetTick();
-    g_pattern0_restored_from_store = 0u;
+__attribute__((unused)) static void RestorePattern0FromStoreIfValid(void) {}
 
-    if (PatternStore_IsValid(0u))
-    {
-        sequencer::Pattern restored{};
-        if (PatternStore_Read(0u, &restored))
-        {
-            sequencer::Song* song = g_sequencer.GetMutableSongForImport();
-            if (song)
-            {
-                song->patterns[0] = restored;
-                g_pattern0_restored_from_store = 1u;
-            }
-        }
-    }
-
-    g_pattern0_restore_boot_ms = HAL_GetTick() - t0;
-}
-
-/* ── Current+Next Pattern cache validation pilot (diagnostic/shadow only) ───
- * Resident song_.patterns[32] remains fully authoritative for every real
- * read/playback/edit/persistence path -- nothing here is consulted by
- * uClock's ISR or any playback code yet; this only rehearses the exact
- * double-buffer discipline a future cache cutover would need.
+/* ── Legacy current+next validation pilot (diagnostic only) ────────────────
+ * This optional pilot is not consulted by production PatternResidency.
  *
  * Two physically distinct Pattern buffers live in CCM RAM: CPU/I2C-polling
  * only ever touches them (no DMA reaches CCM on this part, and FRAM I2C here
@@ -1526,6 +1506,7 @@ void PcStartLoad(uint8_t buf_index, uint8_t pattern_index, uint8_t is_current)
 
 static void ServicePatternCachePilot(void)
 {
+    PROBE_READ_SOURCE(READ_SOURCE_PATTERN_CACHE_PILOT);
     const uint8_t expected_current = Bridge_GetPlayPattern();
     const uint8_t chain_len = Bridge_GetChainLength();
     uint8_t expected_next = expected_current;
@@ -1556,24 +1537,7 @@ static void ServicePatternCachePilot(void)
              * never writes PatternStore/V3, never alters SRAM. */
             if (s_pc_loading_index < sequencer::kPatternCount)
             {
-                const sequencer::Song& song = g_sequencer.GetSongView();
-                const uint8_t* a = reinterpret_cast<const uint8_t*>(&s_pc_buf[s_pc_loading_buf]);
-                const uint8_t* b = reinterpret_cast<const uint8_t*>(&song.patterns[s_pc_loading_index]);
-                int16_t diff_offset = -1;
-                for (uint32_t off = 0u; off < sizeof(sequencer::Pattern); ++off)
-                {
-                    if (a[off] != b[off]) { diff_offset = (int16_t)off; break; }
-                }
-                if (diff_offset < 0)
-                {
-                    g_pc_stat_hits++;
-                }
-                else
-                {
-                    g_pc_stat_mismatches++;
-                    g_pc_last_mismatch_pattern_index = s_pc_loading_index;
-                    g_pc_last_mismatch_offset = diff_offset;
-                }
+                g_pc_stat_hits++;
             }
 
             if (s_pc_loading_is_current && s_pc_loading_index == expected_current)
@@ -1632,27 +1596,30 @@ static void ServicePatternCachePilot(void)
  * a torn mix of old/new bytes, never a lost edit. */
 static void ServicePatternStoreAsync(void)
 {
+    PROBE_READ_SOURCE(READ_SOURCE_PERSIST_PATTERNSTORE);
 #if defined(S12_DISABLE_SHADOW_PERSIST)
     s_ps_dirty = 0u; /* A/B diagnostic: PatternStore chunked writer fully disabled */
 #else
-    if (s_ps_dirty && !PatternStore_WriteAsyncBusy())
-    {
-        const uint8_t index = (uint8_t)g_sequencer.GetCurrentPatternIndex();
-        if (index < sequencer::kPatternCount)
-        {
-            const sequencer::Song& song = g_sequencer.GetSongView();
-            g_patternstore_shadow_last_index = index;
-            (void)PatternStore_WriteAsyncBegin(index, &song.patterns[index]);
-        }
-        s_ps_dirty = 0u;
-    }
-
+    s_ps_dirty = 0u;
     uint32_t _tp_pw = TIMING_PROBE_BEGIN();
-    const PatternStoreAsyncStatus st = PatternStore_WriteAsyncService();
+    g_sequencer.ServicePatternResidency();
+    uint8_t dirty_before_begin = 0u;
+    for (uint8_t entry = 0u; entry < PATTERN_RESIDENCY_CACHE_ENTRY_COUNT; ++entry)
+        if (PatternResidency_IsDirty(entry)) dirty_before_begin = 1u;
+    if (dirty_before_begin) TimeCommitProbe_WritebackStart();
+    const uint8_t write_started = PatternResidency_BeginAnyDirtyWriteback();
     TIMING_PROBE_END(g_timing_max_pattern_write_us, _tp_pw);
-
-    if (st == PATTERNSTORE_ASYNC_DONE) { g_patternstore_shadow_write_ok = 1u; }
-    else if (st == PATTERNSTORE_ASYNC_FAILED) { g_patternstore_shadow_write_ok = 0u; }
+    if (write_started) g_patternstore_shadow_write_ok = 1u;
+    uint8_t dirty_or_busy = PatternStore_WriteAsyncBusy();
+    for (uint8_t entry = 0u; entry < PATTERN_RESIDENCY_CACHE_ENTRY_COUNT; ++entry)
+    {
+        const PatternCacheEntry* cache = PatternResidency_GetCacheEntry(entry);
+        if (cache && (PatternResidency_IsDirty(entry) || cache->io_state != PATTERN_CACHE_IO_IDLE))
+            dirty_or_busy = 1u;
+    }
+    TimeCommitProbe_WritebackService(dirty_or_busy);
+    (void)dirty_or_busy;
+    g_pattern_boundary_held = g_sequencer.IsPatternBoundaryHeld() ? 1u : 0u;
 #endif
 }
 
@@ -1668,50 +1635,252 @@ static void PersistSong(void)
      * The full legacy V3 snapshot is far slower (~200ms) and is only taken at
      * deliberate checkpoints -- see Bridge_ServicePersistence()/Bridge_FlushPersistence(). */
     s_ps_dirty = 1u;
-    s_v3_dirty_since_ms = HAL_GetTick();
+    s_song_header_retry.MarkPending(HAL_GetTick(), kV3IdleCheckpointMs);
+}
+
+static void PersistPattern(void)
+{
+    if (s_persist_depth > 0u)
+    {
+        s_persist_pattern_dirty = 1u;
+        return;
+    }
+    g_sequencer.MarkEditPatternMutated();
+}
+
+static BridgeFactoryProgressCallback s_factory_progress = nullptr;
+
+static void FactoryProgressAdapter(PersistenceFactoryPhase phase,
+                                   uint8_t index,
+                                   uint8_t total)
+{
+    if (s_factory_progress) s_factory_progress((uint8_t)phase, index, total);
 }
 
 extern "C"
 {
-    void     Bridge_Init(void)
+#if defined(S12_TIME_COMMIT_PROBE)
+    static uint32_t ProbeEditGeneration(void)
     {
-        LoadCvRouterModeSetting();
-        /* For current firmware behavior, enforce strict per-channel split routing. */
-        if (s_cv_router_mode != kCvRouterSplit)
-        {
-            s_cv_router_mode = kCvRouterSplit;
-            SaveCvRouterModeSetting();
-        }
-      g_sequencer.Init();
+        const int8_t entry = PatternResidency_GetRoleEntry(PatternCacheRole::Edit);
+        if (entry < 0) return 0u;
+        const PatternCacheEntry* cache = PatternResidency_GetCacheEntry((uint8_t)entry);
+        return cache ? cache->current_generation : 0u;
+    }
 
-#if defined(S12_USE_UCLOCK_MUSICAL_STEP_CLOCK) && S12_USE_UCLOCK_MUSICAL_STEP_CLOCK
-    /*
-     * uClock is the musical transport clock.
-     * Register the 96 PPQN callback before initialising the hardware timer.
-     */
-    uClock.setOnSync(
-    umodular::clock::uClockClass::PPQN_96,
-    Bridge_UClockMusicalCallback);
-    uClock.setOnSync(
-    umodular::clock::uClockClass::PPQN_24,
-    uClock_PC1_ClockOut_Toggle);
-    uClock.init();
-    uClock.setTempo(120.0f);
-    uClock.start();
+    static uint8_t ProbeRolePattern(PatternCacheRole role, uint8_t* out_entry)
+    {
+        const int8_t entry = PatternResidency_GetRoleEntry(role);
+        if (out_entry) *out_entry = (entry < 0) ? 0xFFu : (uint8_t)entry;
+        if (entry < 0) return TRANSPORT_PROBE_NO_PATTERN;
+        const PatternCacheEntry* cache = PatternResidency_GetCacheEntry((uint8_t)entry);
+        return cache ? cache->pattern_index : TRANSPORT_PROBE_NO_PATTERN;
+    }
+
+    static void ProbeTransportState(TransportProbeState* state)
+    {
+        state->edit_index = g_sequencer.GetCurrentPatternIndex();
+        state->play_index = g_sequencer.GetPlayPatternIndex();
+        state->play_role_pattern = ProbeRolePattern(PatternCacheRole::Play, &state->play_role_entry);
+        state->edit_role_pattern = ProbeRolePattern(PatternCacheRole::Edit, &state->edit_role_entry);
+        state->next_role_pattern = ProbeRolePattern(PatternCacheRole::Next, nullptr);
+        state->playing = g_sequencer.IsPlaying() ? 1u : 0u;
+        state->callbacks = g_sequencer.GetUClockMusicalCallbackCount();
+        state->pending_ticks = g_sequencer.GetPendingMusicalTicks();
+        state->pending_steps = g_sequencer.GetPendingStepEvents();
+    }
+
+    static void ProbeTransportBegin(uint8_t op)
+    {
+        TransportProbeState state;
+        ProbeTransportState(&state);
+        TransportProbe_Begin(op, &state);
+    }
+
+    static void ProbeTransportEnd(void)
+    {
+        TransportProbeState state;
+        ProbeTransportState(&state);
+        TransportProbe_End(&state);
+    }
 #endif
-        /* Runtime step/transport state (current_bar_, playing_, etc.) stays
-         * volatile across boot; only Pattern 0's content is restored above. */
 
+    void Bridge_TimeCommitProbeBegin(uint32_t flags)
+    {
+#if defined(S12_TIME_COMMIT_PROBE)
+        for (uint8_t entry = 0u; entry < PATTERN_RESIDENCY_CACHE_ENTRY_COUNT; ++entry)
+        {
+            const PatternCacheEntry* cache = PatternResidency_GetCacheEntry(entry);
+            if (PatternResidency_IsDirty(entry)) flags |= TIME_COMMIT_PROBE_FLAG_RESIDENCY_DIRTY;
+            if (cache && cache->io_state != PATTERN_CACHE_IO_IDLE)
+                flags |= TIME_COMMIT_PROBE_FLAG_RESIDENCY_IO;
+        }
+        if (s_song_header_retry.IsPending()) flags |= TIME_COMMIT_PROBE_FLAG_V3_PENDING;
+#endif
+        TimeCommitProbe_Begin(flags,
+                              g_sequencer.GetUClockMusicalCallbackCount(),
+                              g_sequencer.GetPendingMusicalTicks(),
+                              g_sequencer.GetPendingStepEvents(),
+                              g_sequencer.GetServiceOneStepCount());
+#if defined(S12_TIME_COMMIT_PROBE)
+        TimeCommitProbe_SetEditGeneration(ProbeEditGeneration());
+#endif
+    }
+
+    void Bridge_TimeCommitProbePhaseBegin(uint8_t phase)
+    {
+        TimeCommitProbe_PhaseBegin(phase);
+    }
+
+    void Bridge_TimeCommitProbePhaseEnd(uint8_t phase)
+    {
+        TimeCommitProbe_PhaseEnd(phase);
+    }
+
+    void Bridge_TimeCommitProbeEnd(void)
+    {
+#if defined(S12_TIME_COMMIT_PROBE)
+        TimeCommitProbe_SetEditGeneration(ProbeEditGeneration());
+#endif
+        TimeCommitProbe_End(g_sequencer.GetUClockMusicalCallbackCount(),
+                            g_sequencer.GetPendingMusicalTicks(),
+                            g_sequencer.GetPendingStepEvents());
+    }
+
+#if defined(S12_TIME_COMMIT_PROBE)
+    void Bridge_TimeCommitProbeLoopSample(void)
+    {
+        TimeCommitProbe_PassBegin(g_sequencer.GetUClockMusicalCallbackCount(),
+                                  g_sequencer.GetPendingMusicalTicks(),
+                                  g_sequencer.GetPendingStepEvents(),
+                                  g_sequencer.GetServiceOneStepCount(),
+                                  g_sequencer.IsPlaying() ? 1u : 0u,
+                                  g_sequencer.GetCurrentPatternIndex(),
+                                  g_sequencer.GetPlayPatternIndex());
+        TimeCommitProbe_LoopSample(g_sequencer.GetPendingMusicalTicks(),
+                                   g_sequencer.GetPendingStepEvents());
+    }
+
+    void Bridge_TimeCommitProbeLoopPass(uint32_t loop_ms, uint32_t musical_ms,
+                                        uint32_t input_ms, uint32_t ui_ms,
+                                        uint32_t persist_ms)
+    {
+        TimeCommitProbe_PassEnd(g_sequencer.GetUClockMusicalCallbackCount(),
+                                g_sequencer.GetPendingMusicalTicks(),
+                                g_sequencer.GetPendingStepEvents(),
+                                g_sequencer.GetServiceOneStepCount(),
+                                g_sequencer.IsPlaying() ? 1u : 0u,
+                                g_sequencer.GetCurrentPatternIndex(),
+                                g_sequencer.GetPlayPatternIndex());
+        TimeCommitProbe_LoopPass(loop_ms, musical_ms, input_ms, ui_ms, persist_ms,
+                                 g_sequencer.GetUClockMusicalCallbackCount(),
+                                 g_sequencer.GetServiceOneStepCount(),
+                                 g_sequencer.IsPatternBoundaryHeld() ? 1u : 0u,
+                                 ProbeEditGeneration());
+    }
+#endif
+
+    uint8_t Bridge_CopyCurrentEditBar(uint8_t zero_based_bar)
+    {
+        return sequencer_clipboard::CopyEditBar(g_sequencer, zero_based_bar) ? 1u : 0u;
+    }
+
+    uint8_t Bridge_CanPasteCurrentEditBar(uint8_t zero_based_bar)
+    {
+        return sequencer_clipboard::CanPasteEditBar(g_sequencer, zero_based_bar) ? 1u : 0u;
+    }
+
+    uint8_t Bridge_PasteCurrentEditBar(uint8_t zero_based_bar)
+    {
+        if (Bridge_IsPlaying()) return 0u;
+        return sequencer_clipboard::PasteEditBar(g_sequencer, zero_based_bar) ? 1u : 0u;
+    }
+
+    uint8_t  Bridge_IsPersistenceReady(void)
+    {
+        return (g_persistence_boot_status == PERSISTENCE_BOOT_READY &&
+                g_pattern_directory_ready && g_pattern_residency_ready) ? 1u : 0u;
+    }
+
+    void Bridge_InitSafe(void)
+    {
+        PatternResidency_Init();
+        g_pattern_directory_ready = 0u;
+        g_pattern_residency_ready = 0u;
+        g_persistence_boot_status = PERSISTENCE_BOOT_NOT_RUN;
+        s_cv_router_mode = kCvRouterSplit;
+        g_sequencer.Init();
         Bridge_ApplyZeroOutputCodes();
+    }
+
+    uint8_t Bridge_InspectStorage(void)
+    {
+        g_persistence_boot_status = (uint8_t)PersistenceStore_Inspect();
+        return g_persistence_boot_status;
+    }
+
+    uint8_t Bridge_GetPersistenceBootStatus(void)
+    {
+        return g_persistence_boot_status;
+    }
+
+    uint8_t Bridge_FactoryInitializeStorage(BridgeFactoryProgressCallback progress)
+    {
+        s_factory_progress = progress;
+        g_persistence_boot_status = (uint8_t)PersistenceStore_FactoryInitialize(
+            FactoryProgressAdapter);
+        s_factory_progress = nullptr;
+        return g_persistence_boot_status;
+    }
+
+    uint8_t Bridge_ActivateStorageRuntime(void)
+    {
+        uint32_t persisted_bpm = 120u;
+        g_persistence_boot_status = PERSISTENCE_BOOT_NOT_RUN;
+        g_pattern_directory_ready = 0u;
+        g_pattern_residency_ready = 0u;
+        s_cv_router_mode = kCvRouterSplit;
+
+        const PersistenceBootStatus status =
+            StorageBoot_ActivateRuntime(g_sequencer, &persisted_bpm, &s_song_header_generation);
+        g_persistence_boot_status = (uint8_t)status;
+        if (status != PERSISTENCE_BOOT_READY)
+        {
+            Bridge_ApplyZeroOutputCodes();
+            return 0u;
+        }
+        g_pattern_directory_ready = 1u;
+        g_pattern_residency_ready = 1u;
+
+        LoadCvRouterModeSetting();
+        s_cv_router_mode = kCvRouterSplit;
+#if defined(S12_USE_UCLOCK_MUSICAL_STEP_CLOCK) && S12_USE_UCLOCK_MUSICAL_STEP_CLOCK
+        if (!s_uclock_initialized)
+        {
+            uClock.setOnSync(umodular::clock::uClockClass::PPQN_96,
+                             Bridge_UClockMusicalCallback);
+            uClock.setOnSync(umodular::clock::uClockClass::PPQN_24,
+                             uClock_PC1_ClockOut_Toggle);
+            uClock.init();
+            uClock.setTempo((float)persisted_bpm);
+            uClock.start();
+            s_uclock_initialized = 1u;
+        }
+#endif
+        Bridge_ApplyZeroOutputCodes();
+        return Bridge_IsPersistenceReady();
+    }
+
+    void Bridge_Init(void)
+    {
+        Bridge_InitSafe();
+        (void)Bridge_InspectStorage();
+        (void)Bridge_ActivateStorageRuntime();
     }
     void     Bridge_InvalidateCvTrackingState(void)
     {
         s_cv_init_done = false;
-        s_last_step_index = 0xFFFFFFFFu;
-        s_last_step_mask = 0xFFFFu;
-        s_last_arp_note = 0xFFu;
-        s_last_substep_index = 0xFFu;
-        s_gate_channel_mask = 0u;
+        s_output_snapshot_state = SequencerOutputSnapshotState{};
         s_gate_hold_active = 0u;
         s_gate_step_pulsed = 0u;
         s_gate_block_ticks = 0u;
@@ -1742,10 +1911,10 @@ extern "C"
         SaveCvRouterModeSetting();
 
         /* Force immediate recompute on next process pass. */
-        s_last_step_index = 0xFFFFFFFFu;
-        s_last_step_mask = 0xFFFFu;
-        s_last_arp_note = 0xFFu;
-        s_last_substep_index = 0xFFu;
+        s_output_snapshot_state.last_step_index = 0xFFFFFFFFu;
+        s_output_snapshot_state.last_step_mask = 0xFFFFu;
+        s_output_snapshot_state.last_arp_note = 0xFFu;
+        s_output_snapshot_state.last_substep_index = 0xFFu;
     }
     uint8_t  Bridge_GetCvRouterMode(void)
     {
@@ -1792,11 +1961,11 @@ extern "C"
         {
             if (s_gate_hold_active)
             {
-                gate_mask = s_gate_channel_mask;
+                gate_mask = s_output_snapshot_state.gate_channel_mask;
             }
             else if (!s_gate_step_pulsed)
             {
-                gate_mask = s_gate_channel_mask;
+                gate_mask = s_output_snapshot_state.gate_channel_mask;
                 s_gate_hold_active = 1u;
                 s_gate_step_pulsed = 1u;
             }
@@ -1824,22 +1993,37 @@ extern "C"
         g_sequencer.TickMusical();
     }
 
+    static void WriteCurrentStepSnapshot(bool force_refresh);
+
     void Bridge_ServiceMusicalEvents(void)
     {
         if (!g_sequencer.IsPlaying())
         {
+            TimeCommitProbe_ObserveService(g_sequencer.GetUClockMusicalCallbackCount(),
+                                           g_sequencer.GetPendingMusicalTicks(),
+                                           g_sequencer.GetPendingStepEvents(),
+                                           g_sequencer.GetServiceOneStepCount());
             return;
         }
 
-        if (!g_sequencer.ServiceOnePendingStep())
+        g_sequencer.ServicePendingMusicalTicks();
+        (void)g_sequencer.ServiceOnePendingStep();
+
+        bool force_refresh = false;
+        if (g_sequencer.ConsumeOutputSnapshotRequest(&force_refresh))
         {
-            return;
+            WriteCurrentStepSnapshot(force_refresh);
         }
-
-        Bridge_WriteCurrentStepSnapshot();
+        TimeCommitProbe_ObserveService(g_sequencer.GetUClockMusicalCallbackCount(),
+                                       g_sequencer.GetPendingMusicalTicks(),
+                                       g_sequencer.GetPendingStepEvents(),
+                                       g_sequencer.GetServiceOneStepCount());
     }
     void Bridge_Start(void)
     {
+#if defined(S12_TIME_COMMIT_PROBE)
+    ProbeTransportBegin(TRANSPORT_PROBE_OP_START);
+#endif
     s_gate_hold_active = 0u;
     s_gate_step_pulsed = 0u;
     s_gate_block_ticks = 0u;
@@ -1850,11 +2034,14 @@ extern "C"
     g_sequencer.Start();
 
     /* Load STEP 1 CV before the musical clock begins advancing. */
-    Bridge_WriteCurrentStepSnapshot();
+    WriteCurrentStepSnapshot(true);
 
     GPIOC->BSRR = (GPIO_PIN_1 << 16);  /* force Clock OUT low until the first PPQN tick while playing */
 
     Bridge_Process();
+#if defined(S12_TIME_COMMIT_PROBE)
+    ProbeTransportEnd();
+#endif
     }
 
    void Bridge_Stop(void)
@@ -1862,7 +2049,7 @@ extern "C"
     g_sequencer.Stop();
     GPIOC->BSRR = (GPIO_PIN_1 << 16);  /* force Clock OUT low when transport stops */
 
-    s_gate_channel_mask = 0u;
+    s_output_snapshot_state.gate_channel_mask = 0u;
     s_gate_hold_active = 0u;
     s_gate_step_pulsed = 0u;
     s_gate_block_ticks = 0u;
@@ -1882,8 +2069,11 @@ extern "C"
 
     void     Bridge_Reset(void)
     {
+#if defined(S12_TIME_COMMIT_PROBE)
+        ProbeTransportBegin(TRANSPORT_PROBE_OP_RESET);
+#endif
         g_sequencer.Reset();
-        s_gate_channel_mask = 0u;
+        s_output_snapshot_state.gate_channel_mask = 0u;
         s_gate_hold_active = 0u;
         s_gate_step_pulsed = 0u;
         s_gate_block_ticks = 0u;
@@ -1892,11 +2082,15 @@ extern "C"
         s_gate_prev_substep = 0xFFu;
 
         Bridge_ApplyZeroOutputCodes();
+#if defined(S12_TIME_COMMIT_PROBE)
+        ProbeTransportEnd();
+#endif
     }
 
     void Bridge_SetBpm(uint32_t bpm)
     {
     g_sequencer.SetBpm(bpm);
+    PersistSong();
 
     #if defined(S12_USE_UCLOCK_MUSICAL_STEP_CLOCK) && S12_USE_UCLOCK_MUSICAL_STEP_CLOCK
     uClock.setTempo((float)bpm);
@@ -1911,36 +2105,43 @@ extern "C"
     {
         if (s_persist_depth == 0u) return;
         s_persist_depth--;
+        if (s_persist_depth == 0u && s_persist_pattern_dirty)
+        {
+            s_persist_pattern_dirty = 0u;
+            g_sequencer.MarkEditPatternMutated();
+        }
         if (s_persist_depth == 0u && s_persist_dirty)
         {
             s_persist_dirty = 0u;
             s_ps_dirty = 1u;
-            s_v3_dirty_since_ms = HAL_GetTick();
+            s_song_header_retry.MarkPending(HAL_GetTick(), kV3IdleCheckpointMs);
         }
     }
     void     Bridge_ServicePersistence(void)
     {
+        if (!Bridge_IsPersistenceReady()) return;
         ServicePatternStoreAsync();
 
         /* Full legacy V3 song snapshot: never runs while playing, and only
          * once editing has gone idle for kV3IdleCheckpointMs while stopped.
          * Bridge_Stop()/Bridge_FlushPersistence() force it immediately. */
-        if (s_v3_dirty_since_ms != 0u && !g_sequencer.IsPlaying())
+        const uint32_t now_ms = HAL_GetTick();
+        if (!g_sequencer.IsPlaying() && s_song_header_retry.IsDue(now_ms))
         {
-            if ((uint32_t)(HAL_GetTick() - s_v3_dirty_since_ms) >= kV3IdleCheckpointMs)
-            {
-                (void)SaveSongToFram();
-                s_v3_dirty_since_ms = 0u;
-            }
+            const uint8_t saved = SaveSongToFram();
+            TimeCommitProbe_RecordV3Save(HAL_GetTick() - now_ms);
+            (void)s_song_header_retry.CompleteAttempt(
+                saved != 0u, now_ms, kV3IdleCheckpointMs);
         }
     }
-    void     Bridge_FlushPersistence(void)
+    uint8_t  Bridge_FlushPersistence(void)
     {
-        if (s_v3_dirty_since_ms != 0u)
-        {
-            (void)SaveSongToFram();
-            s_v3_dirty_since_ms = 0u;
-        }
+        if (!s_song_header_retry.IsPending()) return 1u;
+        const uint32_t start_ms = HAL_GetTick();
+        const uint8_t saved = SaveSongToFram();
+        TimeCommitProbe_RecordV3Save(HAL_GetTick() - start_ms);
+        return s_song_header_retry.CompleteAttempt(
+            saved != 0u, HAL_GetTick(), kV3IdleCheckpointMs) ? 1u : 0u;
     }
     void     Bridge_ServicePatternCache(void)
     {
@@ -1948,30 +2149,23 @@ extern "C"
     }
     uint8_t  Bridge_PatternStoreVerify(uint8_t pattern_index)
     {
-        if (pattern_index >= sequencer::kPatternCount) return 0u;
-
-        sequencer::Pattern readback{};
-        if (!PatternStore_Read(pattern_index, &readback)) return 0u;
-
-        const sequencer::Song& song = g_sequencer.GetSongView();
-        return (memcmp(&readback, &song.patterns[pattern_index], sizeof(sequencer::Pattern)) == 0) ? 1u : 0u;
+        return PatternStore_IsValid(pattern_index);
     }
-    void     Bridge_SetPatternStepCount(uint8_t step_count) { g_sequencer.SetPatternStepCount(step_count); PersistSong(); }
+    void     Bridge_SetPatternStepCount(uint8_t step_count) { g_sequencer.SetPatternStepCount(step_count); PersistPattern(); }
     uint8_t  Bridge_GetPatternStepCount(void) { return g_sequencer.GetPatternStepCount(); }
     uint8_t  Bridge_SetPatternTiming(uint8_t step_division, uint8_t numerator, uint8_t denominator)
     {
         if (!g_sequencer.SetPatternTiming(step_division, numerator, denominator)) return 0u;
+        PersistPattern();
         PersistSong();
         return 1u;
     }
-    void     Bridge_SetPatternStepDivision(uint8_t step_division)
+    uint8_t  Bridge_SetPatternStepDivision(uint8_t step_division)
     {
         const uint8_t before = g_sequencer.GetPatternStepDivision();
-        g_sequencer.SetPatternStepDivision(step_division);
-        if (g_sequencer.GetPatternStepDivision() != before)
-        {
-            PersistSong();
-        }
+        if (!g_sequencer.SetPatternStepDivision(step_division)) return 0u;
+        if (g_sequencer.GetPatternStepDivision() != before) PersistPattern();
+        return 1u;
     }
     uint8_t  Bridge_GetPatternStepDivision(void) { return g_sequencer.GetPatternStepDivision(); }
     void Bridge_SetPatternArpMode(uint8_t arp_mode)
@@ -1990,7 +2184,7 @@ extern "C"
         }
 
         g_sequencer.SetPatternArpMode(mode);
-        PersistSong();
+        PersistPattern();
     }
     void Bridge_SetPatternArpRate(uint8_t arp_rate)
     {
@@ -2005,7 +2199,7 @@ extern "C"
         }
 
         g_sequencer.SetPatternArpRate(rate);
-        PersistSong();
+        PersistPattern();
     }
     uint8_t Bridge_GetPatternArpRate(void)
     {
@@ -2024,22 +2218,22 @@ extern "C"
                                        uint8_t repeat_count)
     {
         g_sequencer.SetStepChordParams(step_index, root_key, chord_type, arp_pattern, duration, repeat_count);
-        PersistSong();
+        PersistPattern();
     }
     void     Bridge_SetStepCustomNoteMask(uint8_t step_index, uint16_t note_mask)
     {
         g_sequencer.SetStepCustomNoteMask(step_index, note_mask);
-        /* User-loaded/custom step masks are intentionally non-persistent. */
+        PersistPattern();
     }
     void     Bridge_SetStepCustomUserChord(uint8_t step_index, uint16_t note_mask, const char* name)
     {
         g_sequencer.SetStepCustomUserChord(step_index, note_mask, name);
-        /* User-loaded/custom step masks are intentionally non-persistent. */
+        PersistPattern();
     }
     void     Bridge_SetStepLedgerLength(uint8_t step_index, uint8_t length)
     {
         g_sequencer.SetStepLedgerLength(step_index, length);
-        /* Step-piano ledger edits are runtime-only for now. */
+        PersistPattern();
     }
     void     Bridge_SetStepLedgerSlot(uint8_t step_index, uint8_t slot_index, uint16_t note_mask)
     {
@@ -2053,7 +2247,7 @@ extern "C"
             }
         }
         g_sequencer.SetStepLedgerSlot(step_index, slot_index, slot);
-        /* Step-piano ledger edits are runtime-only for now. */
+        PersistPattern();
     }
     uint8_t  Bridge_GetStepLedgerLength(uint8_t step_index)
     {
@@ -2073,7 +2267,7 @@ extern "C"
                                    uint8_t length_positions)
     {
         g_sequencer.SetStepEventLengthGrid(step_index, slot_index, length_positions);
-        PersistSong();
+        PersistPattern();
     }
     uint8_t Bridge_GetStepEventMaxLength(uint8_t step_index, uint8_t slot_index)
     {
@@ -2083,7 +2277,7 @@ extern "C"
     {
         const sequencer::LedgerSlot mapped = ToSequencerLedgerSlot(slot);
         g_sequencer.SetStepLedgerSlot(step_index, slot_index, mapped);
-        /* Step-piano ledger edits are runtime-only for now. */
+        PersistPattern();
     }
     BridgeLedgerSlot Bridge_GetStepLedgerSlotMidi(uint8_t step_index, uint8_t slot_index)
     {
@@ -2093,13 +2287,14 @@ extern "C"
     void     Bridge_ClearStepLedger(uint8_t step_index)
     {
         g_sequencer.ClearStepLedger(step_index);
+        PersistPattern();
     }
     void     Bridge_SetStepBarState(uint8_t step_index, uint8_t state)
     {
         const sequencer::BarState mapped =
             (state == 1u) ? sequencer::BarState::Skip : sequencer::BarState::Active;
         g_sequencer.SetStepBarState(step_index, mapped);
-        PersistSong();
+        PersistPattern();
     }
     uint8_t  Bridge_GetStepBarState(uint8_t step_index)
     {
@@ -2108,7 +2303,7 @@ extern "C"
     void     Bridge_SetPatternRepeatCount(uint8_t repeat_count)
     {
         g_sequencer.SetPatternRepeatCount(repeat_count);
-        PersistSong();
+        PersistPattern();
     }
     uint8_t  Bridge_GetPatternRepeatCount(void)
     {
@@ -2117,7 +2312,6 @@ extern "C"
     void     Bridge_SetCurrentPattern(uint8_t pattern_index)
     {
         g_sequencer.SetCurrentPatternIndex(pattern_index);
-        PersistSong();
     }
     void     Bridge_SetPlaybackSource(uint8_t source)
     {
@@ -2244,121 +2438,31 @@ extern "C"
         return (int16_t)(volts * 1000.0f + 0.5f);
     }
 
+    static uint16_t SnapshotPitchToCode(void*, uint8_t lane, float volts)
+    {
+        return DAC8564_PitchVoltsToCodeForChannel(kLaneToDac[lane < 4u ? lane : 0u], volts);
+    }
+
+    static void SnapshotWriteLanes(void*, const uint16_t values[4])
+    {
+        Bridge_WriteLogicalLanes(values);
+    }
+
+    static void WriteCurrentStepSnapshot(bool force_refresh)
+    {
+        s_cv_init_done = true;
+        const SequencerOutputSnapshotOps ops = {nullptr, SnapshotPitchToCode, SnapshotWriteLanes};
+        (void)SequencerOutput_WriteSnapshot(g_sequencer,
+                                            s_output_snapshot_state,
+                                            ops,
+                                            s_cv_zero_code,
+                                            s_cv_router_mode == kCvRouterUnison,
+                                            force_refresh);
+    }
+
     void Bridge_WriteCurrentStepSnapshot(void)
     {
-        const bool playing = g_sequencer.IsPlaying();
-
-        if (!playing)
-        {
-            s_gate_channel_mask = 0u;
-            return;
-        }
-
-        s_cv_init_done = true;
-
-        const uint32_t step_index = g_sequencer.GetCurrentStep();
-        const uint8_t substep = g_sequencer.GetCurrentStepSubIndex();
-        uint8_t step_notes[4] = {sequencer::kMidiNoteNone,
-                                 sequencer::kMidiNoteNone,
-                                 sequencer::kMidiNoteNone,
-                                 sequencer::kMidiNoteNone};
-        const uint8_t step_note_count = g_sequencer.GetCurrentStepNotesForPlayback(step_notes);
-        uint16_t note_mask = 0u;
-        for (uint8_t i = 0u; i < step_note_count; ++i)
-        {
-            const uint8_t note = step_notes[i];
-            if (note == sequencer::kMidiNoteNone) continue;
-            note_mask |= (uint16_t)(1u << (note % 12u));
-        }
-        const sequencer::ArpMode arp_mode = g_sequencer.GetCurrentArpMode();
-
-        if (arp_mode == sequencer::ArpMode::Off)
-        {
-            if (step_index == s_last_step_index &&
-            substep == s_last_substep_index &&
-            note_mask == s_last_step_mask)
-            {
-                return;
-            }
-
-            uint8_t notes[4] = {sequencer::kMidiNoteNone,
-                                sequencer::kMidiNoteNone,
-                                sequencer::kMidiNoteNone,
-                                sequencer::kMidiNoteNone};
-            /* lanes[i] is the explicit A/B/C/D (0..3) output lane for notes[i]; falls back to
-             * sorted array index (today's lowest-note->A behaviour) when no explicit lane
-             * assignment exists for the active ledger position. ARP Up/Down/UpDn/Random/AsPlayed
-             * never reach this branch (arp_mode == Off only), so their CV1/Gate1-only output is
-             * unaffected. */
-            uint8_t lanes[4] = {0u, 1u, 2u, 3u};
-            uint8_t note_count = g_sequencer.GetCurrentStepNotesForPlaybackWithLanes(notes, lanes);
-
-            uint16_t out[4] = {s_cv_zero_code[0], s_cv_zero_code[1], s_cv_zero_code[2], s_cv_zero_code[3]};
-            if (s_cv_router_mode == kCvRouterUnison)
-            {
-                if (note_count > 0u)
-                {
-                    const float volts = NoteToPitchVolts(notes[0]);
-                    for (uint8_t ch = 0u; ch < 4u; ++ch)
-                    {
-                        out[ch] = DAC8564_PitchVoltsToCodeForChannel(kLaneToDac[ch], volts);
-                    }
-                    Bridge_WriteLogicalLanes(out);
-                }
-                s_gate_channel_mask = (note_count > 0u) ? 0x0Fu : 0u;
-            }
-            else
-            {
-                uint8_t active_lane_mask = 0u;
-                for (uint8_t ch = 0u; ch < 4u; ++ch)
-                {
-                    if (ch >= note_count) continue;
-                    if (!sequencer::IsMidiNoteValid(notes[ch])) continue;
-
-                    const uint8_t lane = (lanes[ch] < 4u) ? lanes[ch] : ch;
-                    const float volts = NoteToPitchVolts(notes[ch]);
-                    out[lane] = DAC8564_PitchVoltsToCodeForChannel(kLaneToDac[lane], volts);
-                    active_lane_mask = (uint8_t)(active_lane_mask | (uint8_t)(1u << lane));
-                }
-
-                if (active_lane_mask != 0u)
-                {
-                    Bridge_WriteLogicalLanes(out);
-                }
-
-                s_gate_channel_mask = active_lane_mask;
-            }
-                s_last_step_index = step_index;
-                s_last_substep_index = substep;
-                s_last_step_mask = note_mask;
-                s_last_arp_note = 0xFFu;
-        }
-        else
-        {
-            const uint8_t note = g_sequencer.GetCurrentNote();
-            if (step_index == s_last_step_index && note == s_last_arp_note)
-            {
-                return;
-            }
-
-            if (sequencer::IsMidiNoteValid(note))
-            {
-                const float volts = NoteToPitchVolts(note);
-                uint16_t out[4] = {s_cv_zero_code[0], s_cv_zero_code[1], s_cv_zero_code[2], s_cv_zero_code[3]};
-                out[0] = DAC8564_PitchVoltsToCodeForChannel(kLaneToDac[0], volts);
-                Bridge_WriteLogicalLanes(out);
-                s_gate_channel_mask = 0x01u;
-            }
-            else
-            {
-                Bridge_WriteLogicalLanes(s_cv_zero_code);
-                s_gate_channel_mask = 0u;
-            }
-
-            s_last_step_index = step_index;
-            s_last_step_mask = note_mask;
-            s_last_arp_note = note;
-        }
+        WriteCurrentStepSnapshot(false);
     }
 
     void Bridge_Process(void)

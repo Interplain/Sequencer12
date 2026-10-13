@@ -3,6 +3,8 @@
 #include "ui_input.h"
 #include "ui_screen_router.h"
 #include "ui_screensaver.h"
+#include "ui_sequencer_clipboard.h"
+#include "ui_timing_commit.h"
 #include "ui_transport.h"
 #include "screens/ui_chord_menu_screen.h"
 #include "screens/ui_chord_params_screen.h"
@@ -12,6 +14,7 @@
 #include "core/pitch_mapping.h"
 #include "st7789.h"
 #include "stm32/user_chord_bridge.h"
+#include "stm32/time_commit_probe.h"
 #include "stm32f4xx_hal.h"
 #include <string.h>
 #include <stdio.h>
@@ -126,6 +129,7 @@ static uint8_t     s_chord_params_timing_quick = 0;
 #define UI_STEP_LEDGER_MAX 32u
 /* Must match the physically rendered rows in Step Piano body (154/12=12). */
 #define UI_STEP_PIANO_VISIBLE_ROWS 12u
+#define UI_STEP_PIANO_CONFIRM_PASTE_BAR 3u
 static uint8_t     s_step_piano_slot = 0;
 static uint8_t     s_step_piano_slot_count = 1;
 static uint8_t     s_step_piano_selected_midi = (uint8_t)kLegacyPitchClassFallbackMidiBase;
@@ -163,6 +167,9 @@ static uint8_t UI_Sequencer_TimingDraftIsDirty(void);
 static void UI_Sequencer_CommitChordDraft(void);
 static void UI_Sequencer_EnterStepPianoView(uint8_t step);
 static uint8_t UI_Sequencer_StepHasNotes(uint8_t step);
+static void UI_Sequencer_UpdateActiveStepFromEngine(void);
+static uint8_t UI_Sequencer_IsRepeatFlashEnabledForActive(void);
+static void UI_Sequencer_PrepareMainGridReturn(void);
 static void UI_Sequencer_RefreshStepPianoContext(uint8_t step);
 static uint8_t UI_Sequencer_NormalizeStepPianoSlots(uint8_t slots);
 static uint8_t UI_Sequencer_GetFirstMidiFromSlot(const BridgeLedgerSlot* slot, uint8_t fallback);
@@ -176,6 +183,7 @@ static void UI_StepPiano_ActionNextPosition(void);
 static void UI_StepPiano_ActionToggleBarSkip(void);
 static void UI_StepPiano_ActionToggleNote(void);
 static void UI_StepPiano_ActionClearBarRequest(void);
+static void UI_StepPiano_ActionPasteBarRequest(void);
 static void UI_StepPiano_ActionToggleLengthMode(void);
 static void UI_StepPiano_ActionOctaveUp(void);
 static void UI_StepPiano_ActionOctaveDown(void);
@@ -367,6 +375,8 @@ static void UI_StepRoute_ShiftGridPattern(uint8_t step);
 static void UI_StepRoute_ShiftGridStep(uint8_t step);
 static void UI_StepRoute_SelectStep(uint8_t step);
 static void UI_StepRoute_StepPianoEditor(uint8_t step);
+static void UI_StepRoute_ShiftStepPianoEditor(uint8_t step);
+static void UI_StepRoute_StepPianoEditorAction(uint8_t step, uint8_t shifted);
 static void UI_SelectStep_Grid(uint8_t step);
 static void UI_SelectStep_ChordMenu(uint8_t step);
 static void UI_SelectStep_ChordParams(uint8_t step);
@@ -423,6 +433,7 @@ static uint8_t  s_repeat_flash_on = 0;
 static uint32_t s_repeat_flash_ms = 0;
 static uint8_t  s_repeat_flash_was_enabled = 0;
 static uint32_t s_last_status_ms = 0;
+static uint8_t  s_grid_frame_followup_pending = 0;
 
 static void TimingMenu_OnEnter(void)
 {
@@ -491,11 +502,13 @@ static void TimingMenu_OnInput(InputType input_type, int8_t value)
 
 static void TimingMenu_OnExit(ScreenExitReason reason)
 {
+    UI_Display_CancelTimingFrame();
     (void)reason;
 }
 
 static void TimingMenu_OnDraw(void)
 {
+    UI_Display_ResetTimingFrameCache();
     UI_Sequencer_DrawTimingMenu();
 }
 
@@ -830,7 +843,7 @@ static const UiStepInputRoute s_step_routes[] = {
     /* Shift + matrix step press */
     { UI_MODE_GRID,         UI_MAIN_MODE_TIMING,      1, UI_StepRoute_ShiftGridTiming },
     { UI_MODE_CHORD_MENU,   UI_MAIN_MODE_ANY,         1, UI_StepRoute_SelectStep },
-    { UI_MODE_STEP_PIANO,   UI_MAIN_MODE_ANY,         1, UI_StepRoute_StepPianoEditor },
+    { UI_MODE_STEP_PIANO,   UI_MAIN_MODE_ANY,         1, UI_StepRoute_ShiftStepPianoEditor },
     { UI_MODE_CHORD_PARAMS, UI_MAIN_MODE_ANY,         1, UI_StepRoute_ChordParamsFooterOrSelect },
     { UI_MODE_GRID,         UI_MAIN_MODE_PATTERN,     1, UI_StepRoute_ShiftGridPattern },
     { UI_MODE_GRID,         UI_MAIN_MODE_STEP,        1, UI_StepRoute_ShiftGridStep }
@@ -1115,6 +1128,16 @@ static void UI_StepRoute_SelectStep(uint8_t step)
 
 static void UI_StepRoute_StepPianoEditor(uint8_t step)
 {
+    UI_StepRoute_StepPianoEditorAction(step, 0u);
+}
+
+static void UI_StepRoute_ShiftStepPianoEditor(uint8_t step)
+{
+    UI_StepRoute_StepPianoEditorAction(step, 1u);
+}
+
+static void UI_StepRoute_StepPianoEditorAction(uint8_t step, uint8_t shifted)
+{
     if (s_step_piano_confirm_active)
     {
         return;
@@ -1134,6 +1157,14 @@ static void UI_StepRoute_StepPianoEditor(uint8_t step)
 
     switch (step)
     {
+        case 6u:
+            if (UI_SequencerClipboard_IsBarCopyPress(1u, shifted, step))
+                (void)Bridge_CopyCurrentEditBar((uint8_t)(s_selected_step - 1u));
+            break;
+        case 7u:
+            if (UI_SequencerClipboard_IsBarPastePress(1u, shifted, step))
+                UI_StepPiano_ActionPasteBarRequest();
+            break;
         case 1u:
             UI_Sequencer_EnterChordFromBarEditor();
             break;
@@ -1644,9 +1675,7 @@ static void UI_Sequencer_ExitToGrid(void)
     s_direct_chord_confirm.source = UI_DIRECT_CHORD_SOURCE_NONE;
     s_direct_chord_confirm_message[0] = '\0';
     s_ui_mode = UI_MODE_GRID;
-    UI_MainGridScreen_SetContext(s_selected_step,
-                                 s_active_step,
-                                 NULL);
+    UI_Sequencer_PrepareMainGridReturn();
     UI_Sequencer_SetActiveScreen(UI_MainGridScreen_Get());
 }
 
@@ -1684,16 +1713,12 @@ static void UI_Sequencer_ExitArpMenu(uint8_t commit)
 
     if (s_return_target == UI_RETURN_TARGET_BAR_EDITOR)
     {
-        UI_PianoRollScreen_ResetCache();
-        UI_PianoRollScreen_ForceRedraw();
         (void)UI_Sequencer_ReturnToBarEditor(commit ? SCREEN_EXIT_SAVE : SCREEN_EXIT_BACK);
         return;
     }
 
     s_ui_mode = UI_MODE_GRID;
-    UI_MainGridScreen_SetContext(s_selected_step,
-                                 s_active_step,
-                                 NULL);
+    UI_Sequencer_PrepareMainGridReturn();
 
     if (active == &s_arp_screen)
     {
@@ -1729,35 +1754,78 @@ static void UI_Sequencer_ExitTimingMenu(uint8_t commit)
 {
     UiScreen* active = UI_ScreenRouter_GetActive();
 
+#if defined(S12_TIME_COMMIT_PROBE)
+    if (commit)
+    {
+        uint32_t flags = Bridge_IsPlaying() ? TIME_COMMIT_PROBE_FLAG_PLAYING : 0u;
+        if (s_timing_step_division != Bridge_GetPatternStepDivision() ||
+            s_timing_ts_num != Bridge_GetTimeSigNumerator() ||
+            s_timing_ts_den != Bridge_GetTimeSigDenominator())
+            flags |= TIME_COMMIT_PROBE_FLAG_TIMING_CHANGED;
+        if (s_timing_step_count != Bridge_GetPatternStepCount())
+            flags |= TIME_COMMIT_PROBE_FLAG_LOOP_CHANGED;
+        if (s_timing_swing != Bridge_GetSwing())
+            flags |= TIME_COMMIT_PROBE_FLAG_SWING_CHANGED;
+        Bridge_TimeCommitProbeBegin(flags);
+    }
+#endif
+
     if (commit && !UI_Sequencer_CommitTimingDraft())
     {
         s_timing_save_rejected = 1u;
+#if defined(S12_TIME_COMMIT_PROBE)
+        Bridge_TimeCommitProbePhaseBegin(TIME_COMMIT_PROBE_PHASE_EXIT_TRANSITION);
+#endif
         UI_Sequencer_DrawTimingMenu();
+#if defined(S12_TIME_COMMIT_PROBE)
+        Bridge_TimeCommitProbePhaseEnd(TIME_COMMIT_PROBE_PHASE_EXIT_TRANSITION);
+        Bridge_TimeCommitProbeEnd();
+#endif
         return;
     }
 
     if (s_return_target == UI_RETURN_TARGET_BAR_EDITOR)
     {
-        UI_PianoRollScreen_ResetCache();
-        UI_PianoRollScreen_ForceRedraw();
+#if defined(S12_TIME_COMMIT_PROBE)
+        Bridge_TimeCommitProbePhaseBegin(TIME_COMMIT_PROBE_PHASE_EXIT_TRANSITION);
+#endif
         (void)UI_Sequencer_ReturnToBarEditor(commit ? SCREEN_EXIT_SAVE : SCREEN_EXIT_BACK);
+#if defined(S12_TIME_COMMIT_PROBE)
+        Bridge_TimeCommitProbePhaseEnd(TIME_COMMIT_PROBE_PHASE_EXIT_TRANSITION);
+        if (commit) Bridge_TimeCommitProbeEnd();
+#endif
         return;
     }
 
+#if defined(S12_TIME_COMMIT_PROBE)
+    if (commit) Bridge_TimeCommitProbePhaseBegin(TIME_COMMIT_PROBE_PHASE_EXIT_TRANSITION);
+#endif
     s_ui_mode = UI_MODE_GRID;
-    UI_MainGridScreen_SetContext(s_selected_step,
-                                 s_active_step,
-                                 NULL);
+    UI_Sequencer_PrepareMainGridReturn();
 
     if (active == &s_timing_screen)
     {
         if (UI_ScreenRouter_Pop(commit ? SCREEN_EXIT_SAVE : SCREEN_EXIT_BACK))
         {
+#if defined(S12_TIME_COMMIT_PROBE)
+            if (commit)
+            {
+                Bridge_TimeCommitProbePhaseEnd(TIME_COMMIT_PROBE_PHASE_EXIT_TRANSITION);
+                Bridge_TimeCommitProbeEnd();
+            }
+#endif
             return;
         }
     }
 
     UI_Sequencer_SetActiveScreen(UI_MainGridScreen_Get());
+#if defined(S12_TIME_COMMIT_PROBE)
+    if (commit)
+    {
+        Bridge_TimeCommitProbePhaseEnd(TIME_COMMIT_PROBE_PHASE_EXIT_TRANSITION);
+        Bridge_TimeCommitProbeEnd();
+    }
+#endif
 }
 
 static void UI_Sequencer_EnterQuantTimingMenu(uint8_t initial_cursor)
@@ -1787,9 +1855,7 @@ static void UI_Sequencer_ExitQuantTimingMenu(uint8_t commit)
     }
 
     s_ui_mode = UI_MODE_GRID;
-    UI_MainGridScreen_SetContext(s_selected_step,
-                                 s_active_step,
-                                 NULL);
+    UI_Sequencer_PrepareMainGridReturn();
 
     if (active == &s_quant_timing_screen)
     {
@@ -1830,9 +1896,7 @@ static void UI_Sequencer_ExitQuanRouterMenu(uint8_t commit)
     }
 
     s_ui_mode = UI_MODE_GRID;
-    UI_MainGridScreen_SetContext(s_selected_step,
-                                 s_active_step,
-                                 NULL);
+    UI_Sequencer_PrepareMainGridReturn();
 
     if (active == &s_quan_router_screen)
     {
@@ -1883,9 +1947,7 @@ static void UI_Sequencer_ExitSongChain(void)
 
     s_ui_mode = UI_MODE_GRID;
     UI_Sequencer_SetMainMode(UI_MAIN_MODE_STEP);
-    UI_MainGridScreen_SetContext(s_selected_step,
-                                 s_active_step,
-                                 NULL);
+    UI_Sequencer_PrepareMainGridReturn();
 
     if (active == &s_song_chain_screen)
     {
@@ -1980,9 +2042,7 @@ static void UI_Sequencer_ExitUserChordSubToMenu(void)
 static void UI_Sequencer_ExitUserChordToGrid(void)
 {
     s_ui_mode = UI_MODE_GRID;
-    UI_MainGridScreen_SetContext(s_selected_step,
-                                 s_active_step,
-                                 NULL);
+    UI_Sequencer_PrepareMainGridReturn();
     UI_Sequencer_SetActiveScreen(UI_MainGridScreen_Get());
 }
 
@@ -1991,6 +2051,32 @@ static uint8_t UI_Sequencer_StepHasNotes(uint8_t step)
     if (step < 1 || step > 12) return 0;
     if (Bridge_GetStepNoteMask((uint8_t)(step - 1)) != 0) return 1;
     return (s_step_chords[step - 1].chord_type != 0) ? 1 : 0;
+}
+
+static uint8_t UI_Sequencer_IsRepeatFlashEnabledForActive(void)
+{
+    if (s_active_step < 1u || s_active_step > 12u || !Bridge_IsPlaying()) return 0u;
+    return (s_step_chords[s_active_step - 1u].loop_count > 1u) ? 1u : 0u;
+}
+
+/* Every return to Main draws exactly this state synchronously, so the follow-up
+ * playback-indicator update sees nothing stale and draws nothing. */
+static void UI_Sequencer_PrepareMainGridReturn(void)
+{
+    uint8_t has_notes[12];
+
+    UI_Sequencer_UpdateActiveStepFromEngine();
+    s_repeat_flash_was_enabled = UI_Sequencer_IsRepeatFlashEnabledForActive();
+    s_repeat_flash_on = s_repeat_flash_was_enabled;
+    s_repeat_flash_ms = HAL_GetTick();
+    UI_Display_SetRepeatFlash(s_repeat_flash_was_enabled, s_repeat_flash_on);
+
+    for (uint8_t i = 0u; i < 12u; ++i)
+    {
+        has_notes[i] = UI_Sequencer_StepHasNotes((uint8_t)(i + 1u));
+    }
+    UI_MainGridScreen_SetContext(s_selected_step, s_active_step, has_notes);
+    s_last_active = s_active_step;
 }
 
 static uint8_t UI_Sequencer_NormalizeStepPianoSlots(uint8_t slots)
@@ -2189,10 +2275,26 @@ static void UI_Sequencer_RefreshStepPianoContext(uint8_t step)
     UI_PianoRollScreen_SetContext(&ctx);
 }
 
+#if defined(S12_TIME_COMMIT_PROBE)
+#define BAR_EXIT_PROBE_PHASE_BEGIN(phase) Bridge_TimeCommitProbePhaseBegin(phase)
+#define BAR_EXIT_PROBE_PHASE_END(phase) Bridge_TimeCommitProbePhaseEnd(phase)
+#define BAR_EXIT_PROBE_END() Bridge_TimeCommitProbeEnd()
+#else
+#define BAR_EXIT_PROBE_PHASE_BEGIN(phase) ((void)0)
+#define BAR_EXIT_PROBE_PHASE_END(phase) ((void)0)
+#define BAR_EXIT_PROBE_END() ((void)0)
+#endif
+
 static void UI_Sequencer_EnterStepPianoView(uint8_t step)
 {
     if (step < 1 || step > 12) return;
 
+#if defined(S12_TIME_COMMIT_PROBE)
+    Bridge_TimeCommitProbeBegin(TIME_COMMIT_PROBE_FLAG_PIANO_ENTER |
+                                ((uint32_t)step << TIME_COMMIT_PROBE_FLAG_BAR_SHIFT) |
+                                (Bridge_IsPlaying() ? TIME_COMMIT_PROBE_FLAG_PLAYING : 0u));
+#endif
+    BAR_EXIT_PROBE_PHASE_BEGIN(TIME_COMMIT_PROBE_PHASE_PIANO_PREPARE);
     UI_Sequencer_EndDirectShortcut();
     UI_Sequencer_EndDirectChordContext();
     s_exit_confirm_active = 0u;
@@ -2226,23 +2328,47 @@ static void UI_Sequencer_EnterStepPianoView(uint8_t step)
     UI_PianoRollScreen_ResetCache();
     ST7789_DebugSetPianoEvent(ST7789_PIANO_EVENT_ENTER);
     UI_Sequencer_RefreshStepPianoContext(step);
+    BAR_EXIT_PROBE_PHASE_END(TIME_COMMIT_PROBE_PHASE_PIANO_PREPARE);
 
     if (UI_ScreenRouter_GetActive() == UI_MainGridScreen_Get())
     {
+        BAR_EXIT_PROBE_PHASE_BEGIN(TIME_COMMIT_PROBE_PHASE_PIANO_PUSH_DRAW);
         if (UI_ScreenRouter_Push(UI_PianoRollScreen_Get()))
         {
+            BAR_EXIT_PROBE_PHASE_END(TIME_COMMIT_PROBE_PHASE_PIANO_PUSH_DRAW);
+            BAR_EXIT_PROBE_END();
             return;
         }
+        BAR_EXIT_PROBE_PHASE_END(TIME_COMMIT_PROBE_PHASE_PIANO_PUSH_DRAW);
     }
 
+    BAR_EXIT_PROBE_PHASE_BEGIN(TIME_COMMIT_PROBE_PHASE_PIANO_FALLBACK);
     UI_Sequencer_RefreshStepPianoContext(step);
+    BAR_EXIT_PROBE_PHASE_END(TIME_COMMIT_PROBE_PHASE_PIANO_FALLBACK);
+    BAR_EXIT_PROBE_END();
 }
 
 static void UI_Sequencer_ExitStepPiano(uint8_t save)
 {
     UiScreen* active = UI_ScreenRouter_GetActive();
 
+#if defined(S12_TIME_COMMIT_PROBE)
+    {
+        uint32_t flags = TIME_COMMIT_PROBE_FLAG_BAR_EXIT |
+                         ((uint32_t)s_selected_step << TIME_COMMIT_PROBE_FLAG_BAR_SHIFT);
+        if (Bridge_IsPlaying()) flags |= TIME_COMMIT_PROBE_FLAG_PLAYING;
+        if (save) flags |= TIME_COMMIT_PROBE_FLAG_BAR_SAVE;
+        for (uint8_t i = 0u; i < 12u; ++i)
+        {
+            if (s_step_piano_touched[i]) flags |= TIME_COMMIT_PROBE_FLAG_BAR_TOUCHED;
+        }
+        Bridge_TimeCommitProbeBegin(flags);
+    }
+#endif
+    BAR_EXIT_PROBE_PHASE_BEGIN(TIME_COMMIT_PROBE_PHASE_BAR_SESSION_END);
     UI_Sequencer_EndStepPianoSession(save);
+    BAR_EXIT_PROBE_PHASE_END(TIME_COMMIT_PROBE_PHASE_BAR_SESSION_END);
+    BAR_EXIT_PROBE_PHASE_BEGIN(TIME_COMMIT_PROBE_PHASE_BAR_STATE_RESET);
     UI_Sequencer_EndDirectShortcut();
     s_exit_confirm_active = 0u;
     s_exit_confirm_action = UI_EXIT_CONFIRM_ACTION_NONE;
@@ -2251,19 +2377,25 @@ static void UI_Sequencer_ExitStepPiano(uint8_t save)
     s_step_piano_length_pending = 1u;
 
     s_ui_mode = UI_MODE_GRID;
-    UI_MainGridScreen_SetContext(s_selected_step,
-                                 s_active_step,
-                                 NULL);
+    UI_Sequencer_PrepareMainGridReturn();
+    BAR_EXIT_PROBE_PHASE_END(TIME_COMMIT_PROBE_PHASE_BAR_STATE_RESET);
 
     if (active == UI_PianoRollScreen_Get())
     {
+        BAR_EXIT_PROBE_PHASE_BEGIN(TIME_COMMIT_PROBE_PHASE_BAR_ROUTER_POP);
         if (UI_ScreenRouter_Pop(save ? SCREEN_EXIT_SAVE : SCREEN_EXIT_BACK))
         {
+            BAR_EXIT_PROBE_PHASE_END(TIME_COMMIT_PROBE_PHASE_BAR_ROUTER_POP);
+            BAR_EXIT_PROBE_END();
             return;
         }
+        BAR_EXIT_PROBE_PHASE_END(TIME_COMMIT_PROBE_PHASE_BAR_ROUTER_POP);
     }
 
+    BAR_EXIT_PROBE_PHASE_BEGIN(TIME_COMMIT_PROBE_PHASE_BAR_FALLBACK);
     UI_Sequencer_SetActiveScreen(UI_MainGridScreen_Get());
+    BAR_EXIT_PROBE_PHASE_END(TIME_COMMIT_PROBE_PHASE_BAR_FALLBACK);
+    BAR_EXIT_PROBE_END();
 }
 
 static void UI_StepPiano_ActionMovePitch(int8_t delta)
@@ -2363,6 +2495,28 @@ static void UI_StepPiano_ActionClearBarRequest(void)
     snprintf(s_step_piano_confirm_message,
              sizeof(s_step_piano_confirm_message),
              "CLEAR BAR%02u?",
+             (unsigned)s_selected_step);
+    UI_Sequencer_RefreshStepPianoContext(s_selected_step);
+}
+
+static void UI_StepPiano_ActionPasteBarRequest(void)
+{
+    if (s_step_piano_confirm_active || s_step_piano_length_mode_active ||
+        s_selected_step < 1u || s_selected_step > 12u ||
+        Bridge_IsPlaying() || !UI_SequencerClipboard_IsBarValid()) return;
+
+    const uint8_t destination_bar = (uint8_t)(s_selected_step - 1u);
+    if (!Bridge_CanPasteCurrentEditBar(destination_bar)) return;
+
+    s_step_piano_confirm_active = 1u;
+    s_step_piano_confirm_yes_selected = 0u;
+    s_step_piano_confirm_action = UI_STEP_PIANO_CONFIRM_PASTE_BAR;
+    snprintf(s_step_piano_confirm_message,
+             sizeof(s_step_piano_confirm_message),
+             "P%u B%u>P%u B%u?",
+             (unsigned)(UI_SequencerClipboard_GetBarSourcePattern() + 1u),
+             (unsigned)UI_SequencerClipboard_GetBarSourceBar(),
+             (unsigned)(Bridge_GetCurrentPattern() + 1u),
              (unsigned)s_selected_step);
     UI_Sequencer_RefreshStepPianoContext(s_selected_step);
 }
@@ -2506,6 +2660,18 @@ static void UI_StepPiano_ActionConfirmModal(void)
         return;
     }
 
+    if (s_step_piano_confirm_action == UI_STEP_PIANO_CONFIRM_PASTE_BAR)
+    {
+        const uint8_t destination_bar = (uint8_t)(s_selected_step - 1u);
+        (void)Bridge_PasteCurrentEditBar(destination_bar);
+        s_step_piano_confirm_active = 0u;
+        s_step_piano_confirm_yes_selected = 0u;
+        s_step_piano_confirm_action = 0u;
+        s_step_piano_confirm_message[0] = '\0';
+        UI_Sequencer_RefreshStepPianoContext(s_selected_step);
+        return;
+    }
+
     s_step_piano_confirm_active = 0u;
     s_step_piano_confirm_yes_selected = 0u;
     s_step_piano_confirm_action = 0u;
@@ -2576,15 +2742,14 @@ static uint8_t UI_Sequencer_IsDirectShortcutActive(void)
 static uint8_t UI_Sequencer_ReturnToBarEditor(ScreenExitReason reason)
 {
     UiScreen* active = UI_ScreenRouter_GetActive();
+    TimeCommitProbe_PianoReturnBegin(s_ui_mode == UI_MODE_TIMING_MENU ? 1u :
+                                     (s_ui_mode == UI_MODE_ARP_MENU ? 2u : 3u));
 
-    while (active && active != UI_PianoRollScreen_Get())
-    {
-        if (!UI_ScreenRouter_Pop(reason))
-        {
-            break;
-        }
-        active = UI_ScreenRouter_GetActive();
-    }
+    UI_PianoRollScreen_ResetCache();
+    UI_Sequencer_RefreshStepPianoContext(s_selected_step);
+    UI_PianoRollScreen_ForceRedraw();
+    (void)UI_ScreenRouter_ReturnTo(UI_PianoRollScreen_Get(), reason);
+    active = UI_ScreenRouter_GetActive();
 
     if (active == UI_PianoRollScreen_Get())
     {
@@ -2598,17 +2763,11 @@ static uint8_t UI_Sequencer_ReturnToBarEditor(ScreenExitReason reason)
         s_direct_chord_confirm_message[0] = '\0';
         UI_Sequencer_EndDirectShortcut();
         UI_Sequencer_EndDirectChordContext();
-        /* Ensure stale direct-chord pixels cannot survive behind piano-roll incremental redraws. */
-        UI_PianoRollScreen_ResetCache();
-        UI_Sequencer_RefreshStepPianoContext(s_selected_step);
-        UI_PianoRollScreen_ForceRedraw();
-        if (active->on_draw)
-        {
-            active->on_draw();
-        }
+        TimeCommitProbe_PianoReturnEnd();
         return 1u;
     }
 
+    TimeCommitProbe_PianoReturnEnd();
     return 0u;
 }
 
@@ -3385,15 +3544,15 @@ static void UI_Sequencer_LoadTimingDraft(void)
 
 static uint8_t UI_Sequencer_CommitTimingDraft(void)
 {
-    Bridge_PersistBegin();
-    if (!Bridge_SetPatternTiming(s_timing_step_division, s_timing_ts_num, s_timing_ts_den))
-    {
-        Bridge_PersistEnd();
-        return 0u;
-    }
-    Bridge_SetPatternStepCount(s_timing_step_count);
-    Bridge_SetSwing(s_timing_swing);
-    Bridge_PersistEnd();
+    const UiTimingValues draft = {
+        s_timing_step_count,
+        s_timing_step_division,
+        s_timing_ts_num,
+        s_timing_ts_den,
+        s_timing_swing,
+    };
+
+    if (!UI_TimingCommit_Apply(&draft)) return 0u;
     UI_Sequencer_LoadTimingDraft();
     return 1u;
 }
@@ -3540,7 +3699,6 @@ static void UI_Sequencer_StartUserChordNameEdit(void)
     {
         return;
     }
-
     memset(s_user_chord_name_edit, 0, sizeof(s_user_chord_name_edit));
     strncpy(s_user_chord_name_edit, chord_info->name, 16);
     s_user_chord_name_edit[16] = '\0';
@@ -3552,7 +3710,6 @@ static void UI_Sequencer_StartUserChordNameEdit(void)
             s_user_chord_name_edit[i] = ' ';
         }
     }
-
     s_user_chord_name_cursor = 0;
     UI_Sequencer_EnterUserChordName();
 }
@@ -3560,6 +3717,7 @@ static void UI_Sequencer_StartUserChordNameEdit(void)
 /* ── Init ────────────────────────────────────────────────────────────────── */
 void UI_Sequencer_Init(void)
 {
+    UI_SequencerClipboard_Init();
     s_ui_mode       = UI_MODE_GRID;  // Start in grid mode
     s_selected_step = 1;
     s_active_step   = 0;
@@ -3596,7 +3754,7 @@ void UI_Sequencer_Init(void)
     UI_Transport_Init();
     UI_Screensaver_Init();
 
-    UI_MainGridScreen_SetContext(s_selected_step, s_active_step, NULL);
+    UI_Sequencer_PrepareMainGridReturn();
     UI_Sequencer_SetActiveScreen(UI_MainGridScreen_Get());
 
     // TEMP: Test chord menu on startup
@@ -4287,41 +4445,11 @@ static void UI_Sequencer_UpdateActiveStepFromEngine(void)
         s_active_step = 0;
 }
 
-static void UI_Sequencer_RedrawGridComposed(void)
-{
-    uint8_t has_chord_flags[12];
-    for (uint8_t i = 0; i < 12; ++i)
-    {
-        has_chord_flags[i] = UI_Sequencer_StepHasNotes((uint8_t)(i + 1u));
-    }
-
-    UI_Display_DrawMainGridComposed(s_selected_step,
-                                    s_active_step,
-                                    has_chord_flags,
-                                    UI_Transport_GetBPM(),
-                                    UI_Transport_GetState(),
-                                    UI_Transport_IsRecArmed(),
-                                    Bridge_GetCurrentPattern(),
-                                    (uint8_t)Bridge_GetCurrentStep(),
-                                    Bridge_GetCompletedLoops(),
-                                    Bridge_GetRunTimeMs());
-}
-
 static void UI_Sequencer_UpdateGridRepeatAndStepVisuals(void)
 {
     uint32_t now_ms = HAL_GetTick();
-    uint8_t repeat_flash_enabled = 0;
-    uint8_t active_has_notes = 0;
-    uint8_t need_redraw = 0;
-
-    if (s_active_step >= 1 && s_active_step <= 12 && Bridge_IsPlaying())
-    {
-        active_has_notes = UI_Sequencer_StepHasNotes(s_active_step);
-        if (s_step_chords[s_active_step - 1].loop_count > 1)
-        {
-            repeat_flash_enabled = 1;
-        }
-    }
+    const uint8_t repeat_flash_enabled = UI_Sequencer_IsRepeatFlashEnabledForActive();
+    uint8_t flash_changed = 0u;
 
     if (repeat_flash_enabled)
     {
@@ -4330,7 +4458,7 @@ static void UI_Sequencer_UpdateGridRepeatAndStepVisuals(void)
             s_repeat_flash_on = 1;
             s_repeat_flash_ms = now_ms;
             UI_Display_SetRepeatFlash(1, s_repeat_flash_on);
-            need_redraw = 1;
+            flash_changed = 1u;
         }
 
         if ((now_ms - s_repeat_flash_ms) >= 140)
@@ -4338,7 +4466,7 @@ static void UI_Sequencer_UpdateGridRepeatAndStepVisuals(void)
             s_repeat_flash_ms = now_ms;
             s_repeat_flash_on = (uint8_t)!s_repeat_flash_on;
             UI_Display_SetRepeatFlash(1, s_repeat_flash_on);
-            need_redraw = 1;
+            flash_changed = 1u;
         }
     }
     else
@@ -4347,25 +4475,30 @@ static void UI_Sequencer_UpdateGridRepeatAndStepVisuals(void)
         {
             s_repeat_flash_on = 0;
             UI_Display_SetRepeatFlash(0, 0);
-            need_redraw = 1;
+            flash_changed = 1u;
         }
     }
 
     s_repeat_flash_was_enabled = repeat_flash_enabled;
 
-    if (s_active_step != s_last_active)
+    const uint8_t active_changed = (s_active_step != s_last_active) ? 1u : 0u;
+    if (!active_changed && !flash_changed)
     {
-        need_redraw = 1;
-
-        /* Update last active step for next comparison */
-        s_last_active = s_active_step;
+        return;
     }
+    s_last_active = s_active_step;
 
-    if (need_redraw)
+    /* Box cache skips every Bar whose drawn colour is already correct, so normally
+     * only the old and new active Bars (or the flashing one) are sent. */
+    TimeCommitProbe_GridTransitionBegin();
+    for (uint8_t step = 1u; step <= 12u; ++step)
     {
-        (void)active_has_notes;
-        UI_Sequencer_RedrawGridComposed();
+        UI_Display_DrawStepBox(step,
+                               (step == s_selected_step) ? 1u : 0u,
+                               (step == s_active_step) ? 1u : 0u,
+                               UI_Sequencer_StepHasNotes(step));
     }
+    TimeCommitProbe_GridTransitionEnd(active_changed ? 0u : 1u);
 }
 
 static void UI_Sequencer_UpdateSongChainBlink(uint32_t now)
@@ -4427,12 +4560,111 @@ static void UI_Sequencer_UpdateStatusRowTick(uint32_t now)
     }
 }
 
+static uint8_t UI_Sequencer_MainGridOwnsDisplay(void)
+{
+    return (s_ui_mode == UI_MODE_GRID &&
+            UI_ScreenRouter_GetActive() == UI_MainGridScreen_Get() &&
+            !UI_Screensaver_IsActive() &&
+            !s_exit_confirm_active &&
+            !s_direct_chord_confirm.active) ? 1u : 0u;
+}
+
+/* Re-applies whatever changed while the sliced frame showed its snapshot. */
+static void UI_Sequencer_ApplyMainGridFrameFollowUp(void)
+{
+    (void)UI_Display_TakeMainGridDeferred();
+
+    for (uint8_t step = 1u; step <= 12u; ++step)
+    {
+        UI_Display_DrawStepBox(step,
+                               (step == s_selected_step) ? 1u : 0u,
+                               (step == s_active_step) ? 1u : 0u,
+                               UI_Sequencer_StepHasNotes(step));
+    }
+    UI_Display_DrawHeader(UI_Transport_GetBPM(), UI_Transport_GetState(), UI_Transport_IsRecArmed());
+    s_last_run_time = 0xFFFFFFFFu;
+    s_last_status_ms = HAL_GetTick() - 10u;
+}
+
+void UI_Sequencer_ServiceDisplay(void)
+{
+    if (UI_Sequencer_IsDirectChordContextActive() &&
+        (s_direct_chord_confirm.active || s_exit_confirm_active || UI_Screensaver_IsActive()))
+    {
+        UI_Display_CancelDirectChordFrame();
+        return;
+    }
+    if (UI_Display_IsDirectChordFrameActive())
+    {
+        if (s_ui_mode == UI_MODE_CHORD_PARAMS &&
+            UI_ScreenRouter_GetActive() == UI_ChordParamsScreen_Get() &&
+            !UI_Screensaver_IsActive() && !s_direct_chord_confirm.active && !s_exit_confirm_active)
+            UI_Display_ServiceDirectChordFrame();
+        else UI_Display_CancelDirectChordFrame();
+        return;
+    }
+    if (UI_Display_IsTimingFrameActive())
+    {
+        if (s_ui_mode == UI_MODE_TIMING_MENU &&
+            UI_ScreenRouter_GetActive() == &s_timing_screen &&
+            !UI_Screensaver_IsActive() && !s_exit_confirm_active)
+            UI_Display_ServiceTimingFrame();
+        else
+            UI_Display_CancelTimingFrame();
+        return;
+    }
+    if (UI_PianoRollScreen_IsFrameActive())
+    {
+        if (s_ui_mode == UI_MODE_STEP_PIANO &&
+            UI_ScreenRouter_GetActive() == UI_PianoRollScreen_Get() &&
+            !UI_Screensaver_IsActive())
+            UI_PianoRollScreen_ServiceFrame();
+        else
+            UI_PianoRollScreen_CancelFrame();
+        return;
+    }
+    if (s_grid_frame_followup_pending)
+    {
+        s_grid_frame_followup_pending = 0u;
+        if (!UI_Display_IsMainGridFrameActive() && UI_Sequencer_MainGridOwnsDisplay())
+        {
+            UI_Sequencer_ApplyMainGridFrameFollowUp();
+        }
+        return;
+    }
+
+    if (!UI_Display_IsMainGridFrameActive()) return;
+
+    if (!UI_Sequencer_MainGridOwnsDisplay())
+    {
+        UI_Display_CancelMainGridFrame();
+        return;
+    }
+
+    if (UI_Display_ServiceMainGridFrame())
+    {
+        s_grid_frame_followup_pending = 1u;
+    }
+}
+
 /* ── Update — called every 10ms from main loop ───────────────────────────── */
+static void UI_Sequencer_ProbeContext(void)
+{
+#if defined(S12_TIME_COMMIT_PROBE)
+    const UiScreen* screen = UI_ScreenRouter_GetActive();
+    const uint8_t modal = (s_exit_confirm_active || s_direct_chord_confirm.active ||
+                           s_step_piano_confirm_active) ? 1u : 0u;
+    TimeCommitProbe_SetUiContext((uint8_t)s_ui_mode, s_selected_step, s_active_step, modal,
+                                 screen ? screen->name : NULL);
+#endif
+}
+
 void UI_Sequencer_Update(void)
 {
     UiScreensaverResult ss = UI_Screensaver_Tick();
     if (ss == UI_SCREENSAVER_JUST_WOKE)
     {
+        TimeCommitProbe_UiEvent(UI_PROBE_EVENT_SS_WAKE, 0);
         /* Screensaver painted over the whole display; force one full, state-
          * preserving repaint of whatever screen was already active. Does not
          * reset s_ui_mode, cursor position, or any navigation state. */
@@ -4441,15 +4673,21 @@ void UI_Sequencer_Update(void)
             UI_PianoRollScreen_ResetCache();
             UI_PianoRollScreen_ForceRedraw();
         }
+        else if (s_ui_mode == UI_MODE_GRID)
+        {
+            UI_Sequencer_PrepareMainGridReturn();
+        }
         UiScreen* active = UI_ScreenRouter_GetActive();
         if (active && active->on_draw)
         {
             active->on_draw();
         }
+        UI_Sequencer_ProbeContext();
         return;
     }
     if (ss == UI_SCREENSAVER_ACTIVE)
     {
+        UI_Sequencer_ProbeContext();
         return;
     }
 
@@ -4465,7 +4703,7 @@ void UI_Sequencer_Update(void)
          * engine and force a full repaint so the grid shows the new one. */
         if (s_ui_mode == UI_MODE_GRID)
         {
-            UI_MainGridScreen_SetContext(s_selected_step, s_active_step, NULL);
+            UI_Sequencer_PrepareMainGridReturn();
             UiScreen* grid = UI_ScreenRouter_GetActive();
             if (grid && grid->on_draw)
             {
@@ -4474,7 +4712,11 @@ void UI_Sequencer_Update(void)
         }
     }
 
-    UI_Sequencer_HandleShiftTapEvent(UI_Input_GetShiftTap());
+    {
+        const uint8_t shift_tap = UI_Input_GetShiftTap();
+        if (shift_tap) TimeCommitProbe_UiEvent(UI_PROBE_EVENT_SHIFT_TAP, shift_tap);
+        UI_Sequencer_HandleShiftTapEvent(shift_tap);
+    }
 
     if (s_exit_confirm_active || s_direct_chord_confirm.active)
     {
@@ -4492,11 +4734,17 @@ void UI_Sequencer_Update(void)
         uint8_t shift_play_pressed = UI_Input_IsShiftPlayPressed();
         uint8_t rec_pressed        = UI_Input_IsRecPressed();
         uint8_t shift_rec_pressed  = UI_Input_IsShiftRecPressed();
+        if (play_pressed) TimeCommitProbe_UiEvent(UI_PROBE_EVENT_PLAY, 0);
+        if (shift_play_pressed) TimeCommitProbe_UiEvent(UI_PROBE_EVENT_SHIFT_PLAY, 0);
+        if (rec_pressed) TimeCommitProbe_UiEvent(UI_PROBE_EVENT_REC, 0);
+        if (shift_rec_pressed) TimeCommitProbe_UiEvent(UI_PROBE_EVENT_SHIFT_REC, 0);
         UI_Sequencer_HandlePlayRecInput(play_pressed, shift_play_pressed, rec_pressed, shift_rec_pressed);
 
         /* ── Direct step matrix presses (table-driven) ───────────────────── */
         uint8_t step_press = UI_Input_GetStepPressed();
         uint8_t shift_step_press = UI_Input_GetShiftStepPressed();
+        if (step_press) TimeCommitProbe_UiEvent(UI_PROBE_EVENT_STEP, step_press);
+        if (shift_step_press) TimeCommitProbe_UiEvent(UI_PROBE_EVENT_SHIFT_STEP, shift_step_press);
         UI_Sequencer_HandleStepMatrixInput(step_press, shift_step_press);
     }
 
@@ -4506,6 +4754,8 @@ void UI_Sequencer_Update(void)
         uint8_t long_press = UI_Input_IsEncoderLongPressed();
         uint8_t short_press = UI_Input_IsEncoderShortPressed();
         (void)UI_Input_IsEncoderPressed();
+        if (long_press) TimeCommitProbe_UiEvent(UI_PROBE_EVENT_ENC_LONG, 0);
+        if (short_press) TimeCommitProbe_UiEvent(UI_PROBE_EVENT_ENC_SHORT, 0);
 
         if (long_press)
         {
@@ -4520,6 +4770,8 @@ void UI_Sequencer_Update(void)
     {
         uint8_t short_press = UI_Input_IsEncoderShortPressed();
         uint8_t long_press = UI_Input_IsEncoderLongPressed();
+        if (long_press) TimeCommitProbe_UiEvent(UI_PROBE_EVENT_ENC_LONG, 0);
+        if (short_press) TimeCommitProbe_UiEvent(UI_PROBE_EVENT_ENC_SHORT, 0);
 
         if (s_direct_chord_confirm.active)
         {
@@ -4563,6 +4815,7 @@ void UI_Sequencer_Update(void)
     /* ── Encoder — move cursor or navigate menus ─────────────────────── */
     {
         const int8_t encoder_delta = UI_Input_GetEncoderDelta();
+        if (encoder_delta) TimeCommitProbe_UiEvent(UI_PROBE_EVENT_ENC_DELTA, encoder_delta);
         if (s_direct_chord_confirm.active)
         {
             UI_Sequencer_HandleDirectChordConfirmDelta(encoder_delta);
@@ -4599,4 +4852,5 @@ void UI_Sequencer_Update(void)
 
 /* ── Process engine dirty flags ───────────────────────────────────── */
 Bridge_Process();
+UI_Sequencer_ProbeContext();
 }

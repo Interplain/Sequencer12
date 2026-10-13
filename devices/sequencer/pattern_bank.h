@@ -19,22 +19,13 @@ public:
     KeyRoot     GetKeyRoot() const;
     KeyScale    GetKeyScale() const;
 
-    // Returns the effective BPM for a given pattern
-    // (uses pattern override if set, otherwise global)
-    uint32_t    GetEffectiveBpm(uint8_t pattern_index) const;
+    uint32_t    GetEffectiveBpm(float tempo_multiplier) const;
 
     // Returns true if a note (0-11) is diatonic in the current key
     bool        IsNoteDiatonic(uint8_t note) const;
 
     // Returns a transposed copy of a note_mask shifted to current key root
     uint16_t    TransposeToKey(uint16_t note_mask) const;
-
-    // ── Pattern access ────────────────────────────────────────
-    Pattern&        GetPattern(uint8_t index);
-    const Pattern&  GetPattern(uint8_t index) const;
-
-    void        ClearPattern(uint8_t index);
-    void        CopyPattern(uint8_t src, uint8_t dst);
 
     // ── Chain management ──────────────────────────────────────
     void        ChainClear();
@@ -48,9 +39,9 @@ public:
 
     // ── Chain playback ────────────────────────────────────────
     void        ChainReset();
+    void        ChainSetPosition(uint8_t position);
     uint8_t     ChainCurrentPosition() const;
     uint8_t     ChainCurrentPatternIndex() const;
-    const Pattern& ChainCurrentPattern() const;
     void        ChainAdvance();   // move to next position, wraps to 0
 
     // ── Whole song ────────────────────────────────────────────
@@ -60,11 +51,7 @@ public:
     void        LoadSong(const Song& song);
 
 private:
-    Song    song_{};
-
-    // Safe bounds-checked pattern access
-    Pattern&        PatternAt(uint8_t index);
-    const Pattern&  PatternAt(uint8_t index) const;
+  Song    song_{};
 };
 
 } // namespace sequencer

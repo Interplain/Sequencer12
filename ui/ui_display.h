@@ -51,21 +51,35 @@ typedef enum
 /* ── Init ────────────────────────────────────────────────────────────────── */
 void UI_Display_Init(void);
 void UI_Display_FastReturnToGrid(void);
+uint8_t UI_Display_IsTimingFrameActive(void);
+void UI_Display_ServiceTimingFrame(void);
+void UI_Display_CancelTimingFrame(void);
+void UI_Display_ResetTimingFrameCache(void);
+uint8_t UI_Display_IsDirectChordFrameActive(void);
+void UI_Display_ServiceDirectChordFrame(void);
+void UI_Display_CancelDirectChordFrame(void);
+void UI_Display_ResetDirectChordFrame(void);
 
 /* ── Grid ────────────────────────────────────────────────────────────────── */
 void UI_Display_DrawGrid(void);
 void UI_Display_DrawStepBox(uint8_t step, uint8_t selected, uint8_t active, uint8_t has_chord);
 void UI_Display_SetRepeatFlash(uint8_t enabled, uint8_t on_phase);
-void UI_Display_DrawMainGridComposed(uint8_t selected_step,
-                                     uint8_t active_step,
-                                     const uint8_t* has_chord_flags,
-                                     uint16_t bpm,
-                                     TransportState state,
-                                     uint8_t rec_armed,
-                                     uint8_t pattern,
-                                     uint8_t step,
-                                     uint32_t loops,
-                                     uint32_t run_time_ms);
+/* Full Main Grid frames are sliced: Begin captures a snapshot, each Service call
+ * renders and sends at most one strip (returns 1 when the frame completes). */
+void UI_Display_BeginMainGridFrame(uint8_t selected_step,
+                                   uint8_t active_step,
+                                   const uint8_t* has_chord_flags,
+                                   uint16_t bpm,
+                                   TransportState state,
+                                   uint8_t rec_armed,
+                                   uint8_t pattern,
+                                   uint8_t step,
+                                   uint32_t loops,
+                                   uint32_t run_time_ms);
+uint8_t UI_Display_ServiceMainGridFrame(void);
+uint8_t UI_Display_IsMainGridFrameActive(void);
+void UI_Display_CancelMainGridFrame(void);
+uint8_t UI_Display_TakeMainGridDeferred(void);
 
 /* ── Header ──────────────────────────────────────────────────────────────── */
 void UI_Display_DrawHeader(uint16_t bpm, TransportState state, uint8_t rec_armed);

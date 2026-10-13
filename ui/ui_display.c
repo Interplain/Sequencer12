@@ -8,6 +8,8 @@
 #include "sequencer_bridge.h"
 #include "screens/ui_screen_piano_roll.h"
 #include "ui_render_scratch.h"
+#include "ui_frame_job.h"
+#include "stm32/time_commit_probe.h"
 /* ── Layout constants ────────────────────────────────────────────────────── */
 #define SCREEN_W    ST7789_WIDTH
 #define SCREEN_H    ST7789_HEIGHT
@@ -158,18 +160,46 @@ static void MainGridStripDrawBorderedRect(uint8_t* buffer,
                                           uint16_t fill,
                                           uint16_t border,
                                           uint8_t border_t);
+/* Everything one Main Grid frame shows, captured once so all strips agree. */
+typedef struct
+{
+    uint8_t selected_step;
+    uint8_t active_step;
+    uint8_t has_chord[12];
+    uint8_t flash_enabled;
+    uint8_t flash_on;
+    UiMainMode main_mode;
+    TransportState state;
+    uint8_t rec_armed;
+    uint16_t bpm;
+    uint8_t pattern;
+    uint8_t step;
+    uint8_t current_bar;
+    uint8_t current_substep;
+    uint8_t div;
+    uint8_t swing;
+    uint8_t chain_len;
+    uint32_t loops;
+    uint32_t run_time_ms;
+    char bpm_text[8];
+    char status_text[32];
+    char quant_text[12];
+    char swing_text[12];
+    char pattern_text[12];
+} MainGridFrame;
+
 static void MainGridComposeStrip(uint8_t* buffer,
                                  uint16_t strip_y,
                                  uint16_t strip_h,
-                                 uint8_t selected_step,
-                                 uint8_t active_step,
-                                 const uint8_t* has_chord_flags,
-                                 uint16_t bpm,
-                                 TransportState state,
-                                 uint8_t rec_armed,
-                                 uint8_t step,
-                                 uint32_t loops,
-                                 uint32_t run_time_ms);
+                                 const MainGridFrame* frame);
+static uint16_t MainGridBoxColourFor(uint8_t selected, uint8_t active, uint8_t has_chord,
+                                     uint8_t flash_enabled, uint8_t flash_on);
+static uint16_t MainGridBoxColour(uint8_t selected, uint8_t active, uint8_t has_chord);
+static void MainGridComposeBox(uint8_t* buffer,
+                               uint16_t strip_y,
+                               uint16_t strip_h,
+                               uint8_t step_no,
+                               uint16_t colour);
 
 enum {
     MENU_FRAME_NONE = 0,
@@ -248,11 +278,23 @@ static uint16_t s_prev_header_bpm = 0xFFFF;
 static TransportState s_prev_header_state = (TransportState)0xFF;
 static uint8_t s_prev_header_rec = 0xFF;
 static uint8_t s_step_cache_valid[12] = {0};
-static uint8_t s_step_cache_selected[12] = {0};
-static uint8_t s_step_cache_active[12] = {0};
-static uint8_t s_step_cache_has_chord[12] = {0};
-static uint8_t s_step_cache_flash_on[12] = {0};
-static uint8_t s_step_cache_flash_enabled[12] = {0};
+static uint16_t s_step_cache_colour[12] = {0};
+
+/* Composition target: strips span the full width; a single Bar box spans only itself. */
+static uint16_t s_compose_x0 = 0u;
+static uint16_t s_compose_w = SCREEN_W;
+
+static UiFrameJob s_main_grid_job;
+static MainGridFrame s_main_grid_frame;
+
+typedef struct
+{
+    uint8_t step_count, division, numerator, denominator, swing, cursor, unsaved, rejected;
+} TimingFrame;
+static UiFrameJob s_timing_frame_job;
+static TimingFrame s_timing_frame, s_timing_latest;
+static uint8_t s_timing_followup;
+#define TIMING_STRIP_H 8u
 static uint8_t s_mcp_dbg_valid = 0;
 static uint8_t s_mcp_dbg_online = 0xFF;
 static uint8_t s_mcp_dbg_read_ok = 0xFF;
@@ -262,6 +304,7 @@ static uint8_t s_mcp_dbg_addr7 = 0xFF;
 static uint8_t s_mcp_dbg_scan_mask = 0xFF;
 
 #define MAIN_GRID_STRIP_H 16u
+#define MAIN_GRID_STRIP_COUNT ((SCREEN_H + MAIN_GRID_STRIP_H - 1u) / MAIN_GRID_STRIP_H)
 
 /* ── Init ────────────────────────────────────────────────────────────────── */
 void UI_Display_Init(void)
@@ -374,97 +417,168 @@ void UI_Display_FastReturnToGrid(void)
     s_mcp_dbg_valid = 0;
 }
 
-void UI_Display_DrawMainGridComposed(uint8_t selected_step,
-                                     uint8_t active_step,
-                                     const uint8_t* has_chord_flags,
-                                     uint16_t bpm,
-                                     TransportState state,
-                                     uint8_t rec_armed,
-                                     uint8_t pattern,
-                                     uint8_t step,
-                                     uint32_t loops,
-                                     uint32_t run_time_ms)
+void UI_Display_BeginMainGridFrame(uint8_t selected_step,
+                                   uint8_t active_step,
+                                   const uint8_t* has_chord_flags,
+                                   uint16_t bpm,
+                                   TransportState state,
+                                   uint8_t rec_armed,
+                                   uint8_t pattern,
+                                   uint8_t step,
+                                   uint32_t loops,
+                                   uint32_t run_time_ms)
 {
+    MainGridFrame* f = &s_main_grid_frame;
+    uint8_t step_total = Bridge_GetStepLedgerLength(step);
+    if (step_total == 0u) step_total = 1u;
+
+    f->selected_step = selected_step;
+    f->active_step = active_step;
+    for (uint8_t i = 0u; i < 12u; ++i)
+    {
+        f->has_chord[i] = has_chord_flags ? has_chord_flags[i] : 0u;
+    }
+    f->flash_enabled = s_repeat_flash_enabled;
+    f->flash_on = s_repeat_flash_on;
+    f->main_mode = s_main_mode;
+    f->state = state;
+    f->rec_armed = rec_armed;
+    f->bpm = bpm;
+    f->pattern = pattern;
+    f->step = step;
+    f->current_bar = (uint8_t)(step + 1u);
+    f->current_substep = (uint8_t)(Bridge_GetCurrentStepSubIndex() + 1u);
+    f->div = Bridge_GetPatternStepDivision();
+    f->swing = Bridge_GetSwing();
+    f->chain_len = Bridge_GetChainLength();
+    f->loops = loops;
+    f->run_time_ms = run_time_ms;
+
+    snprintf(f->bpm_text, sizeof(f->bpm_text), "%3u", bpm);
+    snprintf(f->status_text, sizeof(f->status_text), "%02u/%02u S%02u/%02u %02lu:%02lu.%03lu",
+             (unsigned)f->current_bar,
+             (unsigned)Bridge_GetPatternStepCount(),
+             (unsigned)f->current_substep,
+             (unsigned)step_total,
+             (unsigned long)(run_time_ms / 60000u),
+             (unsigned long)((run_time_ms % 60000u) / 1000u),
+             (unsigned long)(run_time_ms % 1000u));
+    snprintf(f->quant_text, sizeof(f->quant_text), "1/%u", (unsigned)(f->div * 4u));
+    snprintf(f->swing_text, sizeof(f->swing_text), "%u%%", (unsigned)f->swing);
+    snprintf(f->pattern_text, sizeof(f->pattern_text), "%02u/%02u",
+             (unsigned)(pattern + 1u),
+             (unsigned)((f->chain_len < 1u) ? 1u : f->chain_len));
+
+    TimeCommitProbe_RecordGridFull();
+    TimeCommitProbe_FrameBegin(UiFrameJob_Begin(&s_main_grid_job, (uint8_t)MAIN_GRID_STRIP_COUNT));
+}
+
+static void MainGridFinalizeFrame(void)
+{
+    const MainGridFrame* f = &s_main_grid_frame;
+    const uint32_t ms = f->run_time_ms;
+    char timer_digits[10];
+
+    s_prev_header_bpm = f->bpm;
+    s_prev_header_state = f->state;
+    s_prev_header_rec = f->rec_armed;
+    s_header_valid = 1;
+
+    s_prev_pattern = f->pattern;
+    s_prev_step = f->step;
+    s_prev_bar = f->current_bar;
+    s_prev_substep = f->current_substep;
+    s_prev_loops = f->loops;
+    s_prev_mins = ms / 60000u;
+    s_prev_secs = (ms % 60000u) / 1000u;
+    s_prev_main_mode = f->main_mode;
+    s_force_status_redraw = 0;
+    snprintf(s_prev_bar_digits, sizeof(s_prev_bar_digits), "%02u", (unsigned)f->current_bar);
+    snprintf(s_prev_step_digits, sizeof(s_prev_step_digits), "%02u", (unsigned)f->current_substep);
+    snprintf(timer_digits, sizeof(timer_digits), "%02lu:%02lu.%03lu",
+             (unsigned long)(ms / 60000u),
+             (unsigned long)((ms % 60000u) / 1000u),
+             (unsigned long)(ms % 1000u));
+    memcpy(s_prev_timer_digits, timer_digits, sizeof(s_prev_timer_digits));
+
+    s_sidebar_valid = 1;
+    s_prev_sidebar_div = f->div;
+    s_prev_sidebar_swing = f->swing;
+    s_prev_sidebar_pattern = f->pattern;
+    s_prev_sidebar_chain_len = f->chain_len;
+
+    for (uint8_t i = 0; i < 12; i++)
+    {
+        s_step_cache_colour[i] = MainGridBoxColourFor(((i + 1u) == f->selected_step) ? 1u : 0u,
+                                                      ((i + 1u) == f->active_step) ? 1u : 0u,
+                                                      f->has_chord[i],
+                                                      f->flash_enabled,
+                                                      f->flash_on);
+        s_step_cache_valid[i] = 1u;
+    }
+}
+
+uint8_t UI_Display_ServiceMainGridFrame(void)
+{
+    uint8_t strip = 0u;
+    if (!UiFrameJob_NextStrip(&s_main_grid_job, &strip)) return 0u;
+
     uint8_t* grid_strip_buf = UI_RenderScratch_Acquire(UI_RENDER_SCRATCH_OWNER_MAIN_GRID);
-    if (!grid_strip_buf)
+    if (!grid_strip_buf) return 0u;
+
+    const uint16_t strip_y = (uint16_t)(strip * MAIN_GRID_STRIP_H);
+    uint16_t strip_h = MAIN_GRID_STRIP_H;
+    if ((uint16_t)(strip_y + strip_h) > SCREEN_H)
     {
-        return;
+        strip_h = (uint16_t)(SCREEN_H - strip_y);
     }
 
-    (void)pattern;
-
-    for (uint16_t strip_y = 0; strip_y < SCREEN_H; strip_y += MAIN_GRID_STRIP_H)
-    {
-        uint16_t strip_h = MAIN_GRID_STRIP_H;
-        if ((uint16_t)(strip_y + strip_h) > SCREEN_H)
-        {
-            strip_h = (uint16_t)(SCREEN_H - strip_y);
-        }
-
-        MainGridComposeStrip(grid_strip_buf,
-                             strip_y,
-                             strip_h,
-                             selected_step,
-                             active_step,
-                             has_chord_flags,
-                             bpm,
-                             state,
-                             rec_armed,
-                             step,
-                             loops,
-                             run_time_ms);
-
-        ST7789_DrawRGB565Buffer(0,
-                                strip_y,
-                                SCREEN_W,
-                                strip_h,
-                                grid_strip_buf,
-                                (uint32_t)SCREEN_W * (uint32_t)strip_h * 2u);
-    }
-
+    TimeCommitProbe_FrameStripBegin();
+    MainGridComposeStrip(grid_strip_buf, strip_y, strip_h, &s_main_grid_frame);
+    ST7789_DrawRGB565Buffer(0,
+                            strip_y,
+                            SCREEN_W,
+                            strip_h,
+                            grid_strip_buf,
+                            (uint32_t)SCREEN_W * (uint32_t)strip_h * 2u);
     UI_RenderScratch_Release(UI_RENDER_SCRATCH_OWNER_MAIN_GRID);
+    TimeCommitProbe_FrameStripEnd();
 
-    {
-        uint32_t total_sec = run_time_ms / 1000u;
-        uint32_t mins      = total_sec / 60u;
-        uint32_t secs      = total_sec % 60u;
-        uint8_t div        = Bridge_GetPatternStepDivision();
-        uint8_t swing      = Bridge_GetSwing();
+    if (!UiFrameJob_CompleteStrip(&s_main_grid_job)) return 0u;
 
-        s_prev_header_bpm = bpm;
-        s_prev_header_state = state;
-        s_prev_header_rec = rec_armed;
-        s_header_valid = 1;
+    MainGridFinalizeFrame();
+    TimeCommitProbe_FrameComplete();
+    return 1u;
+}
 
-        s_prev_pattern = pattern;
-        s_prev_step = step;
-        s_prev_loops = loops;
-        s_prev_mins = mins;
-        s_prev_secs = secs;
-        s_prev_main_mode = s_main_mode;
-        s_force_status_redraw = 0;
-        s_sidebar_valid = 1;
-        s_prev_sidebar_div = div;
-        s_prev_sidebar_swing = swing;
-        s_prev_sidebar_pattern = Bridge_GetCurrentPattern();
-        s_prev_sidebar_chain_len = Bridge_GetChainLength();
+uint8_t UI_Display_IsMainGridFrameActive(void)
+{
+    return s_main_grid_job.active;
+}
 
-        for (uint8_t i = 0; i < 12; i++)
-        {
-            s_step_cache_selected[i] = ((i + 1u) == selected_step) ? 1u : 0u;
-            s_step_cache_active[i] = ((i + 1u) == active_step) ? 1u : 0u;
-            s_step_cache_has_chord[i] = has_chord_flags ? has_chord_flags[i] : 0u;
-            s_step_cache_flash_on[i] = s_repeat_flash_on;
-            s_step_cache_flash_enabled[i] = s_repeat_flash_enabled;
-            s_step_cache_valid[i] = 1u;
-        }
-    }
+void UI_Display_CancelMainGridFrame(void)
+{
+    if (s_main_grid_job.active) TimeCommitProbe_FrameCancel();
+    UiFrameJob_Cancel(&s_main_grid_job);
+}
 
+uint8_t UI_Display_TakeMainGridDeferred(void)
+{
+    return UiFrameJob_TakeDeferred(&s_main_grid_job);
+}
+
+static uint8_t MainGridDefer(uint8_t bits)
+{
+    if (!UiFrameJob_Defer(&s_main_grid_job, bits)) return 0u;
+    TimeCommitProbe_FrameDeferred();
+    return 1u;
 }
 
 /* ── Header ──────────────────────────────────────────────────────────────── */
 void UI_Display_DrawHeader(uint16_t bpm, TransportState state, uint8_t rec_armed)
 {
+    if (MainGridDefer(UI_FRAME_DEFER_HEADER)) return;
+
     if (s_header_valid &&
         s_prev_header_bpm == bpm &&
         s_prev_header_state == state &&
@@ -522,64 +636,35 @@ void UI_Display_DrawGrid(void)
         UI_Display_DrawStepBox(i, 0, 0, 0);  /* No chords during grid init */
 }
 
+_Static_assert((uint32_t)BOX_W * BOX_H * 2u <= UI_RENDER_SCRATCH_BYTES, "Bar box must fit render scratch");
+
 void UI_Display_DrawStepBox(uint8_t step, uint8_t selected, uint8_t active, uint8_t has_chord)
 {
-    uint8_t  index = step - 1;
-    uint8_t  col   = index % 4;
-    uint8_t  row   = index / 4;
+    if (step < 1u || step > 12u) return;
+    if (MainGridDefer(UI_FRAME_DEFER_BOXES)) return;
 
-    if (index < 12U &&
-        s_step_cache_valid[index] &&
-        s_step_cache_selected[index] == selected &&
-        s_step_cache_active[index] == active &&
-        s_step_cache_has_chord[index] == has_chord &&
-        s_step_cache_flash_on[index] == s_repeat_flash_on &&
-        s_step_cache_flash_enabled[index] == s_repeat_flash_enabled) {
-        return;
-    }
+    const uint8_t index = (uint8_t)(step - 1u);
+    const uint16_t colour = MainGridBoxColour(selected, active, has_chord);
+    if (s_step_cache_valid[index] && s_step_cache_colour[index] == colour) return;
 
-    uint16_t x = GRID_X + col * (BOX_W + GAP_X);
-    uint16_t y = GRID_Y + row * (BOX_H + GAP_Y);
+    const uint16_t x = (uint16_t)(GRID_X + (index % 4u) * (BOX_W + GAP_X));
+    const uint16_t y = (uint16_t)(GRID_Y + (index / 4u) * (BOX_H + GAP_Y));
+    uint8_t* box_buf = UI_RenderScratch_Acquire(UI_RENDER_SCRATCH_OWNER_MAIN_GRID);
+    if (!box_buf) return;
 
-    /* Priority: active (playing) > selected+saved > selected+empty > saved > normal */
-    uint16_t colour;
-    if (active && s_repeat_flash_enabled)
-        colour = s_repeat_flash_on ? WHITE : BLUE;
-    else if (active)
-        colour = COL_ACTIVE;
-    else if (selected && has_chord)
-        colour = COL_CHORD;
-    else if (selected)
-        colour = COL_SELECTED_EMPTY;
-    else if (has_chord)
-        colour = COL_CHORD;
-    else
-        colour = COL_NORMAL;
+    /* Same compositor as the full Main Grid, so both paths produce identical pixels. */
+    s_compose_x0 = x;
+    s_compose_w = BOX_W;
+    MainGridComposeBox(box_buf, y, BOX_H, step, colour);
+    s_compose_x0 = 0u;
+    s_compose_w = SCREEN_W;
 
-    char s[4];
-    snprintf(s, sizeof(s), "%u", step);
+    ST7789_DrawRGB565Buffer(x, y, BOX_W, BOX_H, box_buf, (uint32_t)BOX_W * BOX_H * 2u);
+    UI_RenderScratch_Release(UI_RENDER_SCRATCH_OWNER_MAIN_GRID);
 
-    ST7789_FillRectBordered(x, y, BOX_W, BOX_H, COLOR_BOX_BG, colour, BORDER_T);
-
-    uint8_t len = 0;
-    while (s[len]) len++;
-
-    /* Match composed-grid typography size so incremental redraws look consistent. */
-    uint16_t textW = (uint16_t)(len * Font16x24.width);
-    uint16_t textH = (uint16_t)(Font16x24.height);
-    uint16_t tx    = x + ((BOX_W - textW) / 2);
-    uint16_t ty    = y + ((BOX_H - textH) / 2);
-
-    ST7789_DrawString(tx, ty, s, &Font16x24, colour, COLOR_BOX_BG);
-
-    if (index < 12U) {
-        s_step_cache_selected[index] = selected;
-        s_step_cache_active[index] = active;
-        s_step_cache_has_chord[index] = has_chord;
-        s_step_cache_flash_on[index] = s_repeat_flash_on;
-        s_step_cache_flash_enabled[index] = s_repeat_flash_enabled;
-        s_step_cache_valid[index] = 1;
-    }
+    s_step_cache_colour[index] = colour;
+    s_step_cache_valid[index] = 1u;
+    TimeCommitProbe_RecordGridBox();
 }
 
 void UI_Display_SetRepeatFlash(uint8_t enabled, uint8_t on_phase)
@@ -593,6 +678,7 @@ void UI_Display_SetShiftIndicator(uint8_t active)
 {
     (void)active;
     if (s_menu_frame != MENU_FRAME_NONE) return;
+    if (s_main_grid_job.active) return;
     ST7789_FillRect(0, 47, MAIN_W, 1, COLOR_BG);
 }
 
@@ -638,7 +724,7 @@ static void DrawSidebarInfo(void)
         snprintf(q, sizeof(q), "%02u/%02u",
                  (unsigned)(pattern + 1u),
                  (unsigned)((chain_len < 1u) ? 1u : chain_len));
-        ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 148, "PAT", &Font8x12, LIGHTBLUE, panel_bg);
+        ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 148, "PATTERN", &Font8x12, LIGHTBLUE, panel_bg);
         ST7789_DrawString((uint16_t)(SIDEBAR_X + 8), 164, q, &Font12x20, WHITE, panel_bg);
     }
 
@@ -675,15 +761,19 @@ static void MainGridStripFillRect(uint8_t* buffer,
     uint16_t y1 = ((uint32_t)y + h < (uint32_t)strip_y + strip_h) ? (uint16_t)(y + h) : (uint16_t)(strip_y + strip_h);
     if (y0 >= y1) return;
 
-    if ((uint32_t)x + w > SCREEN_W) w = (uint16_t)(SCREEN_W - x);
+    const uint32_t target_x1 = (uint32_t)s_compose_x0 + s_compose_w;
+    const uint16_t x0 = (x > s_compose_x0) ? x : s_compose_x0;
+    const uint32_t x1 = ((uint32_t)x + w < target_x1) ? (uint32_t)x + w : target_x1;
+    if ((uint32_t)x0 >= x1) return;
+    w = (uint16_t)(x1 - x0);
 
     uint8_t hi = (uint8_t)(color >> 8);
     uint8_t lo = (uint8_t)(color & 0xFF);
 
     for (uint16_t py = y0; py < y1; py++)
     {
-        uint32_t row_off = (uint32_t)(py - strip_y) * SCREEN_W * 2u;
-        uint32_t px_off = row_off + (uint32_t)x * 2u;
+        uint32_t row_off = (uint32_t)(py - strip_y) * s_compose_w * 2u;
+        uint32_t px_off = row_off + (uint32_t)(x0 - s_compose_x0) * 2u;
         for (uint16_t px = 0; px < w; px++)
         {
             buffer[px_off + px * 2u] = hi;
@@ -739,6 +829,9 @@ static void MainGridStripDrawChar(uint8_t* buffer,
     uint16_t srcH = font->height;
     uint16_t bytesPerRow = (uint16_t)((srcW + 7u) / 8u);
     const uint8_t* charData = font->data + (((uint8_t)c - font->first) * srcH * bytesPerRow);
+    const uint16_t target_x0 = s_compose_x0;
+    const uint32_t target_x1 = (uint32_t)s_compose_x0 + s_compose_w;
+    const uint32_t row_stride = (uint32_t)s_compose_w * 2u;
 
     for (uint16_t srcRow = 0; srcRow < srcH; srcRow++)
     {
@@ -758,8 +851,8 @@ static void MainGridStripDrawChar(uint8_t* buffer,
                 for (uint8_t sx = 0; sx < scale; sx++)
                 {
                     uint16_t px = (uint16_t)(x + srcCol * scale + sx);
-                    if (px >= SCREEN_W) continue;
-                    uint32_t off = (uint32_t)(py - strip_y) * SCREEN_W * 2u + (uint32_t)px * 2u;
+                    if (px < target_x0 || px >= target_x1) continue;
+                    uint32_t off = (uint32_t)(py - strip_y) * row_stride + (uint32_t)(px - target_x0) * 2u;
                     buffer[off] = hi;
                     buffer[off + 1u] = lo;
                 }
@@ -793,40 +886,16 @@ static void MainGridStripDrawString(uint8_t* buffer,
 static void MainGridComposeStrip(uint8_t* buffer,
                                  uint16_t strip_y,
                                  uint16_t strip_h,
-                                 uint8_t selected_step,
-                                 uint8_t active_step,
-                                 const uint8_t* has_chord_flags,
-                                 uint16_t bpm,
-                                 TransportState state,
-                                 uint8_t rec_armed,
-                                 uint8_t step,
-                                 uint32_t loops,
-                                 uint32_t run_time_ms)
+                                 const MainGridFrame* f)
 {
-    (void)loops;
-    (void)run_time_ms;
-
-    char text[32];
-    uint8_t div = Bridge_GetPatternStepDivision();
-    uint8_t swing = Bridge_GetSwing();
-    uint8_t current_bar = (uint8_t)(Bridge_GetCurrentStep() + 1u);
-    uint8_t current_substep = (uint8_t)(Bridge_GetCurrentStepSubIndex() + 1u);
-    uint8_t current_bar_total = Bridge_GetPatternStepCount();
-    uint8_t current_step_total = Bridge_GetStepLedgerLength(Bridge_GetCurrentStep());
-    if (current_step_total == 0u) current_step_total = 1u;
-    uint32_t elapsed_ms = run_time_ms;
-    uint32_t elapsed_mins = elapsed_ms / 60000u;
-    uint32_t elapsed_secs = (elapsed_ms % 60000u) / 1000u;
-    uint32_t elapsed_millis = elapsed_ms % 1000u;
-
     MainGridStripFillRect(buffer, strip_y, strip_h, 0u, strip_y, SCREEN_W, strip_h, COLOR_BG);
     MainGridStripFillRect(buffer, strip_y, strip_h, 0u, 0u, SCREEN_W, HEADER_H, BLACK);
 
-    snprintf(text, sizeof(text), "%3u", bpm);
-    MainGridStripDrawString(buffer, strip_y, strip_h, 4u, 2u, text, &Font8x12, 2u, COLOR_TEXT_MAIN, BLACK);
+    MainGridStripDrawString(buffer, strip_y, strip_h, 4u, 2u, f->bpm_text, &Font8x12, 2u, COLOR_TEXT_MAIN, BLACK);
     MainGridStripDrawString(buffer, strip_y, strip_h, 52u, 2u, "BPM", &Font16x24, 1u, COLOR_TEXT_MAIN, BLACK);
 
     {
+        const TransportState state = f->state;
         char transport_icon[2] = {
             (state == TRANSPORT_PLAYING || state == TRANSPORT_PLAYING_RECORDING) ? ICON_PLAY : ICON_STOP,
             0
@@ -834,7 +903,7 @@ static void MainGridComposeStrip(uint8_t* buffer,
         uint16_t transport_col =
             (state == TRANSPORT_PLAYING || state == TRANSPORT_PLAYING_RECORDING) ? COL_PLAY : COL_STOP;
         char rec_icon[2] = {ICON_REC, 0};
-        uint16_t rec_col = rec_armed ? COL_REC_ARM : COL_REC_OFF;
+        uint16_t rec_col = f->rec_armed ? COL_REC_ARM : COL_REC_OFF;
 
         MainGridStripDrawString(buffer, strip_y, strip_h, HEADER_TRANSPORT_X, 0u, transport_icon, &Font16x24, 1u, transport_col, BLACK);
         MainGridStripDrawString(buffer, strip_y, strip_h, HEADER_REC_X, 0u, rec_icon, &Font16x24, 1u, rec_col, BLACK);
@@ -846,25 +915,25 @@ static void MainGridComposeStrip(uint8_t* buffer,
         uint16_t text_col = BLACK;
         const char* label = "BAR";
 
-        if (s_main_mode == UI_MAIN_MODE_CHORD)
+        if (f->main_mode == UI_MAIN_MODE_CHORD)
         {
             fill = COLOR8(70, 140, 255);
             text_col = WHITE;
             label = "CHRD";
         }
-        else if (s_main_mode == UI_MAIN_MODE_TIMING)
+        else if (f->main_mode == UI_MAIN_MODE_TIMING)
         {
             fill = ORANGE;
             text_col = WHITE;
             label = "TIME";
         }
-        else if (s_main_mode == UI_MAIN_MODE_PATTERN)
+        else if (f->main_mode == UI_MAIN_MODE_PATTERN)
         {
             fill = COLOR8(0, 135, 0);
             text_col = WHITE;
             label = "PAT";
         }
-        else if (s_main_mode == UI_MAIN_MODE_QUAN)
+        else if (f->main_mode == UI_MAIN_MODE_QUAN)
         {
             fill = COL_MODE_QUAN;
             text_col = WHITE;
@@ -875,71 +944,72 @@ static void MainGridComposeStrip(uint8_t* buffer,
         MainGridStripDrawString(buffer, strip_y, strip_h, 8u, 28u, label, &Font8x12, 1u, text_col, fill);
     }
 
-    snprintf(text, sizeof(text), "%02u/%02u S%02u/%02u %02lu:%02lu.%03lu",
-             (unsigned)current_bar,
-             (unsigned)current_bar_total,
-             (unsigned)current_substep,
-             (unsigned)current_step_total,
-             (unsigned long)elapsed_mins,
-             (unsigned long)elapsed_secs,
-             (unsigned long)elapsed_millis);
-    MainGridStripDrawString(buffer, strip_y, strip_h, 54u, 26u, text, &Font8x12, 1u, COLOR_TEXT_MAIN, COLOR_BG);
+    MainGridStripDrawString(buffer, strip_y, strip_h, 54u, 26u, f->status_text, &Font8x12, 1u, COLOR_TEXT_MAIN, COLOR_BG);
 
     if (SIDEBAR_W != 0U)
     {
-        snprintf(text, sizeof(text), "1/%u", (unsigned)(div * 4u));
         MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 52u, "QUANT", &Font8x12, 1u, LIGHTBLUE, COLOR_BG);
-        MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 66u, text, &Font12x20, 1u, WHITE, COLOR_BG);
-
-        snprintf(text, sizeof(text), "%u%%", (unsigned)swing);
+        MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 66u, f->quant_text, &Font12x20, 1u, WHITE, COLOR_BG);
         MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 100u, "SWING", &Font8x12, 1u, LIGHTBLUE, COLOR_BG);
-        MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 116u, text, &Font12x20, 1u, WHITE, COLOR_BG);
-
-        {
-            uint8_t pat_chain_len = Bridge_GetChainLength();
-            snprintf(text, sizeof(text), "%02u/%02u",
-                     (unsigned)(Bridge_GetCurrentPattern() + 1u),
-                     (unsigned)((pat_chain_len < 1u) ? 1u : pat_chain_len));
-            MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 148u, "PAT", &Font8x12, 1u, LIGHTBLUE, COLOR_BG);
-            MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 164u, text, &Font12x20, 1u, WHITE, COLOR_BG);
-        }
+        MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 116u, f->swing_text, &Font12x20, 1u, WHITE, COLOR_BG);
+        MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 148u, "PATTERN", &Font8x12, 1u, LIGHTBLUE, COLOR_BG);
+        MainGridStripDrawString(buffer, strip_y, strip_h, (uint16_t)(SIDEBAR_X + 8u), 164u, f->pattern_text, &Font12x20, 1u, WHITE, COLOR_BG);
     }
 
     for (uint8_t step_no = 1u; step_no <= 12u; step_no++)
     {
         uint8_t index = (uint8_t)(step_no - 1u);
-        uint8_t col = (uint8_t)(index % 4u);
-        uint8_t row = (uint8_t)(index / 4u);
-        uint16_t x = (uint16_t)(GRID_X + col * (BOX_W + GAP_X));
-        uint16_t y = (uint16_t)(GRID_Y + row * (BOX_H + GAP_Y));
-        uint8_t has_chord = has_chord_flags ? has_chord_flags[index] : 0u;
-        uint16_t colour;
+        uint16_t colour = MainGridBoxColourFor((f->selected_step == step_no) ? 1u : 0u,
+                                               (f->active_step == step_no) ? 1u : 0u,
+                                               f->has_chord[index],
+                                               f->flash_enabled,
+                                               f->flash_on);
 
-        if (active_step == step_no && s_repeat_flash_enabled)
-            colour = s_repeat_flash_on ? WHITE : BLUE;
-        else if (active_step == step_no)
-            colour = COL_ACTIVE;
-        else if (selected_step == step_no && has_chord)
-            colour = COL_CHORD;
-        else if (selected_step == step_no)
-            colour = COL_SELECTED_EMPTY;
-        else if (has_chord)
-            colour = COL_CHORD;
-        else
-            colour = COL_NORMAL;
+        MainGridComposeBox(buffer, strip_y, strip_h, step_no, colour);
+    }
+}
 
-        MainGridStripDrawBorderedRect(buffer, strip_y, strip_h, x, y, BOX_W, BOX_H, COLOR_BOX_BG, colour, BORDER_T);
+/* Priority: active (playing) > selected+saved > selected+empty > saved > normal */
+static uint16_t MainGridBoxColourFor(uint8_t selected, uint8_t active, uint8_t has_chord,
+                                     uint8_t flash_enabled, uint8_t flash_on)
+{
+    if (active && flash_enabled) return flash_on ? WHITE : BLUE;
+    if (active) return COL_ACTIVE;
+    if (selected && has_chord) return COL_CHORD;
+    if (selected) return COL_SELECTED_EMPTY;
+    if (has_chord) return COL_CHORD;
+    return COL_NORMAL;
+}
 
-        snprintf(text, sizeof(text), "%u", (unsigned)step_no);
-        {
-            uint8_t len = 0u;
-            while (text[len]) len++;
-            uint16_t textW = (uint16_t)(len * Font8x12.width * 2u);
-            uint16_t textH = (uint16_t)(Font8x12.height * 2u);
-            uint16_t tx = (uint16_t)(x + ((BOX_W - textW) / 2u));
-            uint16_t ty = (uint16_t)(y + ((BOX_H - textH) / 2u));
-            MainGridStripDrawString(buffer, strip_y, strip_h, tx, ty, text, &Font8x12, 2u, colour, COLOR_BOX_BG);
-        }
+static uint16_t MainGridBoxColour(uint8_t selected, uint8_t active, uint8_t has_chord)
+{
+    return MainGridBoxColourFor(selected, active, has_chord, s_repeat_flash_enabled, s_repeat_flash_on);
+}
+
+static void MainGridComposeBox(uint8_t* buffer,
+                               uint16_t strip_y,
+                               uint16_t strip_h,
+                               uint8_t step_no,
+                               uint16_t colour)
+{
+    const uint8_t index = (uint8_t)(step_no - 1u);
+    const uint16_t x = (uint16_t)(GRID_X + (index % 4u) * (BOX_W + GAP_X));
+    const uint16_t y = (uint16_t)(GRID_Y + (index / 4u) * (BOX_H + GAP_Y));
+    char text[4];
+
+    if (y >= (uint32_t)strip_y + strip_h || (uint32_t)y + BOX_H <= strip_y) return;
+
+    MainGridStripDrawBorderedRect(buffer, strip_y, strip_h, x, y, BOX_W, BOX_H, COLOR_BOX_BG, colour, BORDER_T);
+
+    snprintf(text, sizeof(text), "%u", (unsigned)step_no);
+    {
+        uint8_t len = 0u;
+        while (text[len]) len++;
+        uint16_t textW = (uint16_t)(len * Font8x12.width * 2u);
+        uint16_t textH = (uint16_t)(Font8x12.height * 2u);
+        uint16_t tx = (uint16_t)(x + ((BOX_W - textW) / 2u));
+        uint16_t ty = (uint16_t)(y + ((BOX_H - textH) / 2u));
+        MainGridStripDrawString(buffer, strip_y, strip_h, tx, ty, text, &Font8x12, 2u, colour, COLOR_BOX_BG);
     }
 }
 
@@ -1149,6 +1219,8 @@ void UI_Display_DrawStatusRow(uint8_t pattern,
 {
     (void)loops;
     (void)run_time_ms;
+
+    if (MainGridDefer(UI_FRAME_DEFER_STATUS)) return;
 
     DrawSidebarInfo();
 
@@ -1604,52 +1676,225 @@ static const char* GridDivisionLabel(uint8_t grid_division)
     }
 }
 
-static void DrawDirectChordPreview(void)
+typedef struct
 {
-    char subtitle[24];
-    char grid_line[24];
-    char preview[48];
-    char note_buf[8];
-    uint8_t shown = 0u;
+    uint8_t root, type, cursor, bar, position, grid, notes[4];
+    char values[2][12], subtitle[24], grid_text[24], preview[48];
+} DirectChordFrame;
 
-    snprintf(subtitle, sizeof(subtitle), "BAR%02u POS%02u", (unsigned)s_direct_chord_bar_number, (unsigned)s_direct_chord_pos_number);
-    MenuTemplate_DrawHeader("DIRECT CHORD", subtitle, YELLOW);
+enum { DIRECT_FULL, DIRECT_ROOT, DIRECT_TYPE, DIRECT_MARK_ROOT, DIRECT_MARK_TYPE,
+       DIRECT_GRID, DIRECT_PREVIEW, DIRECT_HEADER, DIRECT_REGION_COUNT };
+static DirectChordFrame s_direct_latest, s_direct_snapshot, s_direct_drawn;
+static UiFrameJob s_direct_job;
+static UiRect s_direct_region;
+static uint8_t s_direct_valid, s_direct_kind, s_direct_character, s_direct_requested;
+static uint8_t s_direct_value_selected[2], s_direct_marker_selected[2];
+#define DIRECT_STRIP_H 8u
+static const char* k_direct_types[] = {"Clear", "Major", "Minor", "Dim", "Aug", "Sus4",
+    "7th", "Maj7", "Min7", "Dim7", "7sus4", "6th", "Min6", "9th", "Maj9", "Min9", "11th"};
 
-    snprintf(grid_line, sizeof(grid_line), "GRID %s", GridDivisionLabel(s_direct_chord_grid_division));
-    ST7789_FillRect(8, 104, (uint16_t)(SCREEN_W - 16), 20, COLOR_BG);
-    ST7789_DrawString(8, 104, grid_line, &Font12x20, COLOR_ACTIVE, COLOR_BG);
-
-    preview[0] = '\0';
-    for (uint8_t i = 0u; i < 4u; ++i)
+static void DirectCapture(const ChordParams* chord, uint8_t cursor)
+{
+    DirectChordFrame* frame = &s_direct_latest;
+    memset(frame, 0, sizeof(*frame));
+    frame->root = chord->root_key;
+    frame->type = chord->chord_type;
+    frame->cursor = cursor;
+    frame->bar = s_direct_chord_bar_number;
+    frame->position = s_direct_chord_pos_number;
+    frame->grid = s_direct_chord_grid_division;
+    memcpy(frame->notes, s_direct_chord_notes, sizeof(frame->notes));
+    snprintf(frame->values[0], sizeof(frame->values[0]), "%s", s_root_keys[frame->root]);
+    snprintf(frame->values[1], sizeof(frame->values[1]), "%s", k_direct_types[frame->type]);
+    snprintf(frame->subtitle, sizeof(frame->subtitle), "BAR%02u POS%02u",
+             (unsigned)frame->bar, (unsigned)frame->position);
+    snprintf(frame->grid_text, sizeof(frame->grid_text), "GRID %s", GridDivisionLabel(frame->grid));
+    for (uint8_t note = 0u; note < 4u; ++note)
     {
-        if (s_direct_chord_notes[i] == 0xFFu)
-        {
-            continue;
-        }
-
-        MidiToNoteLabel(s_direct_chord_notes[i], note_buf, sizeof(note_buf));
-        if (note_buf[0] == '\0')
-        {
-            continue;
-        }
-
-        if (shown > 0u)
-        {
-            strncat(preview, "  ", sizeof(preview) - strlen(preview) - 1u);
-        }
-        strncat(preview, note_buf, sizeof(preview) - strlen(preview) - 1u);
-        shown++;
+        if (frame->notes[note] == 0xFFu) continue;
+        char label[8];
+        MidiToNoteLabel(frame->notes[note], label, sizeof(label));
+        if (frame->preview[0]) strncat(frame->preview, "  ", sizeof(frame->preview) - strlen(frame->preview) - 1u);
+        strncat(frame->preview, label, sizeof(frame->preview) - strlen(frame->preview) - 1u);
     }
+}
 
-    if (shown > 0u)
+static char DirectPreviewCharacter(const DirectChordFrame* frame, uint8_t index)
+{
+    return index < strlen(frame->preview) ? frame->preview[index] : ' ';
+}
+
+static uint8_t DirectFindDirty(void)
+{
+    if (!s_direct_valid) return DIRECT_FULL;
+    for (uint8_t row = 0u; row < 2u; ++row)
     {
-        ST7789_FillRect(8, 128, (uint16_t)(SCREEN_W - 16), 20, COLOR_BG);
-        ST7789_DrawString(8, 128, preview, &Font12x20, COLOR_TEXT_SECONDARY, COLOR_BG);
+        if (strcmp(s_direct_latest.values[row], s_direct_drawn.values[row]) != 0 ||
+            s_direct_value_selected[row] != (s_direct_latest.cursor == row))
+            return row == 0u ? DIRECT_ROOT : DIRECT_TYPE;
+        if (s_direct_marker_selected[row] != (s_direct_latest.cursor == row))
+            return row == 0u ? DIRECT_MARK_ROOT : DIRECT_MARK_TYPE;
     }
-    else
+    if (strcmp(s_direct_latest.grid_text, s_direct_drawn.grid_text)) return DIRECT_GRID;
+    for (uint8_t index = 0u; index < (SCREEN_W - 16u) / Font12x20.width; ++index)
     {
-        ST7789_FillRect(8, 128, (uint16_t)(SCREEN_W - 16), 20, COLOR_BG);
+        if (DirectPreviewCharacter(&s_direct_latest, index) != DirectPreviewCharacter(&s_direct_drawn, index))
+        {
+            s_direct_character = index;
+            return DIRECT_PREVIEW;
+        }
     }
+    if (strcmp(s_direct_latest.subtitle, s_direct_drawn.subtitle)) return DIRECT_HEADER;
+    return DIRECT_REGION_COUNT;
+}
+
+void UI_Display_CancelDirectChordFrame(void)
+{
+    if (s_direct_job.active) TimeCommitProbe_DirectCancel();
+    UiFrameJob_Cancel(&s_direct_job);
+    s_direct_valid = 0u;
+    s_direct_requested = 0u;
+}
+
+void UI_Display_ResetDirectChordFrame(void)
+{
+    if (!s_direct_job.active) s_direct_valid = 0u;
+}
+
+uint8_t UI_Display_IsDirectChordFrameActive(void)
+{
+    return s_chord_params_direct_mode && s_direct_requested &&
+        (s_direct_job.active || DirectFindDirty() != DIRECT_REGION_COUNT);
+}
+
+static void DirectBegin(uint8_t kind)
+{
+    s_direct_kind = kind;
+    s_direct_snapshot = s_direct_latest;
+    if (kind == DIRECT_FULL) s_direct_region = (UiRect){0u, 0u, SCREEN_W, SCREEN_H};
+    else if (kind == DIRECT_ROOT || kind == DIRECT_TYPE)
+        s_direct_region = (UiRect){SCREEN_W - 96u,
+            (uint16_t)(PARAM_ROW_Y0 + (kind == DIRECT_TYPE ? PARAM_ROW_STEP : 0u)), 96u, 22u};
+    else if (kind == DIRECT_MARK_ROOT || kind == DIRECT_MARK_TYPE)
+        s_direct_region = (UiRect){0u,
+            (uint16_t)(PARAM_ROW_Y0 + (kind == DIRECT_MARK_TYPE ? PARAM_ROW_STEP : 0u)), 3u, 22u};
+    else if (kind == DIRECT_GRID) s_direct_region = (UiRect){8u, 104u, SCREEN_W - 16u, 20u};
+    else if (kind == DIRECT_PREVIEW) s_direct_region = (UiRect){
+        (uint16_t)(8u + s_direct_character * Font12x20.width), 128u, Font12x20.width, 20u};
+    else s_direct_region = (UiRect){0u, 0u, SCREEN_W, 42u};
+    (void)UiFrameJob_Begin(&s_direct_job,
+        (uint8_t)((s_direct_region.h + DIRECT_STRIP_H - 1u) / DIRECT_STRIP_H));
+    uint8_t category = 5u;
+    if (kind == DIRECT_FULL) category = 0u;
+    else if (kind == DIRECT_MARK_ROOT || kind == DIRECT_MARK_TYPE) category = 1u;
+    else if (kind == DIRECT_ROOT || kind == DIRECT_TYPE)
+    {
+        const uint8_t row = kind == DIRECT_ROOT ? 0u : 1u;
+        category = strcmp(s_direct_snapshot.values[row], s_direct_drawn.values[row]) ?
+            (uint8_t)(row + 2u) : 1u;
+    }
+    else if (kind == DIRECT_PREVIEW) category = 4u;
+    TimeCommitProbe_DirectBegin(category);
+}
+
+static void DirectCompose(uint8_t* buffer, uint16_t strip_y, uint16_t strip_h)
+{
+    const DirectChordFrame* frame = &s_direct_snapshot;
+    MainGridStripFillRect(buffer, strip_y, strip_h, s_direct_region.x, strip_y,
+                         s_direct_region.w, strip_h, COLOR_BG);
+    MainGridStripFillRect(buffer, strip_y, strip_h, 0u, 0u, SCREEN_W, MENU_TOP_Y, COLOR_PANEL_ALT);
+    for (uint8_t row = 0u; row < 2u; ++row)
+    {
+        const uint16_t y = (uint16_t)(PARAM_ROW_Y0 + row * PARAM_ROW_STEP);
+        const uint16_t colour = frame->cursor == row ? COLOR_ACTIVE : COLOR_TEXT_MAIN;
+        MainGridStripFillRect(buffer, strip_y, strip_h, 0u, y, 3u, 22u,
+                             frame->cursor == row ? COLOR_ACTIVE : COLOR_BG);
+        MainGridStripDrawString(buffer, strip_y, strip_h, 8u, y, row == 0u ? "Root Key:" : "Type:",
+                               &Font12x20, 1u, COLOR_TEXT_MAIN, COLOR_BG);
+        MainGridStripDrawString(buffer, strip_y, strip_h, SCREEN_W - 96u, y, frame->values[row],
+                               &Font12x20, 1u, colour, COLOR_BG);
+    }
+    MainGridStripDrawString(buffer, strip_y, strip_h, 4u, 4u, "DIRECT CHORD",
+                           &Font12x20, 1u, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
+    MainGridStripDrawString(buffer, strip_y, strip_h, 4u, 22u, frame->subtitle,
+                           &Font12x20, 1u, YELLOW, COLOR_PANEL_ALT);
+    MainGridStripDrawString(buffer, strip_y, strip_h, 8u, 104u, frame->grid_text,
+                           &Font12x20, 1u, COLOR_ACTIVE, COLOR_BG);
+    MainGridStripDrawString(buffer, strip_y, strip_h, 8u, 128u, frame->preview,
+                           &Font12x20, 1u, COLOR_TEXT_SECONDARY, COLOR_BG);
+    MainGridStripFillRect(buffer, strip_y, strip_h, 0u, MENU_FOOTER_Y, SCREEN_W,
+                         UI_REGION_MENU_FOOTER_H, COLOR_PANEL);
+    const uint16_t button_x = (SCREEN_W - 150u) / 2u;
+    MainGridStripFillRect(buffer, strip_y, strip_h, button_x + 2u, FOOTER_BTN_Y0,
+                         146u, FOOTER_BTN_H, COLOR_PANEL_ALT);
+    MainGridStripFillRect(buffer, strip_y, strip_h, button_x, FOOTER_BTN_Y0 + 2u,
+                         150u, FOOTER_BTN_H - 4u, COLOR_PANEL_ALT);
+    MainGridStripFillRect(buffer, strip_y, strip_h, button_x + 2u, FOOTER_BTN_Y0, 146u, 1u, COLOR_ACTIVE);
+    MainGridStripFillRect(buffer, strip_y, strip_h, button_x + 2u, FOOTER_BTN_Y0 + FOOTER_BTN_H - 1u,
+                         146u, 1u, COLOR_ACTIVE);
+    MainGridStripFillRect(buffer, strip_y, strip_h, button_x, FOOTER_BTN_Y0 + 2u, 1u, FOOTER_BTN_H - 4u, COLOR_ACTIVE);
+    MainGridStripFillRect(buffer, strip_y, strip_h, button_x + 149u, FOOTER_BTN_Y0 + 2u, 1u, FOOTER_BTN_H - 4u, COLOR_ACTIVE);
+    for (uint8_t corner = 0u; corner < 4u; ++corner)
+        MainGridStripFillRect(buffer, strip_y, strip_h, button_x + (corner & 1u ? 148u : 1u),
+            FOOTER_BTN_Y0 + (corner & 2u ? FOOTER_BTN_H - 2u : 1u), 1u, 1u, COLOR_ACTIVE);
+    MainGridStripDrawString(buffer, strip_y, strip_h, button_x + 18u, FOOTER_BTN_Y0 + 12u,
+                           "M9 PLACE", &Font12x20, 1u, WHITE, COLOR_PANEL_ALT);
+}
+
+void UI_Display_ServiceDirectChordFrame(void)
+{
+    if (!s_direct_requested) return;
+    if (!s_direct_job.active)
+    {
+        const uint8_t kind = DirectFindDirty();
+        if (kind == DIRECT_REGION_COUNT) return;
+        DirectBegin(kind);
+    }
+    uint8_t strip;
+    if (!UiFrameJob_NextStrip(&s_direct_job, &strip)) return;
+    uint8_t* buffer = UI_RenderScratch_Acquire(UI_RENDER_SCRATCH_OWNER_MENU);
+    if (!buffer) return;
+    TimeCommitProbe_DirectJobBegin();
+    const uint16_t strip_y = (uint16_t)(s_direct_region.y + strip * DIRECT_STRIP_H);
+    const uint16_t remaining = (uint16_t)(s_direct_region.y + s_direct_region.h - strip_y);
+    const uint16_t strip_h = remaining < DIRECT_STRIP_H ? remaining : DIRECT_STRIP_H;
+    s_compose_x0 = s_direct_region.x;
+    s_compose_w = s_direct_region.w;
+    DirectCompose(buffer, strip_y, strip_h);
+    s_compose_x0 = 0u;
+    s_compose_w = SCREEN_W;
+    ST7789_DrawRGB565Buffer(s_direct_region.x, strip_y, s_direct_region.w, strip_h, buffer,
+                            (uint32_t)s_direct_region.w * strip_h * 2u);
+    UI_RenderScratch_Release(UI_RENDER_SCRATCH_OWNER_MENU);
+    TimeCommitProbe_DirectJobEnd();
+    if (!UiFrameJob_CompleteStrip(&s_direct_job)) return;
+    if (s_direct_kind == DIRECT_FULL)
+    {
+        s_direct_drawn = s_direct_snapshot;
+        for (uint8_t row = 0u; row < 2u; ++row)
+            s_direct_value_selected[row] = s_direct_marker_selected[row] = s_direct_snapshot.cursor == row;
+        s_direct_valid = 1u;
+    }
+    else if (s_direct_kind == DIRECT_ROOT || s_direct_kind == DIRECT_TYPE)
+    {
+        const uint8_t row = s_direct_kind == DIRECT_ROOT ? 0u : 1u;
+        memcpy(s_direct_drawn.values[row], s_direct_snapshot.values[row], sizeof(s_direct_drawn.values[row]));
+        s_direct_value_selected[row] = s_direct_snapshot.cursor == row;
+    }
+    else if (s_direct_kind == DIRECT_MARK_ROOT || s_direct_kind == DIRECT_MARK_TYPE)
+        s_direct_marker_selected[s_direct_kind == DIRECT_MARK_ROOT ? 0u : 1u] =
+            s_direct_snapshot.cursor == (s_direct_kind == DIRECT_MARK_ROOT ? 0u : 1u);
+    else if (s_direct_kind == DIRECT_GRID)
+        memcpy(s_direct_drawn.grid_text, s_direct_snapshot.grid_text, sizeof(s_direct_drawn.grid_text));
+    else if (s_direct_kind == DIRECT_PREVIEW)
+    {
+        /* Space-pad the drawn preview cache so deletion has the same identity as an empty cell. */
+        for (uint8_t index = (uint8_t)strlen(s_direct_drawn.preview); index < sizeof(s_direct_drawn.preview) - 1u; ++index)
+            s_direct_drawn.preview[index] = ' ';
+        s_direct_drawn.preview[s_direct_character] = DirectPreviewCharacter(&s_direct_snapshot, s_direct_character);
+    }
+    else memcpy(s_direct_drawn.subtitle, s_direct_snapshot.subtitle, sizeof(s_direct_drawn.subtitle));
+    TimeCommitProbe_DirectComplete();
 }
 
 void UI_Display_DrawChordParams(uint8_t step, const ChordParams* chord, uint8_t param_cursor, uint8_t footer_action)
@@ -1658,11 +1903,10 @@ void UI_Display_DrawChordParams(uint8_t step, const ChordParams* chord, uint8_t 
 
     if (s_chord_params_direct_mode)
     {
-        FillRegion(UI_REGION_MENU_LIST, COLOR_BG);
-        DrawParamRow(0, chord, (param_cursor == 0u));
-        DrawParamRow(1, chord, (param_cursor == 1u));
-        s_param_row_cursor = param_cursor;
-        DrawDirectChordPreview();
+        DirectCapture(chord, param_cursor);
+        s_direct_requested = 1u;
+        if (!s_direct_valid && !s_direct_job.active) DirectBegin(DIRECT_FULL);
+        return;
     }
     else if (s_param_row_cursor == 0xFF)
     {
@@ -1805,6 +2049,7 @@ void UI_Display_NavigateParamFooterActions(int8_t delta, uint8_t step, const Cho
 
 void UI_Display_SetChordParamsDirectMode(uint8_t enabled)
 {
+    if (s_chord_params_direct_mode != (enabled ? 1u : 0u)) UI_Display_CancelDirectChordFrame();
     s_chord_params_direct_mode = enabled ? 1u : 0u;
     if (s_chord_params_direct_mode)
     {
@@ -1914,6 +2159,15 @@ void UI_Display_DrawTimingMenu(uint8_t step_count,
                                uint8_t save_rejected)
 {
     MenuTemplate_Begin(MENU_FRAME_TIMING);
+    const TimingFrame current = {step_count, step_division, ts_num, ts_den,
+                                  swing, cursor, has_unsaved_changes, save_rejected};
+    if (s_timing_frame_job.active)
+    {
+        TimeCommitProbe_TimingDeferred(memcmp(&s_timing_latest, &current, sizeof(current)) == 0 ? 1u : 0u);
+        s_timing_latest = current;
+        return;
+    }
+    s_timing_latest = current;
 
     uint8_t first_draw = (s_timing_row_cursor == 0xFF) ? 1u : 0u;
     uint8_t value_changed = 0u;
@@ -1926,11 +2180,11 @@ void UI_Display_DrawTimingMenu(uint8_t step_count,
 
     if (first_draw)
     {
-        FillRegion(UI_REGION_MENU_LIST, COLOR_BG);
-        for (uint8_t i = 0; i < 5; i++)
-        {
-            DrawTimingRow(i, step_count, step_division, ts_num, ts_den, swing, (i == cursor), 1u);
-        }
+        s_timing_frame = current;
+        s_timing_followup = 0u;
+        TimeCommitProbe_TimingFrameBegin(UiFrameJob_Begin(&s_timing_frame_job,
+            (uint8_t)((SCREEN_H + TIMING_STRIP_H - 1u) / TIMING_STRIP_H)));
+        return;
     }
     else if (s_timing_row_cursor != cursor)
     {
@@ -1944,6 +2198,10 @@ void UI_Display_DrawTimingMenu(uint8_t step_count,
 
     s_timing_row_cursor = cursor;
 
+    const char* indicator = save_rejected ? "INVALID" :
+        (has_unsaved_changes ? "*UNSAVED" : "Global sequencer timing");
+    if (!s_menu_header_valid || strcmp(s_menu_header_indicator, indicator) != 0)
+        ST7789_FillRect(0u, MENU_TOP_Y, SCREEN_W, 2u, COLOR_BG);
     MenuTemplate_DrawHeader("Pattern Timing",
                             save_rejected ? "INVALID" :
                             has_unsaved_changes ? "*UNSAVED" : "Global sequencer timing",
@@ -1961,6 +2219,114 @@ void UI_Display_DrawTimingMenu(uint8_t step_count,
     s_timing_prev_ts_den = ts_den;
     s_timing_prev_swing = swing;
     s_timing_prev_unsaved = has_unsaved_changes;
+}
+
+uint8_t UI_Display_IsTimingFrameActive(void)
+{
+    return s_timing_frame_job.active || s_timing_followup;
+}
+
+void UI_Display_ResetTimingFrameCache(void)
+{
+    if (UI_Display_IsTimingFrameActive()) return;
+    s_timing_row_cursor = 0xFFu;
+    s_timing_footer_valid = 0u;
+    s_menu_header_valid = 0u;
+}
+
+void UI_Display_CancelTimingFrame(void)
+{
+    if (s_timing_frame_job.active) TimeCommitProbe_TimingFrameCancel();
+    UiFrameJob_Cancel(&s_timing_frame_job);
+    s_timing_followup = 0u;
+}
+
+static const char* TimingIndicator(const TimingFrame* frame)
+{
+    return frame->rejected ? "INVALID" : (frame->unsaved ? "*UNSAVED" : "Global sequencer timing");
+}
+
+void UI_Display_ServiceTimingFrame(void)
+{
+    if (s_timing_followup)
+    {
+        s_timing_followup = 0u;
+        const TimingFrame latest = s_timing_latest;
+        const uint8_t changed[5] = {
+            latest.step_count != s_timing_frame.step_count,
+            latest.division != s_timing_frame.division,
+            latest.numerator != s_timing_frame.numerator,
+            latest.denominator != s_timing_frame.denominator,
+            latest.swing != s_timing_frame.swing
+        };
+        /* Values edited on several rows during construction must all survive the handoff. */
+        for (uint8_t row = 0u; row < 5u; ++row)
+        {
+            if (changed[row] && row != latest.cursor && row != s_timing_frame.cursor)
+                DrawTimingRow(row, latest.step_count, latest.division, latest.numerator,
+                              latest.denominator, latest.swing, 0u, 0u);
+        }
+        UI_Display_DrawTimingMenu(latest.step_count, latest.division, latest.numerator,
+                                 latest.denominator, latest.swing, latest.cursor,
+                                 latest.unsaved, latest.rejected);
+        return;
+    }
+    uint8_t strip;
+    if (!UiFrameJob_NextStrip(&s_timing_frame_job, &strip)) return;
+    uint8_t* buffer = UI_RenderScratch_Acquire(UI_RENDER_SCRATCH_OWNER_MENU);
+    if (!buffer) return;
+    TimeCommitProbe_TimingJobBegin();
+    const uint16_t strip_y = (uint16_t)(strip * TIMING_STRIP_H);
+    const uint16_t strip_h = SCREEN_H - strip_y < TIMING_STRIP_H ?
+        (uint16_t)(SCREEN_H - strip_y) : TIMING_STRIP_H;
+    const TimingFrame* frame = &s_timing_frame;
+    MainGridStripFillRect(buffer, strip_y, strip_h, 0u, strip_y, SCREEN_W, strip_h, COLOR_BG);
+    MainGridStripFillRect(buffer, strip_y, strip_h, 0u, 0u, SCREEN_W, MENU_TOP_Y, COLOR_PANEL_ALT);
+    const char* labels[5] = {"Pattern Loop", "Grid", "Beats Per Bar", "Beat Unit", "Swing"};
+    char values[5][12];
+    snprintf(values[0], sizeof(values[0]), "%u", frame->step_count);
+    snprintf(values[1], sizeof(values[1]), "%s", frame->division == 1u ? "1/4" :
+             (frame->division == 2u ? "1/8" : "1/16"));
+    snprintf(values[2], sizeof(values[2]), "%u", frame->numerator);
+    snprintf(values[3], sizeof(values[3]), "%u", frame->denominator);
+    snprintf(values[4], sizeof(values[4]), "%u%%", frame->swing);
+    for (uint8_t row = 0u; row < 5u; ++row)
+    {
+        const uint16_t y = (uint16_t)(PARAM_ROW_Y0 + row * PARAM_ROW_STEP);
+        if (y >= strip_y + strip_h || y + 22u <= strip_y) continue;
+        const uint16_t colour = row == frame->cursor ? COLOR_ACTIVE : COLOR_TEXT_MAIN;
+        MainGridStripFillRect(buffer, strip_y, strip_h, 0u, y, 3u, 22u,
+                             row == frame->cursor ? COLOR_ACTIVE : COLOR_BG);
+        MainGridStripDrawString(buffer, strip_y, strip_h, 8u, y, labels[row],
+                               &Font12x20, 1u, COLOR_TEXT_MAIN, COLOR_BG);
+        MainGridStripDrawString(buffer, strip_y, strip_h, SCREEN_W - 80u, y, values[row],
+                               &Font12x20, 1u, colour, COLOR_BG);
+    }
+    MainGridStripDrawString(buffer, strip_y, strip_h, 4u, 4u, "Pattern Timing",
+                           &Font12x20, 1u, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
+    MainGridStripDrawString(buffer, strip_y, strip_h, 4u, 22u, TimingIndicator(frame),
+                           &Font12x20, 1u, frame->rejected ? RED : YELLOW, COLOR_PANEL_ALT);
+    MainGridStripFillRect(buffer, strip_y, strip_h, 0u, MENU_FOOTER_Y, SCREEN_W,
+                         UI_REGION_MENU_FOOTER_H, COLOR_PANEL);
+    ST7789_DrawRGB565Buffer(0u, strip_y, SCREEN_W, strip_h, buffer,
+                            (uint32_t)SCREEN_W * strip_h * 2u);
+    UI_RenderScratch_Release(UI_RENDER_SCRATCH_OWNER_MENU);
+    TimeCommitProbe_TimingJobEnd();
+    if (!UiFrameJob_CompleteStrip(&s_timing_frame_job)) return;
+    s_timing_row_cursor = frame->cursor;
+    s_timing_prev_step_count = frame->step_count;
+    s_timing_prev_step_division = frame->division;
+    s_timing_prev_ts_num = frame->numerator;
+    s_timing_prev_ts_den = frame->denominator;
+    s_timing_prev_swing = frame->swing;
+    s_timing_prev_unsaved = frame->unsaved;
+    s_timing_footer_valid = 1u;
+    StrCopy(s_menu_header_title, sizeof(s_menu_header_title), "Pattern Timing");
+    StrCopy(s_menu_header_indicator, sizeof(s_menu_header_indicator), TimingIndicator(frame));
+    s_menu_header_indicator_color = frame->rejected ? RED : YELLOW;
+    s_menu_header_valid = 1u;
+    s_timing_followup = memcmp(frame, &s_timing_latest, sizeof(*frame)) != 0 ? 1u : 0u;
+    TimeCommitProbe_TimingFrameComplete();
 }
 
 static void DrawQuantiserTimingRow(uint8_t index,
@@ -2755,108 +3121,108 @@ static void DrawPianoBlackKey(uint8_t slot, uint8_t note)
     }
 }
 
-static void DrawPianoKeyByNote(uint8_t note)
-{
-    int8_t white_slot = PianoWhiteSlotForNote(note);
-    if (white_slot >= 0)
-    {
-        DrawPianoWhiteKey((uint8_t)white_slot, note);
-        /* White keys sit below black keys, so redraw black overlay keys. */
-        for (uint8_t i = 0; i < PIANO_BLACK_COUNT; i++)
-        {
-            DrawPianoBlackKey(i, k_piano_black_keys[i]);
-        }
-        return;
-    }
+// static void DrawPianoKeyByNote(uint8_t note)
+// {
+//     int8_t white_slot = PianoWhiteSlotForNote(note);
+//     if (white_slot >= 0)
+//     {
+//         DrawPianoWhiteKey((uint8_t)white_slot, note);
+//         /* White keys sit below black keys, so redraw black overlay keys. */
+//         for (uint8_t i = 0; i < PIANO_BLACK_COUNT; i++)
+//         {
+//             DrawPianoBlackKey(i, k_piano_black_keys[i]);
+//         }
+//         return;
+//     }
 
-    int8_t black_slot = PianoBlackSlotForNote(note);
-    if (black_slot >= 0)
-    {
-        DrawPianoBlackKey((uint8_t)black_slot, note);
-    }
-}
+//     int8_t black_slot = PianoBlackSlotForNote(note);
+//     if (black_slot >= 0)
+//     {
+//         DrawPianoBlackKey((uint8_t)black_slot, note);
+//     }
+// }
 
-static void DrawPianoKeyboardScreen(const char* title, const char* footer_label, const uint16_t note_mask, uint8_t selected_key)
-{
-    MenuTemplate_Begin(MENU_FRAME_CHORD);
-    FillRegion(UI_REGION_MENU_LIST, COLOR_BG);
+// static void DrawPianoKeyboardScreen(const char* title, const char* footer_label, const uint16_t note_mask, uint8_t selected_key)
+// {
+//     MenuTemplate_Begin(MENU_FRAME_CHORD);
+//     FillRegion(UI_REGION_MENU_LIST, COLOR_BG);
 
-    ST7789_DrawString(4, 4, title, &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
-    MenuTemplate_DrawHeader(title, k_note_names[(selected_key < 12) ? selected_key : 0], YELLOW);
-    StrCopy(s_piano_header_title, sizeof(s_piano_header_title), title);
+//     ST7789_DrawString(4, 4, title, &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
+//     MenuTemplate_DrawHeader(title, k_note_names[(selected_key < 12) ? selected_key : 0], YELLOW);
+//     StrCopy(s_piano_header_title, sizeof(s_piano_header_title), title);
 
-    s_piano_note_mask = note_mask;
-    s_selected_piano_key = (selected_key < 12) ? selected_key : 0;
+//     s_piano_note_mask = note_mask;
+//     s_selected_piano_key = (selected_key < 12) ? selected_key : 0;
 
-    for (uint8_t i = 0; i < PIANO_WHITE_COUNT; i++)
-    {
-        DrawPianoWhiteKey(i, k_piano_white_keys[i]);
-    }
+//     for (uint8_t i = 0; i < PIANO_WHITE_COUNT; i++)
+//     {
+//         DrawPianoWhiteKey(i, k_piano_white_keys[i]);
+//     }
 
-    for (uint8_t i = 0; i < PIANO_BLACK_COUNT; i++)
-    {
-        DrawPianoBlackKey(i, k_piano_black_keys[i]);
-    }
+//     for (uint8_t i = 0; i < PIANO_BLACK_COUNT; i++)
+//     {
+//         DrawPianoBlackKey(i, k_piano_black_keys[i]);
+//     }
 
-    FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
-    ST7789_DrawString(6, FOOTER_TEXT_Y1, "PLAY SAVE", &Font12x20, COLOR_ACTIVE, COLOR_PANEL);
-    ST7789_DrawString(126, FOOTER_TEXT_Y1, "REC BACK", &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL);
-    s_chord_footer_valid = 1;
-}
+//     FillRegion(UI_REGION_MENU_FOOTER, COLOR_PANEL);
+//     ST7789_DrawString(6, FOOTER_TEXT_Y1, "PLAY SAVE", &Font12x20, COLOR_ACTIVE, COLOR_PANEL);
+//     ST7789_DrawString(126, FOOTER_TEXT_Y1, "REC BACK", &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL);
+//     s_chord_footer_valid = 1;
+// }
 
-static void DrawStepPianoRollScreen(uint8_t step, const uint16_t note_mask, uint8_t selected_key)
-{
-    uint8_t  need_layout  = (s_step_roll_layout_valid == 0u);
-    uint8_t  step_changed = (s_step_roll_last_step != step);
-    uint16_t prev_mask    = s_step_roll_last_note_mask;
-    uint8_t  prev_sel     = s_step_roll_last_selected_key;
+// static void DrawStepPianoRollScreen(uint8_t step, const uint16_t note_mask, uint8_t selected_key)
+// {
+//     uint8_t  need_layout  = (s_step_roll_layout_valid == 0u);
+//     uint8_t  step_changed = (s_step_roll_last_step != step);
+//     uint16_t prev_mask    = s_step_roll_last_note_mask;
+//     uint8_t  prev_sel     = s_step_roll_last_selected_key;
 
-    MenuTemplate_Begin(MENU_FRAME_CHORD);
+//     MenuTemplate_Begin(MENU_FRAME_CHORD);
 
-    /* Update state before drawing so every paint function sees current values */
-    s_piano_note_mask    = note_mask;
-    s_selected_piano_key = (selected_key < 12u) ? selected_key : 0u;
-    s_step_roll_step     = step;
+//     /* Update state before drawing so every paint function sees current values */
+//     s_piano_note_mask    = note_mask;
+//     s_selected_piano_key = (selected_key < 12u) ? selected_key : 0u;
+//     s_step_roll_step     = step;
 
-    if (need_layout)
-    {
-        /* First entry: wipe below header, draw everything from scratch */
-        ST7789_FillRect(0u, ROLL_HEADER_H, SCREEN_W,
-                        (uint16_t)(SCREEN_H - ROLL_HEADER_H), COLOR_BG);
-        RollDrawHeader();
-        RollDrawAllRows();
-        RollDrawFooter();
-        s_chord_footer_valid     = 1;
-        s_step_roll_layout_valid = 1u;
-    }
-    else
-    {
-        if (step_changed)
-        {
-            RollDrawHeader();
-        }
+//     if (need_layout)
+//     {
+//         /* First entry: wipe below header, draw everything from scratch */
+//         ST7789_FillRect(0u, ROLL_HEADER_H, SCREEN_W,
+//                         (uint16_t)(SCREEN_H - ROLL_HEADER_H), COLOR_BG);
+//         RollDrawHeader();
+//         RollDrawAllRows();
+//         RollDrawFooter();
+//         s_chord_footer_valid     = 1;
+//         s_step_roll_layout_valid = 1u;
+//     }
+//     else
+//     {
+//         if (step_changed)
+//         {
+//             RollDrawHeader();
+//         }
 
-        if (prev_sel != s_selected_piano_key)
-        {
-            /* Repaint old and new selection rows — nothing else */
-            if (prev_sel < 12u) RollDrawRow(prev_sel);
-            RollDrawRow(s_selected_piano_key);
-        }
+//         if (prev_sel != s_selected_piano_key)
+//         {
+//             /* Repaint old and new selection rows — nothing else */
+//             if (prev_sel < 12u) RollDrawRow(prev_sel);
+//             RollDrawRow(s_selected_piano_key);
+//         }
 
-        uint16_t changed = (uint16_t)(prev_mask ^ note_mask);
-        if (changed != 0u)
-        {
-            for (uint8_t n = 0u; n < 12u; n++)
-            {
-                if (changed & (uint16_t)(1u << n)) RollDrawRow(n);
-            }
-        }
-    }
+//         uint16_t changed = (uint16_t)(prev_mask ^ note_mask);
+//         if (changed != 0u)
+//         {
+//             for (uint8_t n = 0u; n < 12u; n++)
+//             {
+//                 if (changed & (uint16_t)(1u << n)) RollDrawRow(n);
+//             }
+//         }
+//     }
 
-    s_step_roll_last_step         = step;
-    s_step_roll_last_note_mask    = note_mask;
-    s_step_roll_last_selected_key = s_selected_piano_key;
-}
+//     s_step_roll_last_step         = step;
+//     s_step_roll_last_note_mask    = note_mask;
+//     s_step_roll_last_selected_key = s_selected_piano_key;
+// }
 
 void UI_Display_ResetStepPianoRollCache(void)
 {

@@ -13,6 +13,9 @@ void UI_Sequencer_Init(void);
 /* ── Update — call every 10ms from main loop ─────────────────────────────── */
 void UI_Sequencer_Update(void);
 
+/* Bounded display work: at most one full-frame strip (or its follow-up) per call. */
+void UI_Sequencer_ServiceDisplay(void);
+
 /* ── Called from SysTick — 1ms ───────────────────────────────────────────── */
 void UI_Sequencer_Tick1ms(void);
 

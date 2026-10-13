@@ -30,16 +30,16 @@ static void MainGrid_OnExit(ScreenExitReason reason)
 static void MainGrid_OnDraw(void)
 {
     UI_Display_FastReturnToGrid();
-    UI_Display_DrawMainGridComposed(s_state.selected_step,
-                                    s_state.active_step,
-                                    s_state.has_chord,
-                                    UI_Transport_GetBPM(),
-                                    UI_Transport_GetState(),
-                                    UI_Transport_IsRecArmed(),
-                                    Bridge_GetCurrentPattern(),
-                                    Bridge_GetCurrentStep(),
-                                    Bridge_GetCompletedLoops(),
-                                    Bridge_GetRunTimeMs());
+    UI_Display_BeginMainGridFrame(s_state.selected_step,
+                                  s_state.active_step,
+                                  s_state.has_chord,
+                                  UI_Transport_GetBPM(),
+                                  UI_Transport_GetState(),
+                                  UI_Transport_IsRecArmed(),
+                                  Bridge_GetCurrentPattern(),
+                                  (uint8_t)Bridge_GetCurrentStep(),
+                                  Bridge_GetCompletedLoops(),
+                                  Bridge_GetRunTimeMs());
 }
 
 static UiScreen s_screen = {

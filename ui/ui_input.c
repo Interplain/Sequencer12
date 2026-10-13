@@ -498,6 +498,11 @@ uint8_t UI_Input_IsShiftHeld(void)
     return s_shift_held;
 }
 
+uint8_t UI_Input_IsRecHeld(void)
+{
+    return (s_direct_debounced & (1u << 1)) ? 1u : 0u;
+}
+
 uint8_t UI_Input_IsEncoderPressed(void)
 {
     uint8_t p         = s_enc_btn_pressed;

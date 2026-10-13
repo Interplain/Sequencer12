@@ -1,6 +1,6 @@
 # S12 UI Workflow Hierarchy Proposal (Issue #35)
 
-This document defines a modular UI operating model for S12 that can scale to ADC/CV input workflows and quantizer behavior without turning the current screen system into tightly coupled mode logic.
+This document defines a modular UI operating model for S12 that can scale to ADC/CV input workflows and quantiser behavior without turning the current screen system into tightly coupled mode logic.
 
 The goal is architectural definition, not a full rewrite.
 
@@ -51,7 +51,7 @@ flowchart TD
     B3 --> E5[Pattern Timing Editor]
     B4 --> E6[Song Chain Editor]
 
-    C --> C1[Quantizer Mode]
+    C --> C1[Quantiser Mode]
     C1 --> C2[Scale and Root Editor]
     C1 --> C3[CV Interpretation Editor]
     C3 --> C31[CV to Scale]
@@ -73,7 +73,7 @@ flowchart TD
 
 - Top-level contexts: PERFORM, COMPOSE, SYSTEM.
 - Top-level performance modes: STEP, CHORD, TIME, SONG.
-- Quantizer should be top-level under COMPOSE, not buried in a single editor.
+- Quantiser should be top-level under COMPOSE, not buried in a single editor.
 - CV setup and clock setup belong under SYSTEM.
 
 ## 3) Navigation Flow
@@ -92,8 +92,8 @@ flowchart LR
     G -->|Long Shift or SYSTEM gesture| SYS[SYSTEM Hub]
     SYS --> CV[CV and ADC Setup]
     SYS --> CLK[Clock and Sync Setup]
-    CV --> QP[Quick link to Quantizer]
-    QP --> Q[COMPOSE Quantizer]
+    CV --> QP[Quick link to Quantiser]
+    QP --> Q[COMPOSE Quantiser]
     Q --> G
 
     G -->|COMPOSE gesture| Q
@@ -104,7 +104,7 @@ flowchart LR
 - Global layer:
   - Shift tap: cycle STEP, CHORD, TIME, SONG only.
   - Dedicated gesture to open SYSTEM hub.
-  - Dedicated gesture to open COMPOSE Quantizer.
+  - Dedicated gesture to open COMPOSE Quantiser.
 - Screen stack:
   - Push editor on enter.
   - Pop to parent on REC.
@@ -186,7 +186,7 @@ Place ADC/CV setup under SYSTEM context:
 
 - CV Input Overview screen (signal present, calibrated, assigned target).
 - Pitch CV Input screen (activation mode and behavior).
-- CV Assignment screen (route input to quantizer source, root tracking, transpose, progression steer).
+- CV Assignment screen (route input to quantiser source, root tracking, transpose, progression steer).
 - CV Calibration/Status screen (raw value, filtered value, stability, calibration validity).
 
 This keeps hardware/control concerns out of performance editors while still allowing quick links back to musical workflows.
@@ -200,32 +200,32 @@ Pitch CV activation should support both automatic and manual entry.
 - Detached: no cable or no stable signal.
 - Detected: signal stable, offer action banner.
 - Armed: user accepted CV workflow or enabled always-on.
-- Active: CV is currently driving selected quantizer interpretation path.
+- Active: CV is currently driving selected quantiser interpretation path.
 
 ### Entry paths
 
 - Automatic prompt:
   - On stable CV detect, show non-blocking prompt in status region.
-  - PLAY enters Quantizer quick setup.
+  - PLAY enters Quantiser quick setup.
 - Manual path:
   - SYSTEM -> CV Input Overview -> Pitch CV Input -> Enable.
 - In-mode quick action:
-  - In STEP/CHORD/TIME/SONG, shortcut opens Quantizer with current mode context.
+  - In STEP/CHORD/TIME/SONG, shortcut opens Quantiser with current mode context.
 
-## 10) Quantizer Mode Placement and State Integration
+## 10) Quantiser Mode Placement and State Integration
 
-Quantizer belongs under COMPOSE context, with hooks into current song and chord state.
+Quantiser belongs under COMPOSE context, with hooks into current song and chord state.
 
-### Quantizer state layers
+### Quantiser state layers
 
-- Global quantizer config:
+- Global quantiser config:
   - enabled
   - interpretation mode (cv_to_scale, cv_to_chord, cv_to_progression)
   - default root and scale
 - Pattern-level overrides:
   - optional root/scale override per pattern.
 - Step-level modifiers:
-  - allow or block quantizer influence per step.
+  - allow or block quantiser influence per step.
 
 ### Relationship to composition state
 
@@ -242,9 +242,9 @@ Quantizer belongs under COMPOSE context, with hooks into current song and chord 
 4. Separate global input actions from screen-local input handlers.
 5. Add SYSTEM hub shell (placeholder screens).
 6. Add CV Input Overview and Pitch CV activation state machine.
-7. Add COMPOSE Quantizer shell and read-only state view.
+7. Add COMPOSE Quantiser shell and read-only state view.
 8. Add editable scale/root and interpretation mapping.
-9. Connect quantizer outputs to step/chord/progression contexts behind feature flags.
+9. Connect quantiser outputs to step/chord/progression contexts behind feature flags.
 10. Remove obsolete branch-based routing once all workflows use the same lifecycle path.
 
 ## 12) Concrete Next Implementation Targets
@@ -259,7 +259,7 @@ Short-term, low-risk changes to begin now:
 - Add placeholder screens:
   - SYSTEM hub
   - CV Input Overview
-  - Quantizer Home
+  - Quantiser Home
 - Keep existing visual behavior unchanged for STEP/CHORD/TIME/SONG while integrating the new routing skeleton.
 
-This sequence preserves deterministic runtime behavior while opening architecture space for ADC/CV and quantizer workflows.
+This sequence preserves deterministic runtime behavior while opening architecture space for ADC/CV and quantiser workflows.

@@ -9,6 +9,8 @@
 #include "st7789.h"
 #include "s12_fonts.h"
 #include "stm32/timing_probe.h"
+#include "stm32/time_commit_probe.h"
+#include "ui_frame_job.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -59,7 +61,7 @@ typedef enum {
     PIANO_VIEW_ROLL = 1
 } PianoViewMode;
 
-static struct {
+typedef struct {
     /* Current rendering mode */
     PianoViewMode view_mode;
     PianoRollMode roll_mode;
@@ -116,7 +118,9 @@ static struct {
     
     /* Cache flags */
     uint8_t needs_redraw;
-} s_piano_roll = {
+} PianoRollState;
+
+static PianoRollState s_piano_roll = {
     .view_mode = PIANO_VIEW_KEYBOARD,
     .roll_mode = PIANO_ROLL_MODE_KEYBOARD,
     .step = 1,
@@ -165,6 +169,12 @@ static struct {
     .roll_dirty_flags = 0xFFFFu,
     .needs_redraw = 1
 };
+
+static PianoRollState s_frame_snapshot;
+static UiFrameJob s_frame_job;
+#define PIANO_FRAME_STRIP_H 8u
+static void RollRememberRenderedState(void);
+static void RollBeginFrame(void);
 
 /* ── Constants & Lookup Tables ──────────────────────────────────────────── */
 
@@ -281,6 +291,8 @@ static const uint8_t k_piano_black_after_white_idx[PIANO_BLACK_COUNT] = {0, 1, 3
 static const char* k_note_names[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 
 #define ROLL_ROW_BYTES ((uint32_t)SCREEN_W * (uint32_t)ROLL_ROW_H * 2u)
+_Static_assert(ROLL_ROW_BYTES + (uint32_t)SCREEN_W * PIANO_FRAME_STRIP_H * 2u <=
+               UI_RENDER_SCRATCH_BYTES, "Piano row and output strip must fit shared scratch");
 
 /* Shared display scratch aliases (owned by active renderer via ui_render_scratch). */
 static uint8_t* s_roll_row_buf = 0;
@@ -1178,8 +1190,16 @@ static void RollDrawClearConfirmOverlay(void)
     ST7789_FillRect((uint16_t)(box_x + 1u), (uint16_t)(box_y + 1u), 1u, (uint16_t)(box_h - 2u), WHITE);
     ST7789_FillRect((uint16_t)(box_x + box_w - 2u), (uint16_t)(box_y + 1u), 1u, (uint16_t)(box_h - 2u), WHITE);
 
-    ST7789_DrawString((uint16_t)(box_x + 12u), (uint16_t)(box_y + 14u),
-                      s_piano_roll.confirm_message, &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
+    if (strlen(s_piano_roll.confirm_message) > 12u)
+    {
+        ST7789_DrawString((uint16_t)(box_x + 12u), (uint16_t)(box_y + 14u),
+                          s_piano_roll.confirm_message, &Font8x12, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
+    }
+    else
+    {
+        ST7789_DrawString((uint16_t)(box_x + 12u), (uint16_t)(box_y + 14u),
+                          s_piano_roll.confirm_message, &Font12x20, COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
+    }
 
     ST7789_FillRect((uint16_t)(box_x + 20u), (uint16_t)(box_y + 50u), 58u, 24u, no_bg);
     ST7789_FillRect((uint16_t)(box_x + 98u), (uint16_t)(box_y + 50u), 58u, 24u, yes_bg);
@@ -1336,8 +1356,6 @@ static void DrawStepPianoRollScreen(void)
 
     if ((dirty & ROLL_DIRTY_BODY_FULL) != 0u)
     {
-        ST7789_FillRect(0u, ROLL_GRID_Y, SCREEN_W,
-                        (uint16_t)(ROLL_FOOTER_Y - ROLL_GRID_Y), COLOR_BG);
         RollDrawBodyFullComposedStrips();
 #if PIANO_ROLL_DIAG_REDRAW_FOOTER_AFTER_BODY
         body_drawn = 1u;
@@ -1411,6 +1429,19 @@ static void DrawStepPianoRollScreen(void)
         RollDrawFooter();
     }
 
+    RollRememberRenderedState();
+    s_piano_roll.roll_dirty_flags = ROLL_DIRTY_NONE;
+
+    RollDrawClearConfirmOverlay();
+    ST7789_DebugEndPianoRenderFrame();
+
+    s_roll_row_buf = 0;
+    s_roll_body_strip_buf = 0;
+    UI_RenderScratch_Release(UI_RENDER_SCRATCH_OWNER_PIANO_ROLL);
+}
+
+static void RollRememberRenderedState(void)
+{
     s_piano_roll.roll_last_step = s_piano_roll.step;
     s_piano_roll.roll_last_note_mask = s_piano_roll.note_mask;
     s_piano_roll.roll_last_selected_midi = s_piano_roll.selected_midi_note;
@@ -1440,14 +1471,158 @@ static void DrawStepPianoRollScreen(void)
         }
     }
 
+}
+
+static char s_frame_header[7][96];
+static const uint16_t k_frame_header_x[7] = {
+    HDR_BAR_X, HDR_SKIP_X, HDR_POS_X, HDR_NOTE_X, HDR_KEYSCALE_X, HDR_RNG_X, HDR_CV_X
+};
+static const uint16_t k_frame_header_y[7] = {
+    HDR_BAR_Y, HDR_SKIP_Y, HDR_POS_Y, HDR_NOTE_Y, HDR_KEYSCALE_Y, HDR_RNG_Y, HDR_CV_Y
+};
+static const uint16_t k_frame_header_w[7] = {
+    HDR_BAR_W, HDR_SKIP_W, HDR_POS_W, HDR_NOTE_W, HDR_KEYSCALE_W, HDR_RNG_W, HDR_CV_W
+};
+
+static void RollBeginFrame(void)
+{
+    char note[8], bottom[8], top[8];
+    const uint8_t rows = RollRowsThatFitBody();
+    RollBuildMidiLabel(s_piano_roll.selected_midi_note, note, sizeof(note));
+    RollBuildMidiLabel(s_piano_roll.roll_top_midi_note, top, sizeof(top));
+    RollBuildMidiLabel((uint8_t)(s_piano_roll.roll_top_midi_note - (rows - 1u)), bottom, sizeof(bottom));
+    snprintf(s_frame_header[0], sizeof(s_frame_header[0]), "BAR%02u", (unsigned)s_piano_roll.step);
+    snprintf(s_frame_header[1], sizeof(s_frame_header[1]), "%s", s_piano_roll.bar_skipped ? "SKIP" : "");
+    snprintf(s_frame_header[2], sizeof(s_frame_header[2]), "POS:%02u/%02u",
+             (unsigned)(s_piano_roll.slot_index + 1u), (unsigned)s_piano_roll.slot_count);
+    snprintf(s_frame_header[3], sizeof(s_frame_header[3]), "NOTE:%s", note);
+    snprintf(s_frame_header[4], sizeof(s_frame_header[4]), "GRID %s",
+             RollGridDivisionLabel(s_piano_roll.grid_division));
+    snprintf(s_frame_header[5], sizeof(s_frame_header[5]), "RNG:%s..%s", bottom, top);
+    RollBuildCvLine(s_frame_header[6], sizeof(s_frame_header[6]));
+    RollRememberRenderedState();
+    s_piano_roll.roll_layout_valid = 1u;
     s_piano_roll.roll_dirty_flags = ROLL_DIRTY_NONE;
+    s_piano_roll.needs_redraw = 0u;
+    s_frame_snapshot = s_piano_roll;
+    const uint8_t replaced = UiFrameJob_Begin(&s_frame_job,
+        (uint8_t)((SCREEN_H + PIANO_FRAME_STRIP_H - 1u) / PIANO_FRAME_STRIP_H));
+    TimeCommitProbe_PianoFrameBegin(replaced);
+}
 
-    RollDrawClearConfirmOverlay();
-    ST7789_DebugEndPianoRenderFrame();
+static void FrameDrawText(uint8_t* buffer, uint16_t strip_y, uint16_t strip_h,
+                          uint16_t x, uint16_t y, const char* text, uint16_t fg, uint16_t bg)
+{
+    const Font_t* font = &Font8x12;
+    const uint16_t bytes_per_row = (uint16_t)((font->width + 7u) / 8u);
+    for (; *text; ++text, x = (uint16_t)(x + font->width))
+    {
+        const uint8_t character = (uint8_t)*text;
+        if (character < font->first || character > font->last) continue;
+        const uint8_t* glyph = font->data + (character - font->first) * font->height * bytes_per_row;
+        for (uint16_t row = 0u; row < font->height; ++row)
+        {
+            const uint16_t py = (uint16_t)(y + row);
+            if (py < strip_y || py >= strip_y + strip_h) continue;
+            for (uint16_t col = 0u; col < font->width && x + col < SCREEN_W; ++col)
+            {
+                const uint16_t colour = glyph[row * bytes_per_row + col / 8u] &
+                    (0x80u >> (col % 8u)) ? fg : bg;
+                const uint32_t offset = ((uint32_t)(py - strip_y) * SCREEN_W + x + col) * 2u;
+                buffer[offset] = (uint8_t)(colour >> 8);
+                buffer[offset + 1u] = (uint8_t)colour;
+            }
+        }
+    }
+}
 
-    s_roll_row_buf = 0;
-    s_roll_body_strip_buf = 0;
+uint8_t UI_PianoRollScreen_IsFrameActive(void)
+{
+    return s_frame_job.active;
+}
+
+void UI_PianoRollScreen_CancelFrame(void)
+{
+    if (s_frame_job.active) TimeCommitProbe_PianoFrameCancel();
+    UiFrameJob_Cancel(&s_frame_job);
+}
+
+void UI_PianoRollScreen_ServiceFrame(void)
+{
+    uint8_t strip;
+    if (!UiFrameJob_NextStrip(&s_frame_job, &strip)) return;
+    uint8_t* scratch = UI_RenderScratch_Acquire(UI_RENDER_SCRATCH_OWNER_PIANO_ROLL);
+    if (!scratch) return;
+    TimeCommitProbe_PianoJobBegin();
+    const uint16_t strip_y = (uint16_t)(strip * PIANO_FRAME_STRIP_H);
+    const uint16_t strip_h = SCREEN_H - strip_y < PIANO_FRAME_STRIP_H ?
+        (uint16_t)(SCREEN_H - strip_y) : PIANO_FRAME_STRIP_H;
+    uint8_t* output = scratch + ROLL_ROW_BYTES;
+    const PianoRollState live = s_piano_roll;
+    s_piano_roll = s_frame_snapshot;
+    const uint16_t footer_y = RollLedgerBottomY();
+    for (uint16_t row = 0u; row < strip_h; ++row)
+    {
+        const uint16_t py = (uint16_t)(strip_y + row);
+        const uint16_t colour = py == ROLL_HEADER_H - 1u ? ROLL_COL_ROW_SEP :
+            (py < ROLL_HEADER_H ? COLOR_PANEL_ALT : (py >= footer_y ? COLOR_PANEL : COLOR_BG));
+        for (uint16_t col = 0u; col < SCREEN_W; ++col)
+        {
+            const uint32_t offset = ((uint32_t)row * SCREEN_W + col) * 2u;
+            output[offset] = (uint8_t)(colour >> 8);
+            output[offset + 1u] = (uint8_t)colour;
+        }
+    }
+    for (uint8_t field = 0u; field < 7u; ++field)
+    {
+        for (uint16_t py = k_frame_header_y[field]; py < k_frame_header_y[field] + 12u; ++py)
+        {
+            if (py < strip_y || py >= strip_y + strip_h) continue;
+            for (uint16_t col = k_frame_header_x[field];
+                 col < k_frame_header_x[field] + k_frame_header_w[field] && col < SCREEN_W; ++col)
+            {
+                const uint32_t offset = ((uint32_t)(py - strip_y) * SCREEN_W + col) * 2u;
+                output[offset] = (uint8_t)(COLOR_PANEL_ALT >> 8);
+                output[offset + 1u] = (uint8_t)COLOR_PANEL_ALT;
+            }
+        }
+        FrameDrawText(output, strip_y, strip_h, k_frame_header_x[field], k_frame_header_y[field],
+                      s_frame_header[field], field == 6u ? COLOR_ACTIVE : COLOR_TEXT_MAIN, COLOR_PANEL_ALT);
+    }
+    const uint8_t rows = RollRowsThatFitBody();
+    s_roll_row_buf = scratch;
+    for (uint8_t row = 0u; row < rows; ++row)
+    {
+        const uint16_t row_y = (uint16_t)(ROLL_GRID_Y + row * ROLL_ROW_H);
+        if (row_y >= strip_y + strip_h || row_y + ROLL_ROW_H <= strip_y) continue;
+        RollComposeRow(row);
+        const uint16_t from_y = row_y > strip_y ? row_y : strip_y;
+        const uint16_t to_y = row_y + ROLL_ROW_H < strip_y + strip_h ?
+            (uint16_t)(row_y + ROLL_ROW_H) : (uint16_t)(strip_y + strip_h);
+        memcpy(output + (uint32_t)(from_y - strip_y) * SCREEN_W * 2u,
+               scratch + (uint32_t)(from_y - row_y) * SCREEN_W * 2u,
+               (uint32_t)(to_y - from_y) * SCREEN_W * 2u);
+    }
+    FrameDrawText(output, strip_y, strip_h, 6u, (uint16_t)(footer_y + 2u),
+                  "M5 SKIP M6 -- M7 -- M8 --", COLOR_ACTIVE, COLOR_PANEL);
+    FrameDrawText(output, strip_y, strip_h, 6u, (uint16_t)(footer_y + 16u),
+                  "M9 NOTE M10 CLR M11 OCT+ M12 OCT-", COLOR_TEXT_MAIN, COLOR_PANEL);
+    s_roll_row_buf = NULL;
+    s_piano_roll = live;
+    ST7789_DrawRGB565Buffer(0u, strip_y, SCREEN_W, strip_h, output,
+                            (uint32_t)SCREEN_W * strip_h * 2u);
     UI_RenderScratch_Release(UI_RENDER_SCRATCH_OWNER_PIANO_ROLL);
+    TimeCommitProbe_PianoJobEnd();
+    if (UiFrameJob_CompleteStrip(&s_frame_job))
+    {
+        if (s_piano_roll.selected_midi_note != s_frame_snapshot.selected_midi_note)
+        {
+            s_piano_roll.roll_prev_selected_midi = s_frame_snapshot.selected_midi_note;
+            s_piano_roll.roll_dirty_flags |= ROLL_DIRTY_ROW_OLD | ROLL_DIRTY_ROW_NEW;
+        }
+        s_piano_roll.needs_redraw = 1u;
+        TimeCommitProbe_PianoFrameComplete();
+    }
 }
 
 /* ── UiScreen Lifecycle ─────────────────────────────────────────────────── */
@@ -1475,6 +1650,7 @@ static void OnInput(InputType input_type, int8_t value)
 
 static void OnExit(ScreenExitReason reason)
 {
+    UI_PianoRollScreen_CancelFrame();
     /* Clean up if needed */
     (void)reason;
 }
@@ -1482,8 +1658,16 @@ static void OnExit(ScreenExitReason reason)
 static void OnDraw(void)
 {
     if (!s_piano_roll.needs_redraw) return;
+    if (s_frame_job.active) return;
+    if (s_piano_roll.view_mode == PIANO_VIEW_ROLL &&
+        (!s_piano_roll.roll_layout_valid || (s_piano_roll.roll_dirty_flags & ROLL_DIRTY_BODY_FULL)))
+    {
+        RollBeginFrame();
+        return;
+    }
 
     uint32_t _tp_draw = TIMING_PROBE_BEGIN();
+    TimeCommitProbe_PianoDrawBegin();
 
     if (s_piano_roll.view_mode == PIANO_VIEW_KEYBOARD)
     {
@@ -1495,6 +1679,7 @@ static void OnDraw(void)
     }
 
     s_piano_roll.needs_redraw = 0;
+    TimeCommitProbe_PianoDrawEnd();
     TIMING_PROBE_END(g_timing_max_on_draw_us, _tp_draw);
 }
 
